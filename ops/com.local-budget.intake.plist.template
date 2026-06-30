@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent that auto-runs `budget intake` when a Wells Fargo export is dropped
+  in the inbox. @REPO@ / @INBOX@ are substituted by ops/install-intake-watch.sh
+  into a host-specific .plist.rendered (gitignored). Re-run the installer after
+  moving the repo (the rendered plist holds absolute paths).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.local-budget.intake</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>@REPO@/ops/budget-intake.sh</string>
+  </array>
+
+  <!-- Event-driven: fire the instant a file lands in the inbox ("kicks off on
+       drop"). Fires on any change to the directory; intake is idempotent
+       (content-hash dedup) so the disposal re-fire is a harmless no-op. -->
+  <key>WatchPaths</key>
+  <array>
+    <string>@INBOX@</string>
+  </array>
+
+  <!-- Safety-net sweep (design §3.4 / CORR-2). A large/slow-copied file can lose
+       the WatchPaths race against the 3s stability gate; this 15-min tick picks
+       up anything missed. Intake is idempotent + deterministic (no AI), so an
+       empty sweep is a cheap no-op (no LLM, no import). -->
+  <key>StartInterval</key>
+  <integer>900</integer>
+
+  <!-- Catch files dropped while the agent was unloaded. -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- launchd-level errors (e.g. wrapper missing). Intake's own output goes to
+       logs/intake.log via the wrapper. -->
+  <key>StandardErrorPath</key>
+  <string>@REPO@/logs/launchd.err.log</string>
+</dict>
+</plist>

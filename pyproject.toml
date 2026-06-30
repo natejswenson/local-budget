@@ -1,0 +1,60 @@
+[project]
+name = "local-budget"
+version = "0.1.0"
+description = "Local-first Wells Fargo transaction spending agent (subscription-auth, no API key)"
+readme = "README.md"
+authors = [
+    { name = "Nate Swenson", email = "natejswenson@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "mcp>=1.0",
+    "click>=8.3.3",
+    "ofxparse>=0.21",
+    "rich>=15.0.0",
+    "python-dotenv>=1.0.1",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5",
+    "ruff>=0.6",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+budget = "local_budget.cli:main"
+budget-mcp = "local_budget.web.mcp_server:main"
+
+[build-system]
+requires = ["uv_build>=0.11.7,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.ruff.lint.per-file-ignores]
+# cli.py calls load_dotenv() before importing submodules that read os.environ.
+"src/local_budget/cli.py" = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore::DeprecationWarning:ofxparse",
+    "ignore::DeprecationWarning:bs4",
+]
+
+# Coverage config. The gate (--cov-fail-under) lives in the CI command, NOT in
+# pytest addopts — local `pytest` stays fast and subset-runnable.
+[tool.coverage.run]
+source = ["local_budget"]
+omit = ["*/__main__.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    "@(abc\\.)?abstractmethod",
+]

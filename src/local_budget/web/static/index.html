@@ -1,0 +1,1158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>budget buddy</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0b0e14; --panel:#141a23; --panel2:#1b222e; --line:#232c39; --line2:#2c3543;
+    --text:#eef2f8; --muted:#8593a8; --faint:#5c6878;
+    --green:#4ade80; --blue:#5b9bff; --red:#fb6a5e; --amber:#f0b429; --purple:#a78bfa;
+    --over:#d9a066;   /* the ONE restrained accent on the redesigned Budgets tab (over-amounts) */
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 10px 30px -16px rgba(0,0,0,.6);
+  }
+  *{box-sizing:border-box}
+  html{-webkit-font-smoothing:antialiased}
+  body{margin:0;min-height:100vh;background:radial-gradient(1100px 540px at 50% -12%,#13192a 0%,var(--bg) 55%);
+    color:var(--text);font:15px/1.55 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+  header{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:16px;padding:15px 28px;
+    border-bottom:1px solid var(--line);background:rgba(11,14,20,.78);backdrop-filter:blur(14px)}
+  h1{font-size:15px;margin:0;font-weight:700;letter-spacing:-.01em;display:flex;align-items:center;gap:9px}
+  h1 .dot{width:9px;height:9px;border-radius:50%;background:var(--green);box-shadow:0 0 10px var(--green)}
+  select{font:inherit;color:var(--text);background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:7px 11px;outline:none}
+  select:focus{border-color:var(--blue)}
+  .seg{display:inline-flex;background:var(--panel2);border:1px solid var(--line);border-radius:11px;padding:3px;gap:2px}
+  .seg button{border:none;background:transparent;color:var(--muted);padding:6px 14px;border-radius:8px;font:inherit;font-size:13px;font-weight:600;cursor:pointer;transition:.15s}
+  .seg button:hover{color:var(--text)}
+  .seg button.active{background:var(--blue);color:#08111f}
+  main{max-width:980px;margin:0 auto;padding:28px 28px 80px;display:flex;flex-direction:column;gap:18px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:22px;box-shadow:var(--shadow)}
+  .phead{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+  h2{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin:0;font-weight:700}
+  .muted{color:var(--muted)} .right{margin-left:auto}
+  /* hero */
+  .hero{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  .stat{background:linear-gradient(180deg,var(--panel),#10151e);border:1px solid var(--line);border-radius:16px;padding:20px 22px;box-shadow:var(--shadow)}
+  .stat .label{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);font-weight:700}
+  .stat .value{font-size:32px;font-weight:800;letter-spacing:-.025em;margin-top:8px;line-height:1}
+  .stat .sub{font-size:12.5px;margin-top:8px;color:var(--muted)}
+  /* ranked category bars */
+  .catrow{margin-bottom:14px}
+  .catrow:last-child{margin-bottom:2px}
+  .catrow .top{display:flex;justify-content:space-between;align-items:baseline;font-size:14px;margin-bottom:6px}
+  .catrow .top b{font-weight:600}
+  .catrow .top .amt{font-variant-numeric:tabular-nums}
+  .catrow .top .pct{color:var(--faint);font-size:12px;margin-left:8px}
+  .track{height:8px;background:var(--panel2);border-radius:6px;overflow:hidden}
+  .track>span{display:block;height:100%;border-radius:6px;background:linear-gradient(90deg,var(--blue),#7db1ff)}
+  /* insights */
+  .ins{display:flex;align-items:center;gap:14px;padding:13px 0;border-bottom:1px solid var(--line)}
+  .ins:last-child{border-bottom:none;padding-bottom:0}
+  .ins .ico{width:36px;height:36px;flex:none;border-radius:10px;display:grid;place-items:center;font-size:17px}
+  .ins .body{flex:1;min-width:0}
+  .ins .t{font-weight:600;font-size:14px}
+  .ins .d{font-size:12.5px;color:var(--muted);margin-top:2px}
+  .ins .v{font-size:17px;font-weight:700;font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+  .ico.warn{background:rgba(251,106,94,.15);color:var(--red)}
+  .ico.cut{background:rgba(91,155,255,.15);color:var(--blue)}
+  .ico.sub{background:rgba(167,139,250,.15);color:var(--purple)}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  /* income-sources 3-col row: center-breakout escapes main's 980px clamp without widening hero/Charts/chat */
+  .cols3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px;width:min(1180px,calc(100vw - 48px));margin-left:50%;transform:translateX(-50%)}
+  .track.income>span{background:linear-gradient(90deg,var(--green),#86efac)}
+  .legend{display:flex;gap:16px;font-size:12px;color:var(--muted)}
+  .legend i{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:6px;vertical-align:middle}
+  /* ask */
+  .ask{display:flex;gap:10px}
+  .ask input{flex:1;font:inherit;color:var(--text);background:var(--panel2);border:1px solid var(--line);border-radius:11px;padding:12px 15px;outline:none}
+  .ask input:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(91,155,255,.14)}
+  .ask button{font:inherit;font-weight:600;background:var(--blue);color:#08111f;border:none;border-radius:11px;padding:0 20px;cursor:pointer}
+  #answer{margin-top:14px;font-size:14px;line-height:1.6;white-space:pre-wrap;color:#dbe3ee}
+  #answer:empty{display:none}
+  .empty{color:var(--faint);font-style:italic;font-size:13px}
+  .intake{display:flex;align-items:center;gap:14px;padding:14px 18px;border-radius:14px;margin-bottom:18px;
+    background:linear-gradient(90deg,rgba(91,155,255,.16),rgba(91,155,255,.05));border:1px solid rgba(91,155,255,.34)}
+  .intake .t{font-weight:600;font-size:14px}
+  .intake .d{font-size:12.5px;color:var(--muted)}
+  .intake button{margin-left:auto;font-weight:600;background:var(--blue);color:#08111f;border:none;border-radius:10px;padding:9px 16px;cursor:pointer}
+  .intake.warn{background:linear-gradient(90deg,rgba(240,180,41,.16),rgba(240,180,41,.05));border:1px solid rgba(240,180,41,.40)}
+  .intake .note{display:block;font-size:11.5px;color:var(--faint);margin-top:4px}
+  .duplist{margin:0 0 18px;border:1px solid rgba(240,180,41,.34);border-radius:14px;overflow:hidden}
+  .duprow{display:flex;align-items:center;gap:12px;padding:11px 16px;border-top:1px solid var(--line);font-size:13px}
+  .duprow:first-child{border-top:none}
+  .duprow .m{flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .duprow .pair{color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+  .duprow .btns{display:flex;gap:8px;margin-left:auto}
+  .x{background:transparent;border:1px solid var(--line);color:var(--muted);border-radius:8px;padding:5px 11px;font-size:12px;cursor:pointer}
+  .x.primary{border-color:#3a7;color:#3a7;font-weight:600}
+  .x.danger{border-color:#c55;color:#c55}
+  #review-list select{font:inherit;color:var(--text);background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 9px}
+  ::-webkit-scrollbar{width:9px}::-webkit-scrollbar-thumb{background:var(--line2);border-radius:6px}
+  /* tabs */
+  .tabs{display:inline-flex;align-self:flex-start;background:var(--panel2);border:1px solid var(--line);border-radius:11px;padding:3px;gap:2px}
+  .tabs button{border:none;background:transparent;color:var(--muted);padding:7px 16px;border-radius:8px;font:inherit;font-size:13px;font-weight:600;cursor:pointer;transition:.15s}
+  .tabs button:hover{color:var(--text)}
+  .tabs button.active{background:var(--panel);color:var(--text);box-shadow:var(--shadow)}
+  .tabpane{display:flex;flex-direction:column;gap:18px}
+  [hidden]{display:none!important}
+  /* freshness chip */
+  .fresh{display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--muted);padding:2px 2px 0}
+  .fresh.stale{padding:12px 16px;border-radius:12px;color:var(--text);font-size:13px;
+    background:linear-gradient(90deg,rgba(240,180,41,.16),rgba(240,180,41,.05));border:1px solid rgba(240,180,41,.40)}
+  .fresh .dotw{width:7px;height:7px;border-radius:50%;background:var(--green);flex:none}
+  .fresh.stale .dotw{background:var(--amber)}
+  .fresh button{margin-left:auto;font:inherit;font-size:12px;font-weight:600;background:var(--amber);color:#1a1300;border:none;border-radius:8px;padding:6px 12px;cursor:pointer}
+  /* upload drop zone */
+  .drop{border:1.5px dashed var(--line2);border-radius:14px;padding:34px 20px;text-align:center;cursor:pointer;transition:.15s;background:var(--panel2)}
+  .drop:hover,.drop.over{border-color:var(--blue);background:rgba(91,155,255,.06)}
+  .drop .dz-ico{font-size:26px;color:var(--blue);margin-bottom:8px}
+  .drop .dz-t{font-weight:600;font-size:14px}
+  .drop .dz-link{color:var(--blue);text-decoration:underline}
+  .drop .dz-d{font-size:12px;margin-top:6px}
+  #upload-go{font:inherit;font-weight:600;background:var(--blue);color:#08111f;border:none;border-radius:11px;padding:11px 20px;cursor:pointer}
+  #upload-go:disabled{opacity:.5;cursor:default}
+  /* budgets — zero-based allocation header */
+  .alloc{display:flex;align-items:center;gap:24px;flex-wrap:wrap}
+  .alloc-main{flex:1;min-width:200px}
+  .alloc-label{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);font-weight:700}
+  .alloc-val{font-size:30px;font-weight:800;letter-spacing:-.02em;margin-top:6px;line-height:1}
+  .alloc-val.ok{color:var(--green)} .alloc-val.over{color:var(--red)} .alloc-val.left{color:var(--blue)}
+  .alloc-sub{font-size:12.5px;color:var(--muted);margin-top:8px}
+  .alloc-inc label{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);font-weight:700;display:block}
+  .inc-wrap{display:inline-flex;align-items:center;gap:2px;margin-top:7px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:8px 11px;color:var(--muted)}
+  .inc-wrap input{width:96px;font:inherit;font-size:16px;font-weight:700;color:var(--text);background:transparent;border:none;outline:none}
+  .alloc-actual{font-size:12px;color:var(--faint);margin-top:6px}
+  #income-suggest{margin-top:7px}
+  /* envelope rows */
+  .env{padding:13px 0;border-bottom:1px solid var(--line)}
+  .env:last-child{border-bottom:none;padding-bottom:2px}
+  .env-top{display:flex;align-items:center;gap:12px}
+  .env-cat{font-weight:600;font-size:14px;flex:1;min-width:0;display:flex;align-items:center;gap:7px;cursor:default}
+  .env-cat .care{color:var(--faint);font-size:11px;width:12px;cursor:pointer;user-select:none;transition:.12s}
+  .env-cat .care.open{transform:rotate(90deg)}
+  .env-spent{font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+  .bud-wrap{display:inline-flex;align-items:center;gap:1px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:6px 9px;color:var(--faint)}
+  .bud-wrap:focus-within{border-color:var(--blue)}
+  .bud-wrap input{width:64px;font:inherit;font-size:13px;font-weight:600;color:var(--text);background:transparent;border:none;outline:none;text-align:right}
+  .env-track{height:6px;background:var(--panel2);border-radius:5px;overflow:hidden;margin-top:9px}
+  .env-track>span{display:block;height:100%;border-radius:5px;background:linear-gradient(90deg,var(--blue),#7db1ff)}
+  .env-track>span.over{background:linear-gradient(90deg,var(--red),#ff8c82)}
+  .env-warn{font-size:11.5px;color:var(--amber);margin-top:7px}
+  .subs{margin:8px 0 2px 22px;border-left:2px solid var(--line);padding-left:14px}
+  .subrow{display:flex;align-items:center;gap:10px;padding:7px 0;font-size:13px}
+  .subrow .sname{flex:1;min-width:0;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .subrow .sspent{font-size:12px;color:var(--faint);font-variant-numeric:tabular-nums;white-space:nowrap}
+  .pcttag{font-size:11px;color:var(--faint);font-variant-numeric:tabular-nums;min-width:34px;text-align:right}
+  .pcttag.over{color:var(--red)}
+  /* clickable category */
+  .catrow.clickable{cursor:pointer;border-radius:9px;padding:3px 7px;margin:0 -7px 11px;transition:background .12s}
+  .catrow.clickable:hover{background:var(--panel2)}
+  /* modal */
+  .modal-back{position:fixed;inset:0;z-index:50;background:rgba(6,9,14,.62);backdrop-filter:blur(3px);display:grid;place-items:center;padding:24px}
+  .modal{background:var(--panel);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);width:min(560px,100%);max-height:80vh;display:flex;flex-direction:column;overflow:hidden}
+  .modal .mhead{display:flex;align-items:center;gap:12px;padding:17px 20px;border-bottom:1px solid var(--line)}
+  .modal .mhead h3{margin:0;font-size:14px;font-weight:700}
+  .modal .mhead .sub{font-size:12px;color:var(--muted)}
+  .modal .mbody{overflow-y:auto;padding:4px 20px}
+  .modal .trow{display:flex;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--line);font-size:13px}
+  .modal .trow:first-child{border-top:none}
+  .modal .trow .m{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .modal .trow .d{color:var(--faint);font-variant-numeric:tabular-nums;white-space:nowrap}
+  .modal .trow .a{font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right;min-width:82px}
+  .modal .trow .a.credit{color:var(--green)}
+  .modal .mfoot{display:flex;justify-content:space-between;align-items:center;padding:13px 20px;border-top:1px solid var(--line);font-size:13px}
+  .modal .mfoot .net{font-weight:700;font-variant-numeric:tabular-nums}
+  /* budget setup wizard */
+  .wiz-intro{font-size:13px;color:var(--muted);line-height:1.5;padding:14px 0 6px}
+  .wiz-meter{position:sticky;top:0;background:var(--panel);padding:14px 0 12px;border-bottom:1px solid var(--line);z-index:1}
+  .wiz-left{font-size:26px;font-weight:800;letter-spacing:-.02em;line-height:1}
+  .wiz-left.ok{color:var(--green)} .wiz-left.over{color:var(--red)} .wiz-left.left{color:var(--blue)}
+  .wiz-left-lbl{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
+  .wiz-hint{font-size:12px;color:var(--muted);margin-top:4px}
+  .wiz-bar{height:6px;border-radius:4px;background:var(--panel2);overflow:hidden;margin-top:9px}
+  .wiz-bar>span{display:block;height:100%;background:linear-gradient(90deg,var(--blue),#8ab6ff);transition:width .12s}
+  .wiz-bar>span.ok{background:linear-gradient(90deg,var(--green),#86efac)}
+  .wiz-bar>span.over{background:linear-gradient(90deg,var(--red),#ff8c82)}
+  .wiz-inc{display:flex;align-items:center;gap:10px;padding:12px 0 4px;font-size:13px}
+  .wiz-inc .inc-wrap{margin-left:auto}
+  .wiz-row{display:flex;align-items:center;gap:12px;padding:9px 0;border-top:1px solid var(--line);font-size:13px}
+  .wiz-row .wc{flex:1;min-width:0;font-weight:600}
+  .wiz-row .ws{color:var(--faint);font-size:11.5px;white-space:nowrap}
+  .wiz-wrap{display:inline-flex;align-items:center;gap:3px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:5px 9px}
+  .wiz-wrap input{width:74px;border:none;background:transparent;color:var(--text);font:inherit;text-align:right;outline:none;font-variant-numeric:tabular-nums}
+  .wiz-foot{display:flex;align-items:center;gap:10px;padding:13px 20px;border-top:1px solid var(--line)}
+  .wiz-save{margin-left:auto;font:inherit;font-weight:700;font-size:13px;background:var(--blue);color:#08111f;border:none;border-radius:9px;padding:9px 16px;cursor:pointer}
+  .wiz-save:disabled{opacity:.55;cursor:default}
+  .wiz-skip{font:inherit;font-size:12px;color:var(--muted);background:none;border:none;cursor:pointer;text-decoration:underline}
+  @media(max-width:900px){.cols3{grid-template-columns:1fr 1fr}}
+  @media(max-width:760px){.hero{grid-template-columns:1fr}.cols{grid-template-columns:1fr}.cols3{grid-template-columns:1fr}main{padding:20px}}
+  /* ── Budgets redesign: numbers-first, near-monochrome (one accent: --over) ── */
+  #tab-budgets .bud2{max-width:680px}
+  .bud2-head{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap}
+  .bud2-title h2{margin:0;font-size:15px;font-weight:700;letter-spacing:.01em}
+  .bud2-period{font-size:12px;color:var(--faint);margin-top:3px;text-transform:capitalize}
+  .bud2-actions{display:flex;gap:8px;flex-wrap:wrap}
+  .bud2-summary{display:flex;gap:40px;margin:22px 0 2px}
+  .bud2-s .sk{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
+  .bud2-s .sv{font-size:26px;font-weight:600;letter-spacing:-.02em;font-variant-numeric:tabular-nums;margin-top:6px}
+  .bud2-s .sv.neg{color:var(--over)}
+  .bud2-insight{font-size:13px;color:var(--muted);padding:15px 0;border-top:1px solid var(--line);margin-top:18px;line-height:1.5}
+  .bud2-insight b{color:var(--text);font-weight:600}
+  .bud2-cols,.bud2-r,.bud2-untrk-head{display:grid;grid-template-columns:1fr 104px 96px 76px;align-items:baseline}
+  .bud2-cols{padding:6px 2px 8px;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
+  .bud2-cols .num{text-align:right}
+  .bud2-r{padding:11px 2px;border-top:1px solid var(--line)}
+  .bud2-r .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .bcat{font-weight:500;display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden;text-overflow:ellipsis}
+  .bsp{font-weight:600}
+  .bbud{color:var(--faint)}
+  .bbud .dollar{opacity:.45;margin-right:1px}
+  .bbud input{width:66px;border:none;background:transparent;color:var(--faint);font:inherit;text-align:right;font-variant-numeric:tabular-nums;outline:none;border-bottom:1px solid transparent;padding:0}
+  .bbud input:focus{color:var(--text);border-bottom-color:var(--blue)}
+  .bbud input::placeholder{color:var(--faint);opacity:.45}
+  .dl{font-size:13px;font-variant-numeric:tabular-nums}
+  .dl.over{color:var(--over)}
+  .dl.under,.dl.flat,.dl.none{color:var(--faint)}
+  .bcaret{cursor:pointer;color:var(--faint);transition:transform .12s;display:inline-block;font-size:15px;line-height:1}
+  .bcaret.open{transform:rotate(90deg)}
+  .bsubs{padding-left:14px}
+  .bud2-r.bsub{border-top:1px dashed var(--line)}
+  .bud2-r.bsub .bcat{font-weight:400;color:var(--muted)}
+  .bud2-untrk-head{padding:13px 2px;border-top:1px solid var(--line);margin-top:8px;color:var(--muted);cursor:pointer;font-size:13px;font-weight:500}
+  .bud2-untrk-head .utot{text-align:right;font-variant-numeric:tabular-nums;color:var(--muted)}
+  .bud2-r.untrk .bcat{font-weight:400;color:var(--muted)}
+  .bud2-empty{padding:16px 2px;color:var(--faint);font-size:13px}
+  /* per-row progress bar (calm: neutral fill, one accent for over) */
+  .bbar{height:3px;background:var(--panel2);border-radius:3px;overflow:hidden;margin:-2px 2px 10px}
+  .bbar>span{display:block;height:100%;border-radius:3px;background:var(--line2)}
+  .bbar>span.over{background:var(--over)}
+  .bsubs .bbar{margin-left:16px}
+  /* group dividers */
+  .bgrp{font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--faint);padding:16px 2px 4px}
+  .bgrp.attn{color:var(--over)}
+  /* range view: read-only period budget + monthly hint */
+  .bbud .permo{font-size:10.5px;color:var(--faint);margin-left:6px;font-variant-numeric:tabular-nums}
+  .bbud .bperiod{font-variant-numeric:tabular-nums}
+  /* "in progress (under)" tag on the period label */
+  .inprog{color:var(--over);font-size:11px;margin-left:7px;white-space:nowrap}
+  /* per-row remove (−) affordance — reveal on row hover */
+  .bcat-rm{margin-left:auto;flex:none;width:18px;height:18px;border-radius:5px;border:1px solid transparent;background:none;color:var(--faint);font-size:15px;line-height:1;cursor:pointer;opacity:0;transition:.12s;display:grid;place-items:center}
+  .bud2-r:hover .bcat-rm{opacity:.6}
+  .bcat-rm:hover{opacity:1;border-color:var(--over);color:var(--over)}
+  /* remove-category modal bits */
+  .rm-note{font-size:12.5px;color:var(--muted);line-height:1.5;padding:6px 0 12px}
+  .rm-row{display:flex;align-items:center;gap:10px;padding:10px 0;font-size:13px;border-top:1px solid var(--line)}
+  .rm-row label{color:var(--muted)} .rm-row select{flex:1;font:inherit;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px 10px;outline:none}
+  .rm-sum{font-size:12.5px;color:var(--muted);padding:10px 0 2px;min-height:18px} .rm-sum b{color:var(--text)}
+  .rm-go{font:inherit;font-weight:700;font-size:13px;background:var(--over);color:#08111f;border:none;border-radius:9px;padding:9px 16px;cursor:pointer}
+  .rm-go:disabled{opacity:.55;cursor:default}
+  .addcat-in{font:inherit;font-size:14px;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:9px;padding:10px 12px;outline:none;width:100%}
+  .addcat-in:focus{border-color:var(--blue)}
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="dot"></span> budget&nbsp;buddy</h1>
+  <div class="seg" id="timeframe">
+    <button data-tf="last1">1M</button>
+    <button data-tf="last3">3M</button>
+    <button data-tf="last6">6M</button>
+    <button data-tf="last12">1Y</button>
+    <button data-tf="all" class="active">All</button>
+  </div>
+  <select id="month" title="jump to a month"></select>
+  <span class="right muted" id="status" style="font-size:12px"></span>
+</header>
+
+<main>
+  <div class="tabs" id="tabs">
+    <button data-tab="overview" class="active">Overview</button>
+    <button data-tab="charts">Charts</button>
+    <button data-tab="budgets">Budgets</button>
+    <button data-tab="upload">Upload</button>
+  </div>
+  <div id="tab-overview" class="tabpane">
+  <div id="freshness-bar"></div>
+  <div id="intake-bar"></div>
+  <div id="dropped-bar"></div>
+  <div id="dup-bar"></div>
+  <div id="collision-bar"></div>
+  <section id="review-panel" class="panel" style="display:none">
+    <div class="phead"><h2>Quick review — categorize new merchants</h2><button class="x" id="review-done">done</button></div>
+    <p class="muted" style="font-size:12.5px;margin:-6px 0 14px">The AI handled the rest. Pick a category for each — it's remembered for next time.</p>
+    <table id="review-list"></table>
+  </section>
+
+  <section class="hero">
+    <div class="stat"><div class="label">Spent</div><div class="value" id="c-spend">—</div><div class="sub" id="c-mom"></div></div>
+    <div class="stat"><div class="label">Income</div><div class="value" id="c-income" style="color:var(--green)">—</div><div class="sub" id="c-period"></div></div>
+    <div class="stat"><div class="label">Net saved</div><div class="value" id="c-net">—</div><div class="sub" id="c-rate"></div></div>
+  </section>
+
+  <div class="cols3">
+    <section class="panel">
+      <h2 style="margin-bottom:16px">Where your money goes</h2>
+      <div id="cats"><div class="empty">loading…</div></div>
+    </section>
+    <section class="panel">
+      <h2 style="margin-bottom:16px">Where your money comes from</h2>
+      <div id="income"><div class="empty">loading…</div></div>
+    </section>
+    <section class="panel">
+      <h2 style="margin-bottom:8px">Ways to save</h2>
+      <div id="insights"></div>
+    </section>
+  </div>
+
+  </div>
+
+  <div id="tab-charts" class="tabpane" hidden>
+    <section class="panel">
+      <div class="phead">
+        <h2>Spend vs income</h2>
+        <div class="legend"><span><i style="background:#5b9bff"></i>Spend</span><span><i style="background:#4ade80"></i>Income</span></div>
+      </div>
+      <canvas id="trend" height="60"></canvas>
+    </section>
+  </div>
+
+  <div id="tab-budgets" class="tabpane" hidden>
+    <section class="bud2">
+      <div class="bud2-head">
+        <div class="bud2-title"><h2>Budgets</h2><div class="bud2-period" id="budget-period"></div></div>
+        <div class="bud2-actions">
+          <button class="x" id="add-category" title="Add a new spend category (available everywhere)">＋ Category</button>
+          <button class="x" id="budget-wizard-btn" title="Guided setup — pre-filled from your last 3 months">⚙ Set up</button>
+          <button class="x" id="tidy-merchants" title="Collapse a vendor's many bank spellings into one">🧹 Tidy names</button>
+          <button class="x" id="suggest-all" title="Fill empty targets from your 3-month average">✨ Suggest targets</button>
+        </div>
+      </div>
+      <div class="bud2-summary" id="bud-summary"></div>
+      <div class="bud2-insight" id="bud-insight"></div>
+      <div id="normalize-review"></div>
+      <div class="bud2-cols"><span>Category</span><span class="num">Budget</span><span class="num">Spent</span><span class="num">+ / −</span></div>
+      <div id="bud-tracked"></div>
+      <div id="bud-untracked"></div>
+    </section>
+  </div>
+
+  <div id="tab-upload" class="tabpane" hidden>
+    <section class="panel">
+      <h2 style="margin-bottom:8px">Upload a Wells Fargo export</h2>
+      <p class="muted" style="font-size:13px;margin:0 0 18px">
+        Choose a file you downloaded from Wells Fargo (<b>.csv</b>, <b>.ofx</b>, or <b>.qfx</b>).
+        It imports straight away — duplicates are caught and new merchants get auto-categorized.
+        Everything stays on this machine.</p>
+      <div class="drop" id="drop">
+        <input type="file" id="upload-input" accept=".csv,.ofx,.qfx,.qbo" hidden>
+        <div class="dz-ico">⬆</div>
+        <div class="dz-t" id="dz-name">Drop a file here, or <span class="dz-link">choose one</span></div>
+        <div class="dz-d muted">CSV is treated as one account — for multiple accounts use OFX/QFX.</div>
+      </div>
+      <button id="upload-go" disabled style="margin-top:16px">Upload &amp; import</button>
+      <div id="upload-result" style="margin-top:14px"></div>
+    </section>
+  </div>
+</main>
+
+<script>
+// ── API bearer auth (design §3.6) ────────────────────────────────────────────
+// When the server runs behind Traefik it gates /api/* on a bearer token. The
+// browser holds the token ONLY in localStorage (entered out-of-band, one time
+// per device) and attaches it to every /api request. The token is never baked
+// into any served HTML/JS (I7). Contract: a 401 (missing/invalid) re-prompts;
+// a 403 (raw-intake disabled in this deployment) surfaces as a normal error and
+// does NOT re-prompt. On a loopback dev server with no token set, /api returns
+// 200 without a header and this code is a no-op.
+const _TOKKEY = 'lbbApiToken';
+let _apiToken = localStorage.getItem(_TOKKEY) || '';
+function _promptToken(){
+  const t = window.prompt('Enter the budget API token (one time per device):', '');
+  if(t && t.trim()){ _apiToken = t.trim(); localStorage.setItem(_TOKKEY, _apiToken); }
+  return _apiToken;
+}
+const _rawFetch = window.fetch.bind(window);
+window.fetch = async (input, init) => {
+  init = init ? {...init} : {};
+  const url = typeof input === 'string' ? input : (input && input.url) || '';
+  const isApi = url.indexOf('/api') !== -1;
+  const withAuth = h => _apiToken ? {...(h||{}), 'Authorization': 'Bearer ' + _apiToken} : (h||{});
+  if(isApi) init.headers = withAuth(init.headers);
+  let r = await _rawFetch(input, init);
+  if(isApi && r.status === 401){
+    // Only the first concurrent 401 prompts; later ones see the refreshed token
+    // and just retry (prompt() blocks the single JS thread, so this is race-free).
+    const sent = (init.headers || {})['Authorization'];
+    if(!(_apiToken && ('Bearer ' + _apiToken) !== sent)) _promptToken();
+    if(_apiToken){ init.headers = withAuth(init.headers); r = await _rawFetch(input, init); }
+  }
+  return r;
+};
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt = c => (c<0?'-':'')+'$'+Math.abs(Math.round(c/100)).toLocaleString('en-US');
+const fmt2 = c => (c<0?'-':'')+'$'+Math.abs(c/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+const api = async p => { const r=await fetch('/api'+p); if(!r.ok) throw new Error((await r.json()).detail||r.status); return r.json(); };
+let trendChart, scope='all';
+const TF={all:'all time',last1:'last month',last3:'last 3 months',last6:'last 6 months',last12:'last 12 months'};
+
+// ── tabs (Overview / Charts) ─────────────────────────────────────────────────
+let activeTab='overview', pendingResize=null;
+function setTab(t){
+  activeTab=t;
+  closeModal();   // CA-1: a drill modal belongs to Overview's scope-at-open — never strand it over another tab
+  document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('active',b.dataset.tab===t));
+  $('#tab-overview').hidden = t!=='overview';
+  $('#tab-charts').hidden = t!=='charts';
+  $('#tab-upload').hidden = t!=='upload';
+  $('#tab-budgets').hidden = t!=='budgets';
+  renderActive();   // render the newly-activated tab with the current scope
+}
+// Single dispatcher: BOTH setScope and setTab funnel here so every tab follows
+// the global `scope`. The Charts trend chart is FIXED (scope-independent —
+// monthly_trend is hardcoded LIMIT 24 and built in render()), so its branch only
+// RAF-resizes the existing chart (a canvas just-un-hidden lays out at 0×0; defer
+// past layout flush and re-read trendChart inside the RAF so render()'s
+// destroy/rebuild can't leave us resizing a stale chart — M1).
+function renderActive(){
+  if(activeTab==='overview') return render();
+  if(activeTab==='budgets')  return renderBudgets();
+  if(activeTab==='charts'){
+    if(pendingResize) cancelAnimationFrame(pendingResize);
+    pendingResize=requestAnimationFrame(()=>{ pendingResize=null; if(trendChart) trendChart.resize(); });
+  }
+  // 'upload' is scope-independent → no-op
+}
+
+async function loadMonths(){
+  const ms=await api('/months'); const sel=$('#month'); sel.innerHTML='';
+  const o=(v,t)=>{const e=document.createElement('option');e.value=v;e.textContent=t;sel.appendChild(e);};
+  o('','Month…'); (ms.length?ms:[new Date().toISOString().slice(0,7)]).forEach(m=>o(m,m));
+}
+function setScope(s,seg){ scope=s;
+  closeModal();   // close-on-scope-change (S-A): the open modal was fetched at the old scope
+  document.querySelectorAll('#timeframe button').forEach(b=>b.classList.toggle('active',seg&&b.dataset.tf===s));
+  if(seg) $('#month').value='';
+  renderActive();   // re-render whichever tab is active for the new scope (not just Overview)
+}
+
+async function render(){
+  $('#status').textContent='…';
+  // TOCTOU guard (CA-3): income sources fold per-scope, so clear the bars until the new
+  // fetch resolves — a stale bar must not be clickable mid-re-render.
+  $('#income').innerHTML='<div class="empty">…</div>';
+  const [rep,ins,inc]=await Promise.all([api('/report?month='+scope),api('/insights?month='+scope),api('/income-sources?month='+scope)]);
+  const period = (TF[scope]||scope);
+
+  // hero
+  $('#c-spend').textContent=fmt(rep.spend_total_cents);
+  $('#c-income').textContent=fmt(rep.income_cents);
+  $('#c-period').textContent=period;
+  if(rep.prev_month){ const d=rep.mom_delta_cents;
+    $('#c-mom').innerHTML=`<span style="color:${d>0?'var(--red)':'var(--green)'}">${d>=0?'▲':'▼'} ${fmt(Math.abs(d))}</span> vs last month`;
+  } else $('#c-mom').textContent=period;
+  const net=rep.income_cents-rep.spend_total_cents;
+  $('#c-net').textContent=fmt(net);
+  $('#c-net').style.color = net<0?'var(--red)':'var(--text)';
+  $('#c-rate').textContent = rep.income_cents>0 ? Math.round(net/rep.income_cents*100)+'% of income saved' : '';
+
+  // trend
+  const tr=rep.trend||[];
+  if(pendingResize){ cancelAnimationFrame(pendingResize); pendingResize=null; }  // M1: don't resize a chart we're about to destroy
+  if(trendChart) trendChart.destroy();
+  trendChart=new Chart($('#trend'),{type:'bar',data:{labels:tr.map(x=>x.month),datasets:[
+    {label:'Spend',data:tr.map(x=>x.spend_cents/100),backgroundColor:'#5b9bff',borderRadius:4,maxBarThickness:20},
+    {label:'Income',data:tr.map(x=>(x.income_cents||0)/100),backgroundColor:'#4ade80',borderRadius:4,maxBarThickness:20}]},
+    options:{plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>c.dataset.label+': $'+Math.round(c.raw).toLocaleString()}}},
+    scales:{x:{ticks:{color:'#8593a8',maxRotation:0,autoSkip:true,maxTicksLimit:13,font:{size:11}},grid:{display:false}},
+            y:{ticks:{color:'#8593a8',callback:v=>'$'+(v>=1000?(v/1000)+'k':v),font:{size:11}},grid:{color:'rgba(44,53,67,.45)'},border:{display:false}}},
+    onClick:(e,el)=>{if(el.length){const m=tr[el[0].index].month; $('#month').value=m; setScope(m,false); setTab('overview');}}}});  // S-B: drill into the month AND show it on Overview
+
+  // where money goes — ranked bars (top 8 are clickable; index 8+ fold into "Other")
+  const cats=Object.entries(rep.spend_by_category).sort((a,b)=>b[1]-a[1]);
+  const total=rep.spend_total_cents||1;
+  const top=cats.slice(0,8), rest=cats.slice(8).reduce((s,c)=>s+c[1],0);
+  let html=top.map(([c,v])=>`<div class="catrow clickable" data-cat="${esc(c)}"><div class="top"><b>${esc(c)}</b><span class="amt">${fmt(v)}<span class="pct">${Math.round(v/total*100)}%</span></span></div><div class="track"><span style="width:${Math.max(2,v/total*100)}%"></span></div></div>`).join('');
+  if(rest>0) html+=`<div class="catrow"><div class="top"><b class="muted">Other</b><span class="amt">${fmt(rest)}<span class="pct">${Math.round(rest/total*100)}%</span></span></div><div class="track"><span style="width:${rest/total*100}%;background:var(--line2)"></span></div></div>`;
+  $('#cats').innerHTML=html||'<div class="empty">no spending in this period</div>';
+  document.querySelectorAll('#cats .catrow.clickable').forEach(r=>r.onclick=()=>openCategory(r.dataset.cat));
+
+  // where money comes from — income source bars (green); top-6 real (clickable) + "Other sources" fold (not)
+  const itotal=inc.reduce((s,r)=>s+r.total_cents,0)||1;
+  let ihtml=inc.map(r=>{
+    const pct=Math.round(r.total_cents/itotal*100), w=Math.max(2,r.total_cents/itotal*100);
+    const lbl=r.other?`<b class="muted">${esc(r.source)}</b>`:`<b>${esc(r.source)}</b>`;
+    const attrs=r.other?'':` clickable" data-src="${esc(r.source)}`;   // real sources clickable; fold has no data-src
+    return `<div class="catrow${attrs}"><div class="top">${lbl}<span class="amt">${fmt(r.total_cents)}<span class="pct">${pct}%</span></span></div><div class="track income"><span style="width:${w}%${r.other?';background:var(--line2)':''}"></span></div></div>`;
+  }).join('');
+  $('#income').innerHTML=ihtml||'<div class="empty">no income in this period</div>';
+  document.querySelectorAll('#income .catrow.clickable').forEach(r=>r.onclick=()=>openSource(r.dataset.src));
+
+  // ways to save
+  $('#insights').innerHTML = ins.length ? ins.map(renderInsight).join('') : '<div class="empty">looking good — no flags this period</div>';
+  $('#status').textContent='';
+}
+
+function renderInsight(i){
+  if(i.kind==='over_budget') return row('warn','⚠',`Over budget: ${esc(i.label)}`,`${fmt2(i.actual_cents)} of ${fmt2(i.limit_cents)} limit`, fmt(i.amount_cents)+' over');
+  if(i.kind==='subscriptions') return row('sub','🔁',esc(i.label),'recurring — cancel any you don\'t use', fmt(i.amount_cents)+'/mo');
+  // reduce
+  return row('cut','💸',esc(i.label),`${fmt(i.monthly_cents)}/mo — discretionary, easiest to trim`, fmt(i.amount_cents));
+}
+// t/d are pre-escaped by the caller.
+function row(cls,ico,t,d,v){
+  return `<div class="ins"><div class="ico ${cls}">${ico}</div><div class="body"><div class="t">${t}</div><div class="d">${d}</div></div><div class="v">${v}</div></div>`;
+}
+
+// ── category drill-down modal (§2) ───────────────────────────────────────────
+let modalEl=null;
+let wizardOpen=false;        // wizard re-entrancy guard (cleared by closeModal)
+let wizardAutoSeen=false;    // auto-open the setup wizard at most once per page load
+function modalEsc(e){ if(e.key==='Escape') closeModal(); }
+function closeModal(){ if(modalEl){ modalEl.remove(); modalEl=null; document.removeEventListener('keydown',modalEsc); } wizardOpen=false; }
+// Shared sign-aware drill modal. `fetchPath` is the caller-built, encodeURIComponent'd
+// path WITHOUT the /api prefix (api() adds it + unwraps .detail). `timeframe` is the
+// header label only. {income} flips ONLY the footer net sign (income amounts are positive).
+async function openDrill(title, timeframe, fetchPath, opts){
+  const income = !!(opts && opts.income);
+  closeModal();
+  let rows; try{ rows=await api(fetchPath); }
+  catch(e){ alert(e.message); return; }
+  const mk=(tag,cls,txt)=>{ const e=document.createElement(tag); if(cls)e.className=cls; if(txt!=null)e.textContent=txt; return e; };
+  const back=mk('div','modal-back');
+  const m=mk('div','modal');
+  const head=mk('div','mhead');
+  head.append(mk('h3',null,title), mk('span','sub',timeframe));   // textContent — XSS-safe
+  const x=mk('button','x','×'); x.style.marginLeft='auto'; x.onclick=closeModal;
+  head.appendChild(x);
+  const body=mk('div','mbody');
+  let net=0;
+  if(!rows.length){ body.appendChild(mk('div','empty','no transactions in this period')); }
+  rows.forEach(r=>{ net+=r.amount_cents;
+    const row=mk('div','trow');
+    row.append(
+      mk('span','m',r.merchant_norm||'(merchant)'),
+      mk('span','d',r.posted_date),
+      mk('span','a'+(r.amount_cents>0?' credit':''),fmt2(r.amount_cents)));   // row sign auto: positive→green .credit
+    body.appendChild(row);
+  });
+  m.append(head,body);
+  if(rows.length){
+    const foot=mk('div','mfoot');
+    foot.append(
+      mk('span','muted',rows.length+' transaction'+(rows.length!==1?'s':'')),
+      mk('span','net','Net '+(income?fmt(net):fmt(-net))));   // income positive→fmt(net); spend negative→fmt(-net)
+    m.appendChild(foot);
+  }
+  back.appendChild(m);
+  back.onclick=e=>{ if(e.target===back) closeModal(); };
+  document.body.appendChild(back); modalEl=back;
+  document.addEventListener('keydown',modalEsc);
+}
+function openCategory(cat){ openDrill(cat, TF[scope]||scope, '/transactions?category='+encodeURIComponent(cat)+'&month='+scope, {income:false}); }
+function openSource(src){ openDrill(src, TF[scope]||scope, '/income-transactions?source='+encodeURIComponent(src)+'&month='+scope, {income:true}); }
+
+document.querySelectorAll('#tabs button').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
+document.querySelectorAll('#timeframe button').forEach(b=>b.onclick=()=>setScope(b.dataset.tf,true));
+$('#month').onchange=()=>{ if($('#month').value) setScope($('#month').value,false); };
+
+// ── intake ──────────────────────────────────────────────────────────────────
+let SPEND_CATS = [];
+async function checkInbox(){
+  let p; try{ p = await api('/inbox'); }catch(e){ return; }   // zero-network, counts only
+  showFreshness(p.last_import_at);
+  let html='';
+  if(p.new_files>0)
+    html += `<div class="intake"><div><div class="t">${p.new_files} new file${p.new_files>1?'s':''} ready to import</div><div class="d">From your inbox folder — dedup &amp; auto-categorize</div><span class="note">CSV files are treated as a single account — for multiple accounts use OFX/QFX exports.</span></div><button id="do-import">Import now</button></div>`;
+  else if(p.needs_review>0)
+    html += `<div class="intake"><div><div class="t">${p.needs_review} merchant${p.needs_review>1?'s':''} need a category</div><div class="d">The AI handled the rest — a quick review locks them in</div></div><button id="do-review">Review →</button></div>`;
+  $('#intake-bar').innerHTML = html;
+  const imp=$('#do-import'); if(imp) imp.onclick=runImport;
+  const rev=$('#do-review'); if(rev) rev.onclick=openReview;
+}
+// ── freshness banner: when was data last imported? warn if > 15 days ─────────
+// last_import_at is a DATE (not PII) from /api/inbox. Subtle when fresh; an amber
+// warning + "Upload" CTA when stale (>15 days) or when nothing has been imported.
+const STALE_DAYS = 15;
+function showFreshness(last){
+  const bar=$('#freshness-bar'); if(!bar) return;
+  if(!last){
+    bar.className='fresh stale';
+    bar.innerHTML=`<span class="dotw"></span><span>No transactions imported yet — upload your first Wells Fargo export to get started.</span><button id="fresh-up">Upload</button>`;
+    $('#fresh-up').onclick=()=>setTab('upload'); return;
+  }
+  const d=new Date(last); const days=Math.floor((Date.now()-d.getTime())/86400000);
+  const nice=d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+  const ago = days<=0?'today':days===1?'yesterday':days+' days ago';
+  if(days>STALE_DAYS){
+    bar.className='fresh stale';
+    bar.innerHTML=`<span class="dotw"></span><span><b>${days} days</b> since your last import (${nice}). Upload a fresh export to keep your numbers current.</span><button id="fresh-up">Upload</button>`;
+    $('#fresh-up').onclick=()=>setTab('upload');
+  }else{
+    bar.className='fresh';
+    bar.innerHTML=`<span class="dotw"></span><span>Last updated ${nice} · ${ago}</span>`;
+  }
+}
+
+// Shared handling of an /api/intake/run result (used by "Import now" AND Upload).
+async function applyIntakeResult(d){
+  await render(); await checkInbox(); await checkConflicts();
+  // Surface malformed/unrecoverable rows that were NOT imported (red-team F1):
+  // good rows still imported, but these specific charges could not be read and
+  // were dropped — must never be silent. Count only, no filename/row content.
+  showDropped(d.dropped_rows||0);
+  if(d.needs_review>0) openReview();
+}
+async function runImport(){
+  const btn=$('#do-import'); btn.textContent='importing…'; btn.disabled=true;
+  try{
+    const r = await fetch('/api/intake/run',{method:'POST'}); const d = await r.json();
+    if(!d.ran){ alert(d.reason||'busy'); btn.disabled=false; btn.textContent='Import now'; return; }
+    await applyIntakeResult(d);
+  }catch(e){ alert(e.message); btn.disabled=false; btn.textContent='Import now'; }
+}
+
+// ── upload tab: send the chosen file, then run intake ────────────────────────
+let uploadFile=null;
+function pickFile(f){
+  uploadFile=f||null;
+  $('#dz-name').innerHTML = f ? esc(f.name) : 'Drop a file here, or <span class="dz-link">choose one</span>';
+  $('#upload-go').disabled = !f;
+  $('#upload-result').innerHTML='';
+}
+async function uploadAndImport(){
+  if(!uploadFile) return;
+  const go=$('#upload-go'); go.disabled=true; go.textContent='uploading…';
+  const res=$('#upload-result');
+  try{
+    const up=await fetch('/api/upload?name='+encodeURIComponent(uploadFile.name),
+      {method:'POST',headers:{'content-type':'application/octet-stream'},body:uploadFile});
+    if(!up.ok){ res.innerHTML=`<div class="empty" style="color:var(--red)">${esc((await up.json()).detail||'upload failed')}</div>`;
+      go.disabled=false; go.textContent='Upload & import'; return; }
+    go.textContent='importing…';
+    const r=await fetch('/api/intake/run',{method:'POST'}); const d=await r.json();
+    if(!d.ran){ res.innerHTML=`<div class="empty">${esc(d.reason||'busy')}</div>`; go.disabled=false; go.textContent='Upload & import'; return; }
+    // build a friendly result line (counts only — never filename/rows)
+    const bits=[];
+    if(d.new_transactions>0) bits.push(`<b>${d.new_transactions}</b> new transaction${d.new_transactions>1?'s':''}`);
+    if(d.deduped>0) bits.push(`${d.deduped} already had`);
+    if(d.possible_duplicates>0) bits.push(`${d.possible_duplicates} possible duplicate${d.possible_duplicates>1?'s':''} to review`);
+    if(d.dropped_rows>0) bits.push(`${d.dropped_rows} row${d.dropped_rows>1?'s':''} unreadable`);
+    if(d.files_quarantined>0) bits.push(`not a recognized Wells Fargo export`);
+    res.innerHTML = (d.files_imported>0 || d.deduped>0)
+      ? `<div class="intake"><div><div class="t">✓ Imported</div><div class="d">${bits.join(' · ')||'nothing new'}</div></div></div>`
+      : `<div class="intake warn"><div><div class="t">Nothing imported</div><div class="d">${bits.join(' · ')||'that file wasn\'t a recognized Wells Fargo export'}</div></div></div>`;
+    await applyIntakeResult(d);
+    pickFile(null); go.textContent='Upload & import';
+  }catch(e){ res.innerHTML=`<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`; go.disabled=false; go.textContent='Upload & import'; }
+}
+(function wireUpload(){
+  const drop=$('#drop'), input=$('#upload-input');
+  if(!drop) return;
+  drop.onclick=()=>input.click();
+  input.onchange=()=>pickFile(input.files[0]);
+  drop.addEventListener('dragover',e=>{e.preventDefault();drop.classList.add('over');});
+  drop.addEventListener('dragleave',()=>drop.classList.remove('over'));
+  drop.addEventListener('drop',e=>{e.preventDefault();drop.classList.remove('over');pickFile(e.dataTransfer.files[0]);});
+  $('#upload-go').onclick=uploadAndImport;
+})();
+
+// ── dropped-rows banner (red-team F1) ────────────────────────────────────────
+// Non-silent surface for malformed/unrecoverable export rows that were NOT
+// imported (good rows still imported). Count only — no filename / row content.
+function showDropped(n){
+  if(!(n>0)){ $('#dropped-bar').innerHTML=''; return; }
+  $('#dropped-bar').innerHTML =
+    `<div class="intake warn"><div><div class="t">${n} transaction row${n>1?'s':''} could not be read</div>`
+    + `<div class="d">Malformed amount/date in your export — these were NOT imported. The rest imported fine; check the file.</div></div>`
+    + `<button class="x" id="dropped-dismiss" style="margin-left:auto">dismiss</button></div>`;
+  $('#dropped-dismiss').onclick=()=>{ $('#dropped-bar').innerHTML=''; };
+}
+
+// ── possible-duplicate banner (red-team F-1 / unified F1+S1) ──────────────────
+// Count-led, dismissable banner backed by the EXISTING /api/conflicts endpoint
+// (sanitized — merchant_norm + amounts/dates only, never raw payee/filename).
+// Because the importer now flags INCLUSIVELY (both halves of an undecidable
+// possible-dup are always posted so the spend total is ALWAYS correct), an
+// over-flag must be HARMLESS: the default action keeps both rows.
+//   • "Not a duplicate" (mark_distinct) — easy/default, leaves BOTH posted → total
+//     stays correct. This is the primary, non-destructive button.
+//   • "Remove duplicate" (keep_one) — DESTRUCTIVE (deletes a charge). Gated behind
+//     an explicit confirm() that spells out the merchant + BOTH amount·date sides
+//     so the user can SEE a real reformat-dup vs two distinct same-brand charges
+//     before any deletion.
+// M3: the dismissal is keyed to the CURRENT open-conflict id set — if NEW possible
+// duplicates appear after a dismiss, the banner re-shows (dismissal isn't sticky).
+let dupDismissKey=null, dupExpanded=false;
+function dupKey(dups){ return dups.map(d=>d.conflict_id).sort((a,b)=>a-b).join(','); }
+async function checkConflicts(){
+  let rows; try{ rows = await api('/conflicts'); }catch(e){ return; }
+  const dups = rows.filter(r=>r.kind==='near_duplicate');
+  const collisions = rows.filter(r=>r.kind==='fitid_collision');
+  if(!dups.length){ $('#dup-bar').innerHTML=''; dupDismissKey=null; renderCollisions(collisions); return; }
+  const key = dupKey(dups);
+  // M3: reset the dismissed state whenever the open-conflict set changes.
+  if(dupDismissKey!==null && dupDismissKey!==key){ dupDismissKey=null; }
+  if(dupDismissKey===key){ $('#dup-bar').innerHTML=''; return; }
+  const n=dups.length;
+  let html=`<div class="intake warn"><div><div class="t">${n} possible duplicate charge${n>1?'s':''}</div><div class="d">A re-download may have double-counted a charge — both still count, so your total is correct. Review below.</div></div>`
+    + `<button id="dup-toggle">${dupExpanded?'Hide':'Review'}</button>`
+    + `<button class="x" id="dup-dismiss" style="margin-left:8px">dismiss</button></div>`;
+  if(dupExpanded){
+    html += '<div class="duplist">' + dups.map(d=>{
+      // Both rows share account+date+cents by construction, so the MERCHANT strings
+      // are the only signal distinguishing a real reformat-dup from two distinct
+      // same-brand charges — show BOTH (existing vs incoming).
+      const exMerch = d.existing_merchant||d.merchant||'(merchant)';
+      const inMerch = d.incoming_merchant||d.merchant||'(merchant)';
+      const exSide = `${fmt2(d.existing_amount_cents)} · ${d.existing_posted_date}`;
+      const inSide = `${fmt2(d.incoming_amount_cents)} · ${d.incoming_posted_date}`;
+      return `<div class="duprow">`
+        + `<span class="m">${esc(exMerch)} <span class="pair">vs</span> ${esc(inMerch)}</span>`
+        + `<span class="pair">${exSide} ↔ ${inSide}</span>`
+        + `<span class="btns">`
+        + `<button class="x primary" data-cid="${d.conflict_id}" data-act="mark_distinct">Not a duplicate</button>`
+        + `<button class="x danger" data-cid="${d.conflict_id}" data-act="keep_one"`
+        + ` data-exm="${encodeURIComponent(exMerch)}" data-inm="${encodeURIComponent(inMerch)}"`
+        + ` data-ex="${encodeURIComponent(exSide)}" data-in="${encodeURIComponent(inSide)}">Remove duplicate</button>`
+        + `</span></div>`;
+    }).join('') + '</div>';
+  }
+  $('#dup-bar').innerHTML=html;
+  $('#dup-toggle').onclick=()=>{ dupExpanded=!dupExpanded; checkConflicts(); };
+  $('#dup-dismiss').onclick=()=>{ dupDismissKey=dupKey(dups); $('#dup-bar').innerHTML=''; };
+  document.querySelectorAll('#dup-bar [data-cid]').forEach(b=>{
+    b.onclick=async()=>{
+      // DESTRUCTIVE keep_one needs an explicit confirm showing both sides; the safe
+      // mark_distinct (both rows stay posted) proceeds immediately.
+      if(b.dataset.act==='keep_one'){
+        const exm=decodeURIComponent(b.dataset.exm), inm=decodeURIComponent(b.dataset.inm),
+              ex=decodeURIComponent(b.dataset.ex), inc=decodeURIComponent(b.dataset.in);
+        if(!confirm(`Permanently DELETE one of these charges?\n\n  A:  ${exm}\n        ${ex}\n  B:  ${inm}\n        ${inc}\n\nOnly do this if they are the SAME charge re-downloaded. If the two merchant names above are two distinct charges, choose "Not a duplicate" instead — both already count correctly.`)){
+          return;
+        }
+      }
+      b.disabled=true;
+      try{
+        await fetch('/api/reconcile',{method:'POST',headers:{'content-type':'application/json'},
+          body:JSON.stringify({conflict_id:Number(b.dataset.cid),action:b.dataset.act})});
+        await render(); await checkConflicts();   // spend total refreshes after a resolve
+      }catch(e){ alert(e.message); b.disabled=false; }
+    };
+  });
+  renderCollisions(collisions);
+}
+
+// ── fitid_collision banner (M2) ──────────────────────────────────────────────
+// A same-FITID row whose amount/date materially CHANGED (a real conflict needing
+// a decision, but it inserts nothing and never mis-counts). Previously only
+// reachable via `budget reconcile`; surface it here with its two real actions:
+//   • "Keep existing" = keep_one (non-destructive: leaves the existing row as-is)
+//   • "Use the changed values" = accept_incoming (DESTRUCTIVE: overwrites the
+//     existing row's amount/date) — confirm()-gated, both sides shown.
+// Sanitized fields only (merchant_norm + amounts/dates), same as the dup-bar.
+function renderCollisions(cols){
+  if(!cols.length){ $('#collision-bar').innerHTML=''; return; }
+  const n=cols.length;
+  let html=`<div class="intake warn"><div><div class="t">${n} changed charge${n>1?'s':''} need a decision</div>`
+    + `<div class="d">A re-download reports a different amount/date for a charge already imported. Pick which value is right.</div></div></div>`;
+  html += '<div class="duplist">' + cols.map(c=>{
+    const merch = c.existing_merchant||c.merchant||'(merchant)';
+    const exSide = `${fmt2(c.existing_amount_cents)} · ${c.existing_posted_date}`;
+    const inSide = `${fmt2(c.incoming_amount_cents)} · ${c.incoming_posted_date}`;
+    return `<div class="duprow">`
+      + `<span class="m">${esc(merch)}</span>`
+      + `<span class="pair">was ${exSide} → now ${inSide}</span>`
+      + `<span class="btns">`
+      + `<button class="x primary" data-ccid="${c.conflict_id}" data-cact="keep_one">Keep existing</button>`
+      + `<button class="x danger" data-ccid="${c.conflict_id}" data-cact="accept_incoming"`
+      + ` data-cm="${encodeURIComponent(merch)}" data-cex="${encodeURIComponent(exSide)}"`
+      + ` data-cin="${encodeURIComponent(inSide)}">Use the changed values</button>`
+      + `</span></div>`;
+  }).join('') + '</div>';
+  $('#collision-bar').innerHTML=html;
+  document.querySelectorAll('#collision-bar [data-ccid]').forEach(b=>{
+    b.onclick=async()=>{
+      // accept_incoming OVERWRITES the existing amount/date → confirm with both sides;
+      // keep_one (leave existing untouched) proceeds immediately.
+      if(b.dataset.cact==='accept_incoming'){
+        const m=decodeURIComponent(b.dataset.cm), ex=decodeURIComponent(b.dataset.cex),
+              inc=decodeURIComponent(b.dataset.cin);
+        if(!confirm(`OVERWRITE the imported charge with the changed values?\n\n  ${m}\n  was:  ${ex}\n  now:  ${inc}\n\nOnly do this if the new amount/date is the correct one.`)){
+          return;
+        }
+      }
+      b.disabled=true;
+      try{
+        await fetch('/api/reconcile',{method:'POST',headers:{'content-type':'application/json'},
+          body:JSON.stringify({conflict_id:Number(b.dataset.ccid),action:b.dataset.cact})});
+        await render(); await checkConflicts();
+      }catch(e){ alert(e.message); b.disabled=false; }
+    };
+  });
+}
+async function openReview(){
+  if(!SPEND_CATS.length){ try{ SPEND_CATS = await api('/categories'); }catch(e){} }
+  const ms = await api('/merchants?limit=200&only_uncertain=true');
+  if(!ms.length){ $('#review-panel').style.display='none'; await checkInbox(); return; }
+  // SPEND_CATS already includes the builtin 'Random' (from /api/categories); only add
+  // the two structural manual-recategorize options. (Don't re-list 'Random' — it would
+  // double-list, and a removed 'Random' must not reappear.)
+  const allcats = SPEND_CATS.concat(['Transfer','Income']);
+  $('#review-list').innerHTML =
+    '<tr><th>Merchant</th><th class="num">#</th><th class="num">Spent</th><th>Category</th></tr>' +
+    ms.map(m=>{
+      const cur = m.category||'Uncategorized';
+      const opts = (allcats.includes(cur)?allcats:[cur,...allcats]).map(c=>`<option ${c===cur?'selected':''}>${c}</option>`).join('');
+      return `<tr><td>${esc(m.merchant)}</td><td class="num">${m.count}</td><td class="num">${fmt(m.spent_cents)}</td><td><select data-m="${encodeURIComponent(m.merchant)}">${opts}</select></td></tr>`;
+    }).join('');
+  $('#review-panel').style.display='';
+  $('#review-panel').scrollIntoView({behavior:'smooth'});
+  document.querySelectorAll('#review-list select').forEach(sel=>{
+    sel.onchange=async()=>{ sel.disabled=true;
+      try{ await fetch('/api/merchant-category',{method:'POST',headers:{'content-type':'application/json'},
+        body:JSON.stringify({merchant:decodeURIComponent(sel.dataset.m),category:sel.value})}); }catch(e){ alert(e.message); }
+      sel.disabled=false; await render(); }; });
+}
+$('#review-done').onclick=async()=>{ $('#review-panel').style.display='none'; await render(); await checkInbox(); };
+
+// ── budgets tab: zero-based envelopes ────────────────────────────────────────
+let budgetExpanded = {};   // category -> sub-rows expanded (persists across renders)
+let untrackedOpen = false; // "Untracked spending" section expanded
+const dol = c => c==null?'':(c/100).toFixed(2).replace(/\.00$/,'');   // cents -> plain dollars, no commas (round-trips through cents_from_amount_str)
+const bnum = c => (c<0?'-':'')+Math.abs(Math.round(c/100)).toLocaleString('en-US');   // clean dollars, no symbol, signed
+function postJSON(path, body){
+  return fetch(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})
+    .then(async r=>{ if(!r.ok) throw new Error((await r.json()).detail||'error'); return r.json(); });
+}
+// ── Budgets tab (redesigned): numbers-first, "track what matters" ────────────
+// Tracked = categories you've given a target (budget_cents set). They lead the
+// view, sorted by spend. Categories with spend but NO target fold into a quiet
+// "Untracked spending" line — no zero-based pressure to allocate every dollar.
+let budFactor=1;   // period multiplier for the active scope (1 = single month)
+let budCats=[];    // last-rendered category payload (for the remove/merge modal preview)
+function budgetDelta(spent, budget){
+  if(budget==null) return '<span class="dl none">—</span>';
+  const d=spent-budget;            // budget here is the PERIOD budget (monthly × factor)
+  return d>0 ? `<span class="dl over">+${bnum(d)}</span>`
+       : d<0 ? `<span class="dl under">${bnum(d)}</span>`
+       : '<span class="dl flat">0</span>';
+}
+// Budget cell. Editing always sets a MONTHLY target, and is offered only in a
+// single-month view (factor 1) so units stay consistent and a save never jumps.
+// In a range, the cell is read-only: PERIOD budget (matches Spent/+−) + a "/mo" hint.
+function budCell(cat, sub, o){
+  const m=o.monthly_budget_cents, attrs=`data-budcat="${esc(cat)}"${sub?` data-budsub="${esc(sub)}"`:''}`;
+  if(budFactor===1)
+    return `<div class="num bbud"><span class="dollar">$</span><input inputmode="decimal" ${attrs} placeholder="set" value="${dol(m)}"></div>`;
+  return m==null
+    ? `<div class="num bbud"><span class="permo">—</span></div>`
+    : `<div class="num bbud" title="$${dol(m)}/mo × ${budFactor} months"><span class="bperiod">${bnum(o.budget_cents)}</span><span class="permo">$${dol(m)}/mo</span></div>`;
+}
+function budgetBar(o){
+  if(o.budget_cents==null) return '';
+  const pct=Math.min(100,Math.max(0,o.pct==null?0:o.pct));
+  return `<div class="bbar"><span class="${o.over?'over':''}" style="width:${pct}%"></span></div>`;
+}
+function budgetRow(c, cls){
+  const hasSubs=c.subcategories.length>0, open=!!budgetExpanded[c.category];
+  const caret=hasSubs?`<span class="bcaret ${open?'open':''}" data-toggle="${esc(c.category)}">›</span>`:'';
+  let h=`<div class="bud2-r${cls?' '+cls:''}" data-cat="${esc(c.category)}">`
+    +`<div class="bcat">${caret}${esc(c.category)}`
+      +`<button class="bcat-rm" data-rmcat="${esc(c.category)}" title="Remove — merge into another category">−</button></div>`
+    +budCell(c.category, null, c)
+    +`<div class="num bsp">${bnum(c.spent_cents)}</div>`
+    +`<div class="num">${budgetDelta(c.spent_cents, c.budget_cents)}</div></div>`
+    +budgetBar(c);
+  if(open && hasSubs){
+    h+='<div class="bsubs">'+c.subcategories.map(s=>`<div class="bud2-r bsub">`
+      +`<div class="bcat">${esc(s.subcategory)}</div>`
+      +budCell(c.category, s.subcategory, s)
+      +`<div class="num bsp">${bnum(s.spent_cents)}</div>`
+      +`<div class="num">${budgetDelta(s.spent_cents, s.budget_cents)}</div></div>`
+      +budgetBar(s)).join('')+'</div>';
+  }
+  return h;
+}
+async function renderBudgets(){
+  let b; try{ b=await api('/budgets?month='+scope); }
+  catch(e){ $('#bud-tracked').innerHTML=`<div class="bud2-empty">${esc(e.message)}</div>`; return; }
+  budFactor = b.factor || 1;
+  budCats = b.categories;
+  // Ranges review COMPLETED months (live month excluded). The "in progress (under)" tag
+  // shows only when the single selected month IS the current month.
+  const curmon = new Date().toISOString().slice(0,7);
+  const tag = (scope===curmon) ? ' <span class="inprog">in progress · under</span>' : '';
+  $('#budget-period').innerHTML = esc(TF[scope]||scope) + tag;
+  const cats=b.categories;
+  const tracked   = cats.filter(c=>c.budget_cents!=null);
+  const untracked = cats.filter(c=>c.budget_cents==null && c.spent_cents!==0).sort((a,c)=>c.spent_cents-a.spent_cents);
+  // needs attention (over) first, by amount over desc; then on track, by % of budget used desc.
+  const over = tracked.filter(c=>c.over).sort((a,c)=>(c.spent_cents-c.budget_cents)-(a.spent_cents-a.budget_cents));
+  const onTrack = tracked.filter(c=>!c.over).sort((a,c)=>(c.pct||0)-(a.pct||0) || c.spent_cents-a.spent_cents);
+  const budgeted = tracked.reduce((s,c)=>s+c.budget_cents,0);
+  const tspent   = tracked.reduce((s,c)=>s+c.spent_cents,0);
+  const uspent   = untracked.reduce((s,c)=>s+c.spent_cents,0);
+  const overTot  = over.reduce((s,c)=>s+(c.spent_cents-c.budget_cents),0);
+  const cell=(k,v,c)=>`<div class="bud2-s"><div class="sk">${k}</div><div class="sv${c?' '+c:''}">${bnum(v)}</div></div>`;
+  const remaining = budgeted - tspent;   // budget triad: coherent in any period (period totals)
+  $('#bud-summary').innerHTML = cell('Budgeted', budgeted)+cell('Spent', tspent)
+    +cell(remaining<0?'Over':'Remaining', Math.abs(remaining), remaining<0?'neg':'');
+  $('#bud-insight').innerHTML = !tracked.length
+    ? 'No targets yet — set one on any line below, or tap <b>Set up</b> for a guided start.'
+    : over.length
+      ? `<b>${over.length}</b> of ${tracked.length} tracked ${over.length===1?'category is':'categories are'} over, by <b>${bnum(overTot)}</b> total.`
+      : `All <b>${tracked.length}</b> tracked categories are within budget. ✓`;
+  $('#bud-tracked').innerHTML = !tracked.length
+    ? '<div class="bud2-empty">No tracked categories yet — set a target on a line below.</div>'
+    : (over.length ? '<div class="bgrp attn">needs attention</div>'+over.map(c=>budgetRow(c,'')).join('')
+        +(onTrack.length?'<div class="bgrp">on track</div>':'') : '')
+      + onTrack.map(c=>budgetRow(c,'')).join('');
+  let ut='';
+  if(untracked.length){
+    ut=`<div class="bud2-untrk-head" id="untrk-toggle">`
+      +`<span class="bcat"><span class="bcaret ${untrackedOpen?'open':''}">›</span>Untracked spending</span>`
+      +`<span></span><span class="num utot">${bnum(uspent)}</span><span></span></div>`;
+    if(untrackedOpen) ut+=untracked.map(c=>budgetRow(c,'untrk')).join('');
+  }
+  $('#bud-untracked').innerHTML = ut;
+  wireBudget();
+  // First-run: a brand-new, never-onboarded budget auto-opens the setup wizard once.
+  if(!b.onboarded && b.expected_income_cents===0 && b.total_budgeted_cents===0 && !wizardAutoSeen){
+    wizardAutoSeen=true; openBudgetWizard();
+  }
+}
+function wireBudget(){
+  document.querySelectorAll('#tab-budgets [data-toggle]').forEach(c=>
+    c.onclick=()=>{ budgetExpanded[c.dataset.toggle]=!budgetExpanded[c.dataset.toggle]; renderBudgets(); });
+  const ut=$('#untrk-toggle'); if(ut) ut.onclick=()=>{ untrackedOpen=!untrackedOpen; renderBudgets(); };
+  document.querySelectorAll('#tab-budgets input[data-budcat]').forEach(inp=>{
+    inp.onchange=async()=>{
+      const cat=inp.dataset.budcat, sub=inp.dataset.budsub, amt=inp.value.trim();
+      inp.disabled=true;
+      try{
+        if(sub) await postJSON('/api/subcategory-budget',{category:cat,subcategory:sub,amount:amt});
+        else await postJSON('/api/limits',{category:cat,amount:amt});
+        await renderBudgets(); await render();   // refresh budgets + Overview "ways to save"
+      }catch(e){ alert(e.message); inp.disabled=false; }
+    };
+  });
+  document.querySelectorAll('#tab-budgets .bcat-rm').forEach(btn=>
+    btn.onclick=(e)=>{ e.stopPropagation(); openRemoveCategory(btn.dataset.rmcat); });
+}
+
+// ── add a category (global vocabulary) ───────────────────────────────────────
+const PROTECTED_CATS = ['Income','Transfer','Uncategorized','Random'];  // never a remove/merge target
+function catsAfterRefresh(list){ SPEND_CATS = list || []; }   // keep the recategorize picker fresh
+$('#add-category').onclick=()=>{
+  const mk=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e;};
+  const back=mk('div','modal-back'), m=mk('div','modal');
+  const head=mk('div','mhead'); head.append(mk('h3',null,'Add a category'), mk('span','sub','available everywhere'));
+  const xb=mk('button','x','×'); xb.style.marginLeft='auto'; xb.onclick=closeModal; head.appendChild(xb);
+  const body=mk('div','mbody');
+  const inp=mk('input','addcat-in'); inp.placeholder='Category name'; inp.maxLength=40;
+  body.append(mk('div','rm-note','New spend categories are available for budgeting, categorization, reports and the agent.'), inp);
+  const foot=mk('div','wiz-foot'); const save=mk('button','wiz-save','Add');
+  const doSave=async()=>{ const name=inp.value.trim(); if(!name) return;
+    save.disabled=true; try{ const r=await postJSON('/api/add-category',{name}); catsAfterRefresh(r.categories);
+      closeModal(); await renderBudgets(); }catch(e){ alert(e.message); save.disabled=false; } };
+  save.onclick=doSave; inp.onkeydown=e=>{ if(e.key==='Enter') doSave(); if(e.key==='Escape') closeModal(); };
+  foot.appendChild(save);
+  m.append(head,body,foot); back.appendChild(m); back.onclick=e=>{ if(e.target===back) closeModal(); };
+  document.body.appendChild(back); modalEl=back; document.addEventListener('keydown',modalEsc);
+  setTimeout(()=>inp.focus(),30);
+};
+
+// ── remove a category by MERGING it into another ─────────────────────────────
+function openRemoveCategory(cat){
+  const mk=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e;};
+  const removed = budCats.find(c=>c.category===cat) || {monthly_budget_cents:null};
+  const targets = budCats.map(c=>c.category)
+    .filter(c=>c!==cat && !PROTECTED_CATS.includes(c)).sort();
+  if(!targets.length){ alert('No other category to merge into — add one first.'); return; }
+  const back=mk('div','modal-back'), m=mk('div','modal');
+  const head=mk('div','mhead'); head.append(mk('h3',null,'Remove '+cat), mk('span','sub','merge into another category'));
+  const xb=mk('button','x','×'); xb.style.marginLeft='auto'; xb.onclick=closeModal; head.appendChild(xb);
+  const body=mk('div','mbody');
+  body.append(mk('div','rm-note','Its transactions, rules and budget move to the category you pick — history is kept, nothing is lost. This can’t be auto-undone.'));
+  const row=mk('div','rm-row'); row.append(mk('label',null,'Merge into'));
+  const sel=mk('select'); targets.forEach(t=>{ const o=mk('option',null,t); o.value=t; sel.appendChild(o); });
+  row.appendChild(sel); body.appendChild(row);
+  const sum=mk('div','rm-sum'); body.appendChild(sum);
+  const updateSum=()=>{ const t=budCats.find(c=>c.category===sel.value)||{};
+    const a=removed.monthly_budget_cents, b2=t.monthly_budget_cents;
+    sum.innerHTML = (a!=null && b2!=null)
+      ? `<b>${esc(sel.value)}</b> budget will become <b>$${bnum(a+b2)}/mo</b> ($${bnum(b2)} + $${bnum(a)}).`
+      : (a!=null ? `<b>${esc(sel.value)}</b> will take ${cat}’s <b>$${bnum(a)}/mo</b> budget.` : '');
+  };
+  sel.onchange=updateSum; updateSum();
+  const foot=mk('div','wiz-foot'); const go=mk('button','rm-go','Remove & merge');
+  go.onclick=async()=>{ go.disabled=true;
+    try{ const r=await postJSON('/api/remove-category',{name:cat,merge_into:sel.value});
+      catsAfterRefresh(r.categories); closeModal(); await renderBudgets(); await render(); }
+    catch(e){ alert(e.message); go.disabled=false; } };
+  foot.appendChild(go);
+  m.append(head,body,foot); back.appendChild(m); back.onclick=e=>{ if(e.target===back) closeModal(); };
+  document.body.appendChild(back); modalEl=back; document.addEventListener('keydown',modalEsc);
+}
+$('#suggest-all').onclick=async()=>{
+  const btn=$('#suggest-all'); btn.disabled=true; const old=btn.textContent; btn.textContent='…';
+  try{ await postJSON('/api/budgets/suggest',{}); await renderBudgets(); await render(); }
+  catch(e){ alert(e.message); }
+  btn.disabled=false; btn.textContent=old;
+};
+
+// ── budget setup wizard (zero-based, single smart screen) ────────────────────
+// Live-meter parse. The AUTHORITATIVE parse is server-side on save
+// (cents_from_amount_str), which rejects anything malformed — but the meter MUST
+// agree with the server on the value it WILL persist, or the user approves a
+// budget different from what gets saved. So we mirror the server's separator
+// rules: "," + "." → "," is thousands; "," alone with exactly 2 trailing digits
+// → decimal (European cents, e.g. 19,99 = $19.99); "," alone otherwise →
+// thousands. Matches money.py's _EURO_CENTS (^[+-]?\d+,\d{2}$).
+const wizCents = v => {
+  let s = String(v).replace(/[$\s]/g,'');
+  if(!s) return 0;
+  if(s.includes(',') && s.includes('.')) s = s.replace(/,/g,'');
+  else if(s.includes(',')) s = /^[+-]?\d+,\d{2}$/.test(s) ? s.replace(',', '.') : s.replace(/,/g,'');
+  const n = parseFloat(s);
+  return isNaN(n) ? 0 : Math.round(n*100);
+};
+async function openBudgetWizard(){
+  if(wizardOpen) return;
+  wizardOpen=true;   // claim BEFORE the await — closes the re-entrancy window where a
+                     // second call (auto-open in flight + button click) could stack modals
+  let b; try{ b=await api('/budgets?month=all'); }catch(e){ wizardOpen=false; alert(e.message); return; }
+  closeModal(); wizardOpen=true;   // closeModal() clears wizardOpen; re-assert after it
+  const mk=(tag,cls,txt)=>{ const e=document.createElement(tag); if(cls)e.className=cls; if(txt!=null)e.textContent=txt; return e; };
+  const back=mk('div','modal-back'), m=mk('div','modal');
+  const head=mk('div','mhead');
+  head.append(mk('h3',null,'Set up your budget'), mk('span','sub','zero-based · give every dollar a job'));
+  const x=mk('button','x','×'); x.style.marginLeft='auto'; x.onclick=closeModal; head.appendChild(x);
+  const body=mk('div','mbody');
+  body.appendChild(mk('div','wiz-intro',
+    'Give every dollar of your monthly income a job. We pre-filled each category from your last 3 months — tweak anything, then save. You can change it any time.'));
+
+  // income (prefill: current expected, else 3-mo-avg suggestion)
+  const incCents = b.expected_income_cents || b.suggested_income_cents || 0;
+  const incRow=mk('div','wiz-inc'); incRow.appendChild(mk('span',null,'Monthly income'));
+  const incWrap=mk('span','wiz-wrap inc-wrap'); incWrap.appendChild(mk('span',null,'$'));
+  const incInput=mk('input'); incInput.inputMode='decimal'; incInput.placeholder='0';
+  incInput.value = incCents?dol(incCents):''; incWrap.appendChild(incInput); incRow.appendChild(incWrap);
+
+  // live "left to allocate" meter
+  const meter=mk('div','wiz-meter');
+  meter.appendChild(mk('div','wiz-left-lbl','Left to allocate'));
+  const leftVal=mk('div','wiz-left'); meter.appendChild(leftVal);
+  const hint=mk('div','wiz-hint'); meter.appendChild(hint);
+  const bar=mk('div','wiz-bar'), barFill=mk('span'); bar.appendChild(barFill); meter.appendChild(bar);
+
+  // category rows (prefill: current budget, else 3-mo-avg suggestion)
+  const inputs=[]; const rows=mk('div');
+  b.categories.forEach(c=>{
+    const row=mk('div','wiz-row');
+    row.appendChild(mk('span','wc',c.category));
+    if(c.suggested_cents) row.appendChild(mk('span','ws','avg '+fmt(c.suggested_cents)+'/mo'));
+    const wrap=mk('span','wiz-wrap'); wrap.appendChild(mk('span',null,'$'));
+    const inp=mk('input'); inp.inputMode='decimal'; inp.placeholder='0';
+    // MONTHLY only — budgets are monthly. Never the period figure (budget_cents =
+    // monthly × factor), which would over-allocate the monthly-income meter.
+    const pre = c.monthly_budget_cents!=null ? c.monthly_budget_cents : (c.suggested_cents||0);
+    inp.value = pre?dol(pre):''; inp.dataset.cat=c.category;
+    wrap.appendChild(inp); row.appendChild(wrap); rows.appendChild(row); inputs.push(inp);
+  });
+
+  const foot=mk('div','wiz-foot');
+  const skip=mk('button','wiz-skip','Skip for now');
+  skip.onclick=async()=>{ try{ await postJSON('/api/budgets/onboarded',{}); }catch(e){ console.warn('onboarded dismiss failed', e); } closeModal(); };
+  const save=mk('button','wiz-save','Looks good — save');
+  save.onclick=async()=>{
+    save.disabled=true; const old=save.textContent; save.textContent='saving…';
+    const limits={}; inputs.forEach(i=>{ limits[i.dataset.cat]=i.value.trim(); });
+    try{
+      await postJSON('/api/budgets/setup',{income:incInput.value.trim(), limits});
+      closeModal(); await renderBudgets(); await render();
+    }catch(e){ alert(e.message); save.disabled=false; save.textContent=old; }
+  };
+  foot.append(skip, save);
+
+  function recompute(){
+    const inc=wizCents(incInput.value);
+    let sum=0; inputs.forEach(i=>sum+=wizCents(i.value));
+    const left=inc-sum;
+    leftVal.textContent=(left<0?'-':'')+'$'+Math.abs(Math.round(left/100)).toLocaleString('en-US');
+    leftVal.className='wiz-left '+(inc===0?'':left===0?'ok':left>0?'left':'over');
+    barFill.style.width=(inc>0?Math.max(0,Math.min(100,Math.round(sum/inc*100))):0)+'%';
+    barFill.className=left===0&&inc>0?'ok':left<0?'over':'';
+    hint.textContent = inc<=0?'Enter your monthly income to start.'
+      : left>0?'still to assign — keep going'
+      : left<0?'over-allocated — trim a category'
+      : 'every dollar has a job ✓';
+    save.disabled = inc<=0;   // a zero-based setup requires a positive income (server 400s otherwise)
+  }
+  incInput.oninput=recompute; inputs.forEach(i=>i.oninput=recompute);
+
+  body.append(incRow, meter, rows);
+  m.append(head,body,foot); back.appendChild(m);
+  back.onclick=e=>{ if(e.target===back) closeModal(); };
+  document.body.appendChild(back); modalEl=back;
+  document.addEventListener('keydown',modalEsc);
+  recompute();
+}
+$('#budget-wizard-btn').onclick=()=>openBudgetWizard();
+
+// ── tidy up merchant names (canonical vendor identity) ───────────────────────
+// Built-in brands + cached aliases collapse deterministically (no AI). The POST
+// returns {batch_id, txns_updated, budgets_merged}; the undo button reverts it.
+$('#tidy-merchants').onclick=async()=>{
+  const btn=$('#tidy-merchants'); btn.disabled=true; const old=btn.textContent; btn.textContent='tidying…';
+  try{
+    const r=await postJSON('/api/normalize',{});
+    renderNormalizeReview([], r);
+    await renderBudgets(); await render();
+  }catch(e){ alert(e.message); }
+  finally{ btn.disabled=false; btn.textContent=old; }
+};
+function renderNormalizeReview(groups, summary){
+  const box=$('#normalize-review');
+  let head='';
+  if(summary){
+    const bits=[];
+    if(summary.txns_updated>0) bits.push(`tidied ${summary.txns_updated} transaction${summary.txns_updated>1?'s':''}`);
+    if(summary.budgets_merged>0) bits.push(`merged ${summary.budgets_merged} sub-budget${summary.budgets_merged>1?'s':''}`);
+    head=`<div class="intake"><div><div class="t">✓ Merchant names tidied</div><div class="d">${bits.join(' · ')||'already tidy'}</div></div><button class="x" id="tidy-undo" style="margin-left:auto">undo</button></div>`;
+  }
+  box.innerHTML=head;
+  const u=$('#tidy-undo'); if(u) u.onclick=async()=>{ try{ await postJSON('/api/normalize/undo',{}); box.innerHTML=''; await renderBudgets(); await render(); }catch(e){ alert(e.message);} };
+}
+
+// deep-link a tab via URL hash (#overview / #charts / #budgets / #upload)
+// Init: render() runs ONCE unconditionally — it is the sole builder of the trend
+// chart (a cross-tab artifact), so a #charts/#budgets deep-link still gets it
+// (S-1/M-A). Then switch to the deep-linked tab only when it isn't Overview
+// (already rendered + visible). One redundant Overview render on a non-overview
+// deep-link is harmless (idempotent, scope='all').
+(async()=>{
+  await loadMonths();
+  // Default to the newest month WITH DATA (not all-time): budgets are monthly, so a
+  // single month vs its targets reconciles, whereas all-time sums per-category
+  // averages that don't add up. /api/months lists only months that have transactions,
+  // so months[0] is the current month once it has activity, else the last month that
+  // does. Click "All" for lifetime, or pick any month from the dropdown.
+  const months=[...$('#month').querySelectorAll('option[value]:not([value=""])')].map(o=>o.value);
+  if(months.length){
+    scope=months[0]; $('#month').value=scope;
+    document.querySelectorAll('#timeframe button').forEach(x=>x.classList.remove('active'));
+  } else { scope='all'; }
+  await render();
+  const hash=location.hash;
+  if(['#charts','#budgets','#upload'].includes(hash)) setTab(hash.slice(1));
+  await checkInbox(); await checkConflicts();
+})();
+</script>
+</body>
+</html>

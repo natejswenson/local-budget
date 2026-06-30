@@ -1,0 +1,149 @@
+{
+  "scenarios": {
+    "budget-budgets__granted": {
+      "did_write": true,
+      "has_sections": false,
+      "invention_rate": 0.0,
+      "n_currency_figures": 0,
+      "tools": [
+        "set_budget_limit"
+      ]
+    },
+    "budget-budgets__overview": {
+      "did_write": false,
+      "has_sections": false,
+      "invention_rate": 0.0,
+      "n_currency_figures": 0,
+      "tools": [
+        "budget_overview"
+      ]
+    },
+    "budget-budgets__ungranted": {
+      "did_write": false,
+      "has_sections": false,
+      "invention_rate": 0.0,
+      "n_currency_figures": 0,
+      "tools": [
+        "budget_overview"
+      ]
+    },
+    "budget-categorize__granted": {
+      "did_write": true,
+      "has_sections": false,
+      "invention_rate": 0.0,
+      "n_currency_figures": 0,
+      "tools": [
+        "set_merchant_category"
+      ]
+    },
+    "budget-categorize__ungranted": {
+      "did_write": false,
+      "has_sections": false,
+      "invention_rate": 0.0,
+      "n_currency_figures": 0,
+      "tools": [
+        "review_queue"
+      ]
+    },
+    "budget-coach__spend": {
+      "did_write": false,
+      "has_sections": false,
+      "invention_rate": 0.0,
+      "n_currency_figures": 0,
+      "tools": [
+        "get_category_breakdown"
+      ]
+    },
+    "budget-coach__top_merchants": {
+      "did_write": false,
+      "has_sections": false,
+      "invention_rate": 0.0,
+      "n_currency_figures": 0,
+      "tools": [
+        "top_merchants"
+      ]
+    },
+    "budget-income__by_source": {
+      "did_write": false,
+      "has_sections": false,
+      "invention_rate": 0.0,
+      "n_currency_figures": 0,
+      "tools": [
+        "income_by_source"
+      ]
+    },
+    "budget-monthly-brief__june_brief": {
+      "did_write": false,
+      "has_sections": true,
+      "invention_rate": 0.0,
+      "n_currency_figures": 0,
+      "tools": [
+        "get_month_summary",
+        "insights"
+      ]
+    },
+    "budget-reconcile__conflicts": {
+      "did_write": false,
+      "has_sections": false,
+      "invention_rate": 0.0,
+      "n_currency_figures": 0,
+      "tools": [
+        "open_conflicts"
+      ]
+    },
+    "budget-setup__granted": {
+      "did_write": true,
+      "has_sections": false,
+      "invention_rate": 0.0,
+      "n_currency_figures": 0,
+      "tools": [
+        "set_expected_income"
+      ]
+    },
+    "budget-setup__overview": {
+      "did_write": false,
+      "has_sections": false,
+      "invention_rate": 0.0,
+      "n_currency_figures": 0,
+      "tools": [
+        "get_month_summary"
+      ]
+    },
+    "budget-setup__ungranted": {
+      "did_write": false,
+      "has_sections": false,
+      "invention_rate": 0.0,
+      "n_currency_figures": 0,
+      "tools": [
+        "get_month_summary"
+      ]
+    },
+    "budget-subscriptions__granted": {
+      "did_write": true,
+      "has_sections": false,
+      "invention_rate": 0.0,
+      "n_currency_figures": 0,
+      "tools": [
+        "split_subscriptions"
+      ]
+    },
+    "budget-subscriptions__list": {
+      "did_write": false,
+      "has_sections": false,
+      "invention_rate": 0.0,
+      "n_currency_figures": 0,
+      "tools": [
+        "recurring_charges"
+      ]
+    },
+    "budget-subscriptions__ungranted": {
+      "did_write": false,
+      "has_sections": false,
+      "invention_rate": 0.0,
+      "n_currency_figures": 0,
+      "tools": [
+        "recurring_charges"
+      ]
+    }
+  }
+}
