@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "budget": {
+      "command": "uv",
+      "args": ["run", "budget-mcp"]
+    }
+  }
+}

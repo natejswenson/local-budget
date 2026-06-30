@@ -1,0 +1,58 @@
+# ── Financial data — NEVER commit (load-bearing; see design §7.3) ──
+# The DB and ALL raw inputs live under data/ — ignoring the directory
+# covers budget.db, agent.db, their -wal/-shm sidecars, and any export.
+data/
+briefings/
+logs/
+backups/
+
+# Belt-and-suspenders: raw bank exports anywhere
+*.ofx
+*.OFX
+*.qfx
+*.QFX
+*.qbo
+*.ofx.download
+*.qfx.download
+
+# Local secrets / env-specific config
+.env
+.env.local
+
+# Host-specific rendered launchd plist (install-intake-watch.sh renders absolute
+# paths into this from the committed .template — the rendered output is not portable)
+ops/*.plist.rendered
+
+# ── Python ──
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.venv/
+
+# Test / coverage / lint artifacts
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+
+# Claude Code local runtime state
+.claude/*
+!.claude/skills/
+
+# OS / editor cruft
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Git worktrees (isolated workspaces, never tracked)
+.worktrees/
+
+# Phase-5 evals: seeded scratch DB + raw live transcripts (the committed
+# tests/evals/transcripts/ mock corpus + baseline.json are tracked; these are not)
+tests/evals/.evaldb/
+tests/evals/.runs/

@@ -1,0 +1,5 @@
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t0", "name": "mcp__budget__get_month_summary", "input": {"month": "2026-06"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t0", "content": "## get_month_summary\n| Category | Spent |\n| --- | ---: |\n| Groceries | $42.00 |\n| Dining Out | $18.50 |", "is_error": false}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "mcp__budget__insights", "input": {"month": "2026-06"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "## insights\n| Category | Spent |\n| --- | ---: |\n| Groceries | $42.00 |\n| Dining Out | $18.50 |", "is_error": false}]}}
+{"type": "result", "subtype": "success", "result": "## Spent\n## Where it goes\n## Ways to save\nGroceries and dining were the biggest categories \u2014 all figures from the tools above.\nHere's what your budget data shows, pulled straight from the tools.", "is_error": false}

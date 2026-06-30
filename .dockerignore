@@ -1,0 +1,42 @@
+# Keep personal financial data OUT of the build context. `docker build` tars the
+# ENTIRE context to the daemon regardless of what the Dockerfile COPYs, so this
+# is the load-bearing control that stops budget.db ever entering an image. [I4]
+.git
+.gitignore
+
+# Financial data + generated artifacts — NEVER in an image
+data
+briefings
+logs
+backups
+*.ofx
+*.OFX
+*.qfx
+*.QFX
+*.qbo
+
+# Local secrets / host-specific config
+.env
+.env.local
+ops/*.plist.rendered
+
+# Python / tooling cruft (rebuilt inside the container)
+.venv
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.ruff_cache
+.coverage
+.coverage.*
+htmlcov
+
+# Editor / OS / scratch
+.idea
+.vscode
+.DS_Store
+.claude
+spikes
+docs
+tests
