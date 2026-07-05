@@ -89,3 +89,73 @@ def test_get_month_summary_round_trip_rendered_no_pii(data_dir):
     assert "hash-secret-1" not in rendered
     blob = json.dumps(result)
     assert "RAW-OFX-SECRET" not in blob and "hash-secret-1" not in blob
+
+
+def _seed_two_months():
+    """June: one $50 Groceries charge. July: one $30 Groceries charge — enough
+    to tell whether a query is scoped to the right month."""
+    db.init_schema()
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO accounts (account_id, institution, acct_type, acct_last4, acct_hash, created_at) "
+            "VALUES (1, 'WF', 'CHECKING', '1234', 'hash-secret-1', ?)", (db.now_iso(),))
+        conn.execute(
+            "INSERT INTO transactions (account_id, fitid, posted_date, amount_cents, status, "
+            "txn_type, payee, memo, merchant_norm, category, category_source, raw_ofx, imported_at) "
+            "VALUES (1, 'G-JUN', '2026-06-15', -5000, 'posted', 'DEBIT', 'WALMART', 'memo', "
+            "'WALMART', 'Groceries', 'rule', 'RAW-OFX-SECRET', ?)", (db.now_iso(),))
+        conn.execute(
+            "INSERT INTO transactions (account_id, fitid, posted_date, amount_cents, status, "
+            "txn_type, payee, memo, merchant_norm, category, category_source, raw_ofx, imported_at) "
+            "VALUES (1, 'G-JUL', '2026-07-15', -3000, 'posted', 'DEBIT', 'WALMART', 'memo', "
+            "'WALMART', 'Groceries', 'rule', 'RAW-OFX-SECRET', ?)", (db.now_iso(),))
+
+
+def test_query_transactions_month_scopes_to_that_month_only(data_dir):
+    _seed_two_months()
+    result = asyncio.run(agent_tools.SPEC_BY_NAME["query_transactions"].handler(
+        {"category": "Groceries", "month": "2026-06"}))
+    rows = result["data"]["rows"]
+    assert len(rows) == 1
+    assert rows[0]["posted_date"] == "2026-06-15"
+    assert "$30.00" not in result["rendered"]
+
+
+def test_query_transactions_month_wins_when_days_also_given(data_dir):
+    _seed_two_months()
+    # A `days` value that alone would reach back into June must be ignored
+    # entirely once `month` is given — the July charge must not contaminate.
+    result = asyncio.run(agent_tools.SPEC_BY_NAME["query_transactions"].handler(
+        {"category": "Groceries", "month": "2026-07", "days": 365}))
+    rows = result["data"]["rows"]
+    assert len(rows) == 1
+    assert rows[0]["posted_date"] == "2026-07-15"
+
+
+def test_top_merchants_data_carries_resolved_month(data_dir):
+    _seed_two_months()
+    result = asyncio.run(agent_tools.SPEC_BY_NAME["top_merchants"].handler({"month": "2026-06"}))
+    assert result["data"]["month"] == "2026-06"
+    assert "Row" not in result["rendered"]  # bars() has no header row at all
+
+
+def test_get_month_summary_dict_order_matches_numbered_bars_order(data_dir):
+    """Architecture §2's sub-invariant: row N of the numbered bars() output must
+    equal the Nth entry of data["spend_by_category"] in dict-insertion order —
+    checkable, not assumed, since both are built from the same sorted() call."""
+    _seed()
+    result = asyncio.run(agent_tools.SPEC_BY_NAME["get_month_summary"].handler({"month": "2026-06"}))
+    dict_order = list(result["data"]["spend_by_category"].keys())
+    bars_lines = [ln for ln in result["rendered"].splitlines() if ln and ln[0].isdigit()]
+    bars_order = [ln.split(". ", 1)[1].split("  ")[0] for ln in bars_lines]
+    assert dict_order == bars_order
+
+
+def test_get_category_breakdown_row_column_does_not_collide_with_count_column(data_dir):
+    """Row (the new drill-down index) and # (the pre-existing transaction count)
+    must both appear as distinct headers — the whole reason Row was chosen
+    instead of reusing #."""
+    _seed()
+    result = asyncio.run(agent_tools.SPEC_BY_NAME["get_category_breakdown"].handler({"month": "2026-06"}))
+    header_line = result["rendered"].splitlines()[1]
+    assert "| Row | Category | Spent | # |" == header_line

@@ -1,7 +1,7 @@
 ---
 name: budget-subscriptions
 description: Audit recurring charges and subscriptions — price creep, splits, limits. Confirm each write.
-tools: [recurring_charges, subcategory_breakdown, get_category_breakdown, split_subscriptions, set_budget_limit]
+tools: [recurring_charges, subcategory_breakdown, get_category_breakdown, query_transactions, split_subscriptions, set_budget_limit]
 ---
 
 # Budget Subscriptions
