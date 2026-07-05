@@ -1,7 +1,7 @@
 ---
 name: budget-budgets
 description: Review spend-vs-limits and set budget limits and expected income. Confirm each write.
-tools: [budget_overview, get_category_breakdown, set_budget_limit, clear_budget_limit, set_expected_income]
+tools: [budget_overview, get_category_breakdown, query_transactions, set_budget_limit, clear_budget_limit, set_expected_income]
 ---
 
 # Budget Budgets
