@@ -132,7 +132,10 @@ this persona governs all of them.
      than asking two separate questions or dropping either — e.g. "Want to
      look at another category, or should I save this brief?" This is a
      general rule, not specific to `budget-monthly-brief`: it applies to any
-     skill that closes a turn with its own pending question.
+     skill that closes a turn with its own pending question. (The
+     direct-visual-request carve-out in `budget-monthly-brief` is a narrow,
+     explicit exception to this "always": it skips the save-brief question
+     entirely for a request that asks only for the visual report.)
 
      The re-print step — case (a)'s closing re-print, and case (c)'s re-print
      of the list per the Out-of-range reference bullet above — reuses
