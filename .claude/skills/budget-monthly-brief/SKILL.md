@@ -34,9 +34,13 @@ After the save-brief question resolves (yes or no), offer one more thing: "Want
 this as a visual report too?"
 
 If yes: gather (or reuse already-fetched) `get_month_summary`,
-`get_category_breakdown`, `budget_overview`, `find_anomalies`, and
-`recurring_charges` results, then follow **budget-visualizer**'s recipes to build
-one HTML artifact, in this fixed order: stat row → category chart →
+`get_category_breakdown`, `budget_overview`, `find_anomalies`,
+`recurring_charges`, and `query_transactions(month=<period>, limit=500)`
+results — the last call cross-references recurring merchants against the
+reported month for the flags section (see **budget-visualizer** Recipe 4);
+its `rendered` block is internal-only and exempt from **budget-analyst** rule
+2, never printed to the user — then follow **budget-visualizer**'s recipes to
+build one HTML artifact, in this fixed order: stat row → category chart →
 budget-vs-actual meters → flags. Name the scratch file per period (e.g.
 `budget-report-2026-06.html`) so reports for different months in the same session
 don't collide. Publish via the `Artifact` tool. Then ask one cleanup question:
@@ -52,10 +56,13 @@ data, re-render, and publish via a new `Artifact` call (this produces a new URL)
 
 **Direct-visual-request carve-out.** When the request is specifically and only for
 the visual/chart report (e.g. "show me the visual report for June," not a general
-spending question), skip straight to gathering the same 5 tools and rendering the
-artifact — skipping the narrative brief walk and the save-brief question. "Give me
-June's numbers and a chart" does **not** qualify (a numbers request with a visual
-add-on) — that follows the normal flow above. Either way, each gathered tool's
-`rendered` block is still printed verbatim per **budget-analyst** rule 2 — the
-carve-out only skips the narrative synthesis and the save-brief question, not the
-rendered blocks themselves.
+spending question), skip straight to gathering the same 6 tools (including
+`query_transactions(month=<period>, limit=500)` for the recurring-charges
+cross-reference) and rendering the artifact — skipping the narrative brief walk
+and the save-brief question. "Give me June's numbers and a chart" does **not**
+qualify (a numbers request with a visual add-on) — that follows the normal flow
+above. Either way, each gathered tool's `rendered` block is still printed
+verbatim per **budget-analyst** rule 2 — except `query_transactions`' own
+cross-reference call, which is exempt (its `rendered` block is internal-only,
+never printed) — the carve-out only skips the narrative synthesis and the
+save-brief question, not the rendered blocks themselves.
