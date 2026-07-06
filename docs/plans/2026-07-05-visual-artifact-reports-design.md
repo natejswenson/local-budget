@@ -251,7 +251,10 @@ Pins three recipes:
    labeled in the report as **currently-detected recurring charges**
    (as-of-now state, reflecting all data seen so far — not scoped to the
    reported period), rather than implying they're scoped to the reported
-   month. Over-budget categories come from `budget_overview`, which is
+   month. **Superseded:** this "never month-filtered, rendered unfiltered"
+   behavior is replaced by a month-scoped cross-reference — see
+   `docs/plans/2026-07-06-visual-report-fixes-design.md`. Over-budget
+   categories come from `budget_overview`, which is
    already month-scoped, so no filtering is needed for that part of the list
    either. If there are no
    flags at all after filtering (no over-budget categories, no anomalies in
@@ -465,6 +468,9 @@ declaring them anywhere.
   never as a single gate for the whole flags section. It is normal for the
   recurring-charges subsection to be populated (it's never month-filtered)
   while the other two subsections independently show "nothing to flag."
+  **Superseded:** the "never month-filtered, rendered unfiltered" recurring-
+  charges behavior described in this bullet is replaced by a month-scoped
+  cross-reference — see `docs/plans/2026-07-06-visual-report-fixes-design.md`.
 
 ## Out of scope (deliberately)
 
