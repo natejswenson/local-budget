@@ -147,8 +147,14 @@ async def get_month_summary(args: dict, conn) -> dict:
              f"Spent **{render.money(spend_total)}** · Income **{render.money(income)}** · "
              f"Net **{render.money(income - spend_total)}**", ""]
     if spend:
-        lines += ["**Where it goes**", render.bars(sorted(spend.items(), key=lambda kv: kv[1], reverse=True),
-                                                    numbered=True)]
+        pct_total = sum(abs(v) for v in spend.values()) or 1
+        cat_rows = [{"Category": cat, "Spent": render.money(cents),
+                     "%": f"{round(abs(cents) / pct_total * 100)}%"}
+                    for cat, cents in sorted(spend.items(), key=lambda kv: kv[1], reverse=True)]
+        lines += ["**Where it goes**",
+                  render.table(cat_rows, [("Category", "Category"), ("Spent", "Spent"), ("%", "%")],
+                               numbered=True,
+                               drill_hint="Reply with a row number to see that category's transactions.")]
     lines += _flag_lines(conflicts, uncategorized)
     return {"data": data, "rendered": "\n".join(lines)}
 
@@ -165,7 +171,8 @@ async def get_category_breakdown(args: dict, conn) -> dict:
             for r in breakdown]
     rendered = "\n".join([f"## {month} — by category",
                           render.table(disp, [("Category", "Category"), ("Spent", "Spent"), ("#", "#")],
-                                       numbered=True),
+                                       numbered=True,
+                                       drill_hint="Reply with a row number to drill into that category's transaction list."),
                           *_flag_lines(conflicts)])
     return {"data": {"month": month, "breakdown": breakdown, "unresolved_conflicts": conflicts},
             "rendered": rendered}
@@ -223,8 +230,16 @@ async def top_merchants(args: dict, conn) -> dict:
                        "FROM transactions WHERE status = 'posted' AND posted_date LIKE ? "
                        "AND amount_cents < 0 "
                        "GROUP BY merchant_norm ORDER BY spent DESC LIMIT ?", (f"{month}-%", limit))
-    rendered = render.bars([(r["merchant_norm"] or "—", int(r["spent"])) for r in rows],
-                           numbered=True) or "(no spend)"
+    if not rows:
+        rendered = "(no spend)"
+    else:
+        total = sum(abs(int(r["spent"])) for r in rows) or 1
+        disp = [{"Merchant": r["merchant_norm"] or "—", "Spent": render.money(int(r["spent"])),
+                 "%": f"{round(abs(int(r['spent'])) / total * 100)}%", "#": r["n"]} for r in rows]
+        rendered = render.table(
+            disp, [("Merchant", "Merchant"), ("Spent", "Spent"), ("%", "%"), ("#", "#")],
+            numbered=True,
+            drill_hint="Reply with a row number to see that merchant's transactions.")
     return {"data": {"rows": rows, "month": month}, "rendered": f"## Top merchants — {month}\n{rendered}"}
 
 
@@ -256,7 +271,8 @@ async def recurring_charges(_args: dict, conn) -> dict:
              "Months seen": r.get("months"), "Last charge": r.get("last_date")} for r in found]
     rendered = "## Recurring charges\n" + render.table(
         disp, [("Merchant", "Merchant"), ("Amount", "Avg amount"),
-               ("Months seen", "Months seen"), ("Last charge", "Last charge")], numbered=True)
+               ("Months seen", "Months seen"), ("Last charge", "Last charge")], numbered=True,
+        drill_hint="Reply with a row number to see that merchant's transactions.")
     return {"data": {"recurring": found}, "rendered": rendered}
 
 
@@ -459,10 +475,12 @@ async def review_queue(_args: dict) -> dict:
     parts = [
         "## Uncategorized merchants",
         render.table(m_rows, [("Merchant", "Merchant"), ("#", "#"), ("Spent", "Spent")],
-                     numbered=True) if m_rows else "(none)",
+                     numbered=True,
+                     drill_hint="Reply with a row number to categorize that merchant.") if m_rows else "(none)",
         "\n## Checks to review",
         render.table(c_rows, [("Date", "Date"), ("Amount", "Amount"), ("Merchant", "Merchant")],
-                     numbered=True) if c_rows else "(none)",
+                     numbered=True,
+                     drill_hint="Reply with a row number to categorize that transaction.") if c_rows else "(none)",
     ]
     return {"data": {"merchants": merchants, "checks": checks}, "rendered": "\n".join(parts)}
 
