@@ -37,11 +37,12 @@ If yes: gather (or reuse already-fetched) `get_month_summary`,
 `get_category_breakdown`, `budget_overview`, `find_anomalies`,
 `recurring_charges`, and `query_transactions(month=<period>, limit=500)`
 results — the last call cross-references recurring merchants against the
-reported month for the flags section (see **budget-visualizer** Recipe 4);
-its `rendered` block is internal-only and exempt from **budget-analyst** rule
-2, never printed to the user — then follow **budget-visualizer**'s recipes to
-build one HTML artifact, in this fixed order: stat row → category chart →
-budget-vs-actual meters → flags. Name the scratch file per period (e.g.
+reported month for the flags section's subscriptions & recurring bills
+subsection (see **budget-visualizer** Recipe 3); its `rendered` block is
+internal-only and exempt from **budget-analyst** rule 2, never printed to the
+user — then follow **budget-visualizer**'s recipes to build one HTML artifact,
+in this fixed order: stat row → spend-vs-budget chart → flags. Name the
+scratch file per period (e.g.
 `budget-report-2026-06.html`) so reports for different months in the same session
 don't collide. Publish via the `Artifact` tool. Then ask one cleanup question:
 "Want me to delete the local scratch file now, or keep it in case you want

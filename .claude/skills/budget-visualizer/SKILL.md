@@ -68,49 +68,84 @@ values to hold constant — they drift as new transactions post.
    extraction approach uniform across the row. Net's tile text color: `critical`
    (`#d03b3b`) when negative, `good` (`#0ca30c`) when zero or positive.
 
-2. **Category breakdown** — a horizontal bar chart: single hue, sorted descending,
-   hover tooltip, value at the bar tip. Each bar's dollar label is extracted from
-   the "Spent" cell of the corresponding row in `get_category_breakdown`'s rendered
-   table (each row like "| 5 | Groceries | $852.46 | 15 |" — Row, Category, Spent,
-   #) — never reformatted from the raw `spent` cents field.
-
-3. **Budget vs. actual** — one meter per category that has a budget set (not only
-   over/near-limit ones, so the section matches its title even when every budget
-   is healthy). Fill = amount spent; unfilled track = dataviz's "Gridline
-   (hairline)" chart-chrome neutral (light `#e1e0d9` / dark `#2c2c2a`) — never a
-   tint of the fill color, since the fixed Status palette has no tint/step table.
-   Fill color uses three of dataviz's fixed Status palette's four tiers — `good`
-   (`#0ca30c`), `warning` (`#fab219`), `critical` (`#d03b3b`) — `serious` is
-   deliberately unused (only three states needed). The critical tier is keyed to
+2. **Spend vs. budget** — one row per category, combining what used to be two
+   separate displays (a category bar chart and a budget meter) into one. A
+   horizontal bar whose length is that category's dollars spent this month
+   (positive spend only — see below), with a thin (2px) tick mark at the
+   category's budget position when a budget is set. Unfilled track = dataviz's
+   "Gridline (hairline)" chart-chrome neutral (light `#e1e0d9` / dark
+   `#2c2c2a`) — never a tint of the fill color, since the fixed Status palette
+   has no tint/step table. Fill color uses three of dataviz's fixed Status
+   palette's four tiers — `good` (`#0ca30c`), `warning` (`#fab219`), `critical`
+   (`#d03b3b`) — `serious` is deliberately unused. The critical tier is keyed to
    `budget_overview`'s own `over` boolean (exact `spent > budget`, the same flag
    behind its `⚠` marker), not the rounded `pct` field — `pct` only decides
-   warning (`over == False AND pct >= 80`) vs. good (`over == False AND pct < 80`).
-   `pct` drives the fill-width proportion directly (internal layout math); a
-   displayed "% used" label, if shown, is extracted from `budget_overview`'s
-   rendered table's "% used" column cell instead. Categories with no budget set,
-   or an explicitly-set `budget_cents <= 0`, are excluded (nothing to ratio
-   against, and `_pct()` returns `None` for budget <= 0 anyway). If no category has
-   a budget set, render a "no budgets set" placeholder line instead of an empty
-   section.
+   warning (`over == False AND pct >= 80`) vs. good (`over == False AND pct <
+   80`). A category with no budget set at all, or a zero/negative net spend
+   this month, also gets `good` (there's no over-budget signal possible without
+   a budget to compare against, or without positive spend to compare) — this is
+   not a new fourth tier, just the existing `good` color. Trailing text reads
+   `"$spent of $budget · pct%"` for budgeted rows or just `"$spent"` for
+   unbudgeted rows.
 
-4. **Flags list** — a plain text/table block for over-budget categories,
-   anomalies, and recurring-charge flags (icon + label, never color-alone; not a
-   chart, since these are discrete named items). `find_anomalies` returns ~2 years
-   of history, not just the reported month — filter its rows to the reported month
-   before rendering. Over-budget categories come from `budget_overview`, already
-   month-scoped. The three subsections (over-budget, anomalies, recurring charges)
-   are each independently shown-or-omitted based on whether that subsection has
-   rows — not a single all-or-nothing gate. If all three are empty after
-   filtering, render "nothing to flag."
+   **Row set and sourcing.** A category belongs in the row set if its actual
+   spend this month is *positive* (check the value itself — a category whose
+   only transaction(s) net to exactly $0.00 or negative, e.g. an offsetting
+   refund, does not count as positive spend even though `get_category_breakdown`
+   can still return a $0.00/negative row for it) OR it has a budget set
+   (`budget_cents > 0`; `_pct()` already returns `None`/excludes non-positive
+   budgets, so this can't occur live regardless). For a positive-spend row,
+   "$spent" is extracted from `get_category_breakdown`'s rendered table; for a
+   budgeted row with zero or negative net spend, "$spent" is extracted from
+   `budget_overview`'s own rendered "Spent" column instead (which does show
+   $0.00/negative figures for such rows). "$budget" is extracted from
+   `budget_overview`'s rendered "Budget" column; "pct%" from its rendered "%
+   used" column — never recomputed from raw fields. Internal bar-length/scale
+   position math (not displayed text) may read the raw cents fields directly:
+   `get_category_breakdown`'s `data.breakdown[].spent` when a row exists there,
+   else `budget_overview`'s `data.categories[].spent_cents`.
 
-   **Recurring charges, scoped to the reported month via cross-reference.**
-   `recurring_charges` returns one aggregate row per merchant (`avg_amount_cents`,
-   `months`, `last_date` — the single most recent charge system-wide, no
-   per-occurrence dates), so it cannot be month-filtered directly. Instead,
-   cross-reference it against `query_transactions(month=<reported period>,
-   limit=500)` — the explicit `limit=500` is required; the default `limit=50`
-   silently truncates a busy month partway through. A `query_transactions` row
-   qualifies as a match for a `recurring_charges` merchant only if **all** of:
+   **No bar for zero or negative net spend.** A row only ever gets a bar for a
+   positive spent amount. A budgeted category with zero or negative net spend
+   this month still gets its tick and status color, rendered normally, but no
+   bar. An unbudgeted category with zero or negative net spend is excluded from
+   the row set entirely.
+
+   **Shared scale, not per-row scale.** Bar length and tick position for every
+   row share one axis: `max(every listed category's spent, every listed
+   category's budget)`. This guarantees every tick renders within its row (a
+   large, barely-touched budget's tick doesn't clip off the edge) at the cost of
+   the top-spend category's bar not always reading as "full width."
+
+   **Sort.** Rows sort by dollars spent descending; a zero or negative
+   net-spend row sorts as if it were $0.00 (not by its actual negative value).
+   Ties broken by category name, alphabetically.
+
+   **Empty case.** If the row set is empty (no category has positive spend and
+   no category has a budget set), render a "no spending or budgets to show"
+   placeholder line instead of an empty section.
+
+3. **Flags list** — a plain text/table block for unusual charges and
+   subscriptions/recurring bills (icon + label, never color-alone; not a chart,
+   since these are discrete named items). `find_anomalies` returns ~2 years of
+   history, not just the reported month — filter its rows to the reported month
+   before rendering. There is no separate over-budget subsection here — Recipe
+   2's combined chart already marks over-budget categories with `⚠` and the
+   `critical` color, so a duplicate table would be redundant. The two
+   subsections (anomalies, subscriptions & recurring bills) are each
+   independently shown-or-omitted based on whether that subsection has rows —
+   not a single all-or-nothing gate. If both are empty after filtering, render
+   "nothing to flag."
+
+   **Subscriptions & recurring bills, scoped to the reported month via
+   cross-reference.** `recurring_charges` returns one aggregate row per
+   merchant (`avg_amount_cents`, `months`, `last_date` — the single most recent
+   charge system-wide, no per-occurrence dates), so it cannot be month-filtered
+   directly. Instead, cross-reference it against
+   `query_transactions(month=<reported period>, limit=500)` — the explicit
+   `limit=500` is required; the default `limit=50` silently truncates a busy
+   month partway through. A `query_transactions` row qualifies as a match for a
+   `recurring_charges` merchant only if **all** of:
    - its `merchant_norm` is *exactly equal* (never substring-matched) to that
      merchant's `recurring_charges` `merchant` value — substring matching is
      unsafe (e.g. `FUCHS SANITATION` vs. `FUCHS SANITATION S` are distinct
@@ -119,10 +154,20 @@ values to hold constant — they drift as new transactions post.
      fallback value `sanitize.merchant_norm()` ever produces) — `UNKNOWN` rows
      are excluded from the cross-reference outright, never matched, since the
      placeholder can't be reliably attributed to one recurring merchant;
-   - `amount_cents < 0` and its category is spend-eligible (`is_spend()`),
-     mirroring `detect._spend_rows`' own "what counts as a charge" logic — a
-     refund/credit or non-spend-category row must never count as a match, even
-     with an exact `merchant_norm` equality.
+   - `amount_cents < 0` and its category is an *exact match* for one of a fixed
+     bill-like allowlist — `{"Subscriptions", "Utilities", "Insurance",
+     "Housing", "NY529", "Sewer/Water/Trash"}` — not the broader `is_spend()`
+     check. The first four are this project's built-in categories representing
+     inherently auto-billed obligations; `NY529` and `Sewer/Water/Trash` are the
+     user's own custom categories for recurring obligations, named explicitly
+     since a custom category's meaning can't be derived generically. This
+     narrower guard is what keeps the section to genuine bills/subscriptions
+     (Netflix, Claude, Verizon) rather than merchants the user just happens to
+     visit most months (gas stations, grocery/warehouse stores, restaurants). A
+     refund/credit, a non-spend category, or a spend-eligible-but-not-allowlisted
+     category must never count as a match, even with an exact `merchant_norm`
+     equality. If the user adds further custom bill-like categories later, this
+     allowlist needs a manual update — not solved generically.
 
    A recurring merchant with no qualifying match in the reported month is
    omitted from that month's section. **Known limitation:** because the match
@@ -142,13 +187,13 @@ values to hold constant — they drift as new transactions post.
    returned order instead. The column header reads "Amount" (not "Avg amount",
    which no longer describes a single month-scoped charge). "Months seen" stays
    `recurring_charges`' own global `months` figure, unchanged — it's not
-   misleading in a month-scoped report. The section label reads "recurring
-   charges in \<reported month\>" (not "currently-detected recurring charges
-   (as-of-now)"). Because `recurring_charges`' own `rendered` block is still
-   printed verbatim earlier in the same turn (per `budget-analyst` rule 2), add
-   a short caption noting these figures are intentionally scoped to the month
-   and may differ from the all-time figures shown in that earlier block for the
-   same merchant.
+   misleading in a month-scoped report. The section label reads "subscriptions &
+   recurring bills in \<reported month\>" (not "recurring charges" or
+   "currently-detected recurring charges (as-of-now)"). Because
+   `recurring_charges`' own `rendered` block is still printed verbatim earlier
+   in the same turn (per `budget-analyst` rule 2), add a short caption noting
+   these figures are intentionally scoped to the month and may differ from the
+   all-time figures shown in that earlier block for the same merchant.
 
    This `query_transactions(month=<period>, limit=500)` cross-reference call is
    exempt from `budget-analyst` rule 2 — its `rendered` block is raw transaction
@@ -158,5 +203,5 @@ values to hold constant — they drift as new transactions post.
 Every new hue a recipe introduces must pass `dataviz`'s own
 `scripts/validate_palette.js` (resolved from that skill's own base directory at
 invocation time, not a path in this repo) before shipping, via `Bash`. This is a
-forward-looking safety net — none of the four recipes above introduces a new hue
-as specified.
+forward-looking safety net — none of the three recipes above introduces a new
+hue as specified.

@@ -31,12 +31,13 @@ verbatim, then synthesize.
 If the user asks to see a chart, graph, or visual, follow **budget-visualizer**'s
 recipes instead of reaching for the generic `dataviz` skill directly — so an ad-hoc
 chart here looks identical to one embedded in a full monthly report. This tool list
-only covers `budget-visualizer` recipes 1 (stat row) and 2 (category breakdown); a
-mid-conversation ask for a budget-vs-actual meter or a flags list needs
-`budget_overview`/`find_anomalies`/`recurring_charges`, which aren't in this
-skill's tool list — point the user to the full report instead: "Want to run
-`/budget-monthly-brief` for the full visual report? It covers budget-vs-actual and
-flags too."
+only covers `budget-visualizer` recipe 1 (stat row). Recipe 2, the spend-vs-budget
+chart, needs `budget_overview` in addition to `get_category_breakdown`, so it can
+no longer be done ad hoc here either — same as a flags list, which needs
+`find_anomalies`/`recurring_charges`. None of those tools are in this skill's tool
+list — point the user to the full report instead: "Want to run
+`/budget-monthly-brief` for the full visual report? It covers the spend/budget
+chart and flags too."
 
 ## Handoff
 
