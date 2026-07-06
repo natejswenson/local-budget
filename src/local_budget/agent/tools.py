@@ -147,7 +147,14 @@ async def get_month_summary(args: dict, conn) -> dict:
              f"Spent **{render.money(spend_total)}** · Income **{render.money(income)}** · "
              f"Net **{render.money(income - spend_total)}**", ""]
     if spend:
-        lines += ["**Where it goes**", render.bars(sorted(spend.items(), key=lambda kv: kv[1], reverse=True))]
+        pct_total = sum(abs(v) for v in spend.values()) or 1
+        cat_rows = [{"Category": cat, "Spent": render.money(cents),
+                     "%": f"{round(abs(cents) / pct_total * 100)}%"}
+                    for cat, cents in sorted(spend.items(), key=lambda kv: kv[1], reverse=True)]
+        lines += ["**Where it goes**",
+                  render.table(cat_rows, [("Category", "Category"), ("Spent", "Spent"), ("%", "%")],
+                               numbered=True,
+                               drill_hint="Reply with a row number to see that category's transactions.")]
     lines += _flag_lines(conflicts, uncategorized)
     return {"data": data, "rendered": "\n".join(lines)}
 
@@ -163,7 +170,9 @@ async def get_category_breakdown(args: dict, conn) -> dict:
     disp = [{"Category": r["category"], "Spent": render.money(int(r["spent"])), "#": r["n"]}
             for r in breakdown]
     rendered = "\n".join([f"## {month} — by category",
-                          render.table(disp, [("Category", "Category"), ("Spent", "Spent"), ("#", "#")]),
+                          render.table(disp, [("Category", "Category"), ("Spent", "Spent"), ("#", "#")],
+                                       numbered=True,
+                                       drill_hint="Reply with a row number to drill into that category's transaction list."),
                           *_flag_lines(conflicts)])
     return {"data": {"month": month, "breakdown": breakdown, "unresolved_conflicts": conflicts},
             "rendered": rendered}
@@ -174,6 +183,7 @@ _QUERY_SCHEMA = {
     "properties": {
         "category": {"type": "string"},
         "merchant": {"type": "string", "description": "substring match on merchant_norm"},
+        "month": {"type": "string", "description": "YYYY-MM; when given, days is ignored entirely (not ANDed)"},
         "days": {"type": "integer"},
         "min_amount_dollars": {"type": "number", "description": "min absolute amount"},
         "limit": {"type": "integer", "description": "default 50, max 500"},
@@ -191,7 +201,13 @@ async def query_transactions(args: dict, conn) -> dict:
     if args.get("merchant"):
         where.append("t.merchant_norm LIKE ?")
         params.append(f"%{args['merchant'].upper()}%")
-    if args.get("days"):
+    # month and days are mutually exclusive: month wins if both are given, and
+    # days is skipped entirely (not ANDed in) — see design doc
+    # 2026-07-05-conversational-numbered-drilldown-design.md Architecture §2.
+    if args.get("month"):
+        where.append("t.posted_date LIKE ?")
+        params.append(f"{args['month']}-%")
+    elif args.get("days"):
         where.append("t.posted_date >= ?")
         params.append((date.today() - timedelta(days=int(args["days"]))).isoformat())
     if args.get("min_amount_dollars"):
@@ -214,8 +230,17 @@ async def top_merchants(args: dict, conn) -> dict:
                        "FROM transactions WHERE status = 'posted' AND posted_date LIKE ? "
                        "AND amount_cents < 0 "
                        "GROUP BY merchant_norm ORDER BY spent DESC LIMIT ?", (f"{month}-%", limit))
-    rendered = render.bars([(r["merchant_norm"] or "—", int(r["spent"])) for r in rows]) or "(no spend)"
-    return {"data": {"rows": rows}, "rendered": f"## Top merchants — {month}\n{rendered}"}
+    if not rows:
+        rendered = "(no spend)"
+    else:
+        total = sum(abs(int(r["spent"])) for r in rows) or 1
+        disp = [{"Merchant": r["merchant_norm"] or "—", "Spent": render.money(int(r["spent"])),
+                 "%": f"{round(abs(int(r['spent'])) / total * 100)}%", "#": r["n"]} for r in rows]
+        rendered = render.table(
+            disp, [("Merchant", "Merchant"), ("Spent", "Spent"), ("%", "%"), ("#", "#")],
+            numbered=True,
+            drill_hint="Reply with a row number to see that merchant's transactions.")
+    return {"data": {"rows": rows, "month": month}, "rendered": f"## Top merchants — {month}\n{rendered}"}
 
 
 @_with_ro_conn
@@ -242,10 +267,12 @@ async def recurring_charges(_args: dict, conn) -> dict:
     rows = _rows(conn, "SELECT posted_date, amount_cents, merchant_norm, category "
                        "FROM transactions WHERE status = 'posted'")
     found = detect.find_recurring(rows)
-    disp = [{"Merchant": r.get("merchant_norm") or "—", "Amount": render.money(int(r["amount_cents"])),
-             "Category": r.get("category") or "—"} for r in found]
+    disp = [{"Merchant": r.get("merchant") or "—", "Amount": render.money(int(r["avg_amount_cents"])),
+             "Months seen": r.get("months"), "Last charge": r.get("last_date")} for r in found]
     rendered = "## Recurring charges\n" + render.table(
-        disp, [("Merchant", "Merchant"), ("Amount", "Amount"), ("Category", "Category")])
+        disp, [("Merchant", "Merchant"), ("Amount", "Avg amount"),
+               ("Months seen", "Months seen"), ("Last charge", "Last charge")], numbered=True,
+        drill_hint="Reply with a row number to see that merchant's transactions.")
     return {"data": {"recurring": found}, "rendered": rendered}
 
 
@@ -255,7 +282,7 @@ async def find_anomalies(args: dict, conn) -> dict:
     rows = _rows(conn, "SELECT posted_date, amount_cents, merchant_norm, category "
                        "FROM transactions WHERE status = 'posted'")
     found = detect.find_anomalies(rows, sd)
-    disp = [{"Date": r.get("posted_date"), "Merchant": r.get("merchant_norm") or "—",
+    disp = [{"Date": r.get("posted_date"), "Merchant": r.get("merchant") or "—",
              "Amount": render.money(int(r["amount_cents"]))} for r in found]
     rendered = "## Unusual charges\n" + render.table(
         disp, [("Date", "Date"), ("Merchant", "Merchant"), ("Amount", "Amount")])
@@ -447,9 +474,13 @@ async def review_queue(_args: dict) -> dict:
                "Merchant": r["merchant_norm"]} for r in checks]
     parts = [
         "## Uncategorized merchants",
-        render.table(m_rows, [("Merchant", "Merchant"), ("#", "#"), ("Spent", "Spent")]) if m_rows else "(none)",
+        render.table(m_rows, [("Merchant", "Merchant"), ("#", "#"), ("Spent", "Spent")],
+                     numbered=True,
+                     drill_hint="Reply with a row number to categorize that merchant.") if m_rows else "(none)",
         "\n## Checks to review",
-        render.table(c_rows, [("Date", "Date"), ("Amount", "Amount"), ("Merchant", "Merchant")]) if c_rows else "(none)",
+        render.table(c_rows, [("Date", "Date"), ("Amount", "Amount"), ("Merchant", "Merchant")],
+                     numbered=True,
+                     drill_hint="Reply with a row number to categorize that transaction.") if c_rows else "(none)",
     ]
     return {"data": {"merchants": merchants, "checks": checks}, "rendered": "\n".join(parts)}
 
@@ -488,7 +519,8 @@ TOOL_SPECS: list[ToolSpec] = [
              _obj({"month": {"type": "string"}}), get_category_breakdown),
     ToolSpec("query_transactions",
              "List posted transactions with optional filters (category, merchant substring, "
-             "days lookback, min amount). Most recent first.",
+             "month YYYY-MM or days lookback — month wins and days is ignored if both are given, "
+             "min amount). Most recent first.",
              _QUERY_SCHEMA, query_transactions),
     ToolSpec("top_merchants", "Top merchants by spend for a month (YYYY-MM).",
              _obj({"month": {"type": "string"}, "limit": {"type": "integer"}}), top_merchants),
