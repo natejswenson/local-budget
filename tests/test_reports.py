@@ -676,10 +676,12 @@ def test_budget_overview_single_month_actual_is_exact_not_averaged(data_dir):
     assert g["spent_cents"] == 42000 and g["over"] is False and g["pct"] == 84
 
 
-def test_budget_overview_total_for_period(data_dir):
+def test_budget_overview_total_for_period(data_dir, monkeypatch):
     # Redesign 2026-06-13: a multi-month window shows the un-averaged TOTAL spend vs the
     # monthly budget × whole-month factor (NOT a per-active-month average). Data spans
-    # Mar–May 2026; today is 2026-06, so "all" = the 3 completed months (factor 3).
+    # Mar–May 2026; today is pinned to 2026-06, so "all" = the 3 completed months (factor 3).
+    import datetime as _dt
+    monkeypatch.setattr(reports, "date", type("D", (), {"today": staticmethod(lambda: _dt.date(2026, 6, 15))}))
     db.init_schema()
     with db.connect() as conn:
         _seed_txn(conn, "2026-03-10", -30000, "Groceries")
@@ -775,9 +777,12 @@ def test_budget_overview_income_averaged_per_active_income_month(data_dir):
     assert reports.budget_overview("2026-04")["actual_income_cents"] == 400000     # single month, exact
 
 
-def test_budget_status_agrees_with_overview_total_for_period(data_dir):
+def test_budget_status_agrees_with_overview_total_for_period(data_dir, monkeypatch):
     # CA-2: the over/under verdict from budget_status matches budget_overview for a
     # window scope — both use the same closed window × factor (total-for-period).
+    # Today is pinned to 2026-06 so "all" resolves to the 3 completed months (factor 3).
+    import datetime as _dt
+    monkeypatch.setattr(reports, "date", type("D", (), {"today": staticmethod(lambda: _dt.date(2026, 6, 15))}))
     db.init_schema()
     with db.connect() as conn:
         _seed_txn(conn, "2026-03-10", -30000, "Groceries")

@@ -107,6 +107,91 @@ def test_month_summary_surfaces_uncategorized(data_dir, tmp_path):
     assert payload["spend_total_cents"] == 5000  # uncategorized excluded
 
 
+def test_drill_hint_present_at_all_six_numbered_call_sites(data_dir, tmp_path):
+    db.init_schema()
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO accounts (account_id, institution, acct_type, acct_last4, acct_hash, created_at) "
+            "VALUES (1, 'WF', 'CHECKING', '1234', 'hash-1', ?)", (db.now_iso(),))
+        # Groceries spend so get_month_summary / get_category_breakdown / top_merchants have a row.
+        conn.execute(
+            "INSERT INTO transactions (account_id, fitid, posted_date, amount_cents, status, "
+            "txn_type, payee, memo, merchant_norm, category, category_source, raw_ofx, imported_at) "
+            "VALUES (1, 'G1', '2026-06-03', -5000, 'posted', 'DEBIT', 'WALMART', 'memo', "
+            "'WALMART', 'Groceries', 'rule', 'raw', ?)", (db.now_iso(),))
+        # A merchant recurring across 3 distinct months, so recurring_charges has a row.
+        for i, dt in enumerate(["2026-04-05", "2026-05-05", "2026-06-05"]):
+            conn.execute(
+                "INSERT INTO transactions (account_id, fitid, posted_date, amount_cents, status, "
+                "txn_type, payee, memo, merchant_norm, category, category_source, raw_ofx, imported_at) "
+                "VALUES (1, ?, ?, -1500, 'posted', 'DEBIT', 'NETFLIX', 'memo', "
+                "'NETFLIX', 'Subscriptions', 'rule', 'raw', ?)", (f"N{i}", dt, db.now_iso()))
+        # An uncategorized merchant, so review_queue's merchants table has a row.
+        conn.execute(
+            "INSERT INTO transactions (account_id, fitid, posted_date, amount_cents, status, "
+            "txn_type, payee, memo, merchant_norm, category, category_source, raw_ofx, imported_at) "
+            "VALUES (1, 'U1', '2026-06-06', -999, 'posted', 'DEBIT', 'MYSTERY VENDOR', 'memo', "
+            "'MYSTERY VENDOR', 'Uncategorized', 'rule', 'raw', ?)", (db.now_iso(),))
+        # A transaction filed under Checks, so review_queue's checks table has a row.
+        conn.execute(
+            "INSERT INTO transactions (account_id, fitid, posted_date, amount_cents, status, "
+            "txn_type, payee, memo, merchant_norm, category, category_source, raw_ofx, imported_at) "
+            "VALUES (1, 'C1', '2026-06-07', -200, 'posted', 'CHECK', 'CHECK 101', 'memo', "
+            "'CHECK 101', 'Checks', 'rule', 'raw', ?)", (db.now_iso(),))
+
+    ms = _call("get_month_summary", {"month": "2026-06"})["rendered"]
+    assert "Reply with a row number to see that category's transactions." in ms
+
+    cb = _call("get_category_breakdown", {"month": "2026-06"})["rendered"]
+    assert "Reply with a row number to drill into that category's transaction list." in cb
+
+    tm = _call("top_merchants", {"month": "2026-06"})["rendered"]
+    assert "Reply with a row number to see that merchant's transactions." in tm
+
+    rc = _call("recurring_charges", {})["rendered"]
+    assert "Reply with a row number to see that merchant's transactions." in rc
+
+    rq = _call("review_queue", {})["rendered"]
+    assert "Reply with a row number to categorize that merchant." in rq
+    assert "Reply with a row number to categorize that transaction." in rq
+
+
+def test_get_month_summary_pct_column_uses_absolute_value_total(data_dir, tmp_path):
+    # A category that nets negative (offsetting debit/refund) must not distort
+    # the % column: the denominator is sum(abs(v)), not the signed spend_total.
+    # spend = {"Groceries": 5000, "RefundCat": -1000} -> pct_total = 6000, so
+    # Groceries = round(5000/6000*100) = 83%, not round(5000/4000*100) = 125%
+    # (which is what reusing the signed spend_total would produce).
+    db.init_schema()
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO accounts (account_id, institution, acct_type, acct_last4, acct_hash, created_at) "
+            "VALUES (1, 'WF', 'CHECKING', '1234', 'hash-1', ?)", (db.now_iso(),))
+        conn.execute(
+            "INSERT INTO transactions (account_id, fitid, posted_date, amount_cents, status, "
+            "txn_type, payee, memo, merchant_norm, category, category_source, raw_ofx, imported_at) "
+            "VALUES (1, 'G1', '2026-06-03', -5000, 'posted', 'DEBIT', 'WALMART', 'memo', "
+            "'WALMART', 'Groceries', 'rule', 'raw', ?)", (db.now_iso(),))
+        conn.execute(
+            "INSERT INTO transactions (account_id, fitid, posted_date, amount_cents, status, "
+            "txn_type, payee, memo, merchant_norm, category, category_source, raw_ofx, imported_at) "
+            "VALUES (1, 'R1', '2026-06-05', 1000, 'posted', 'CREDIT', 'REFUND CO', 'memo', "
+            "'REFUND CO', 'RefundCat', 'rule', 'raw', ?)", (db.now_iso(),))
+    result = _call("get_month_summary", {"month": "2026-06"})
+    rendered = result["rendered"]
+    assert "83%" in rendered
+    assert "125%" not in rendered
+
+
+def test_top_merchants_empty_state_exact_string(data_dir, tmp_path):
+    # bars() returned "" on empty items, so `or "(no spend)"` used to work.
+    # table() returns a truthy header-only table on empty rows, so the
+    # if/else rewrite must be exercised directly (no dead-`or` regression).
+    db.init_schema()
+    result = _call("top_merchants", {"month": "2026-06"})
+    assert result["rendered"] == "## Top merchants — 2026-06\n(no spend)"
+
+
 def test_query_transactions_min_amount_cent_boundary(data_dir, tmp_path):
     # M1: min_amount_dollars=19.99 yields a 1999-cent boundary (not 1998).
     db.init_schema()

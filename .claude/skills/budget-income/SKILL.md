@@ -1,7 +1,7 @@
 ---
 name: budget-income
 description: Income by source, expected vs. actual. Read-only.
-tools: [income_by_source, income_transactions, get_month_summary]
+tools: [income_by_source, income_transactions, get_month_summary, query_transactions]
 ---
 
 # Budget Income

@@ -1,7 +1,7 @@
 ---
 name: budget-monthly-brief
 description: Compose the period brief — spent/income/net, where it goes, ways to save, flags — then offer to save it.
-tools: [get_month_summary, get_category_breakdown, insights, monthly_trend, find_anomalies, recurring_charges, save_brief]
+tools: [get_month_summary, get_category_breakdown, insights, monthly_trend, find_anomalies, recurring_charges, query_transactions, save_brief]
 ---
 
 # Budget Monthly Brief

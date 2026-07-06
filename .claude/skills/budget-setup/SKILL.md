@@ -1,7 +1,7 @@
 ---
 name: budget-setup
 description: First-run onboarding — load data via the CLI, then hand off to categorize and budgets.
-tools: [get_month_summary, review_queue]
+tools: [get_month_summary, review_queue, query_transactions]
 ---
 
 # Budget Setup
