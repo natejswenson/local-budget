@@ -88,28 +88,26 @@ values to hold constant — they drift as new transactions post.
    `"$spent of $budget · pct%"` for budgeted rows or just `"$spent"` for
    unbudgeted rows.
 
-   **Row set and sourcing.** A category belongs in the row set if its actual
-   spend this month is *positive* (check the value itself — a category whose
-   only transaction(s) net to exactly $0.00 or negative, e.g. an offsetting
-   refund, does not count as positive spend even though `get_category_breakdown`
-   can still return a $0.00/negative row for it) OR it has a budget set
-   (`budget_cents > 0`; `_pct()` already returns `None`/excludes non-positive
-   budgets, so this can't occur live regardless). For a positive-spend row,
-   "$spent" is extracted from `get_category_breakdown`'s rendered table; for a
-   budgeted row with zero or negative net spend, "$spent" is extracted from
-   `budget_overview`'s own rendered "Spent" column instead (which does show
-   $0.00/negative figures for such rows). "$budget" is extracted from
-   `budget_overview`'s rendered "Budget" column; "pct%" from its rendered "%
-   used" column — never recomputed from raw fields. Internal bar-length/scale
-   position math (not displayed text) may read the raw cents fields directly:
-   `get_category_breakdown`'s `data.breakdown[].spent` when a row exists there,
-   else `budget_overview`'s `data.categories[].spent_cents`.
+   **Row set and sourcing.** A category belongs in the row set only if its
+   actual spend this month is *positive* (check the value itself — a category
+   whose only transaction(s) net to exactly $0.00 or negative, e.g. an
+   offsetting refund, does not count as positive spend even though
+   `get_category_breakdown` can still return a $0.00/negative row for it). A
+   category with a budget set but zero spend this month (e.g. Housing before
+   any rent has posted) is excluded from the chart entirely — a budget with
+   nothing to show against it isn't worth a row, even though the tick/color
+   machinery below would technically support rendering one. "$spent" is
+   extracted from `get_category_breakdown`'s rendered table. For a row with a
+   budget set, "$budget" is extracted from `budget_overview`'s rendered
+   "Budget" column and "pct%" from its rendered "% used" column — never
+   recomputed from raw fields. Internal bar-length/scale position math (not
+   displayed text) may read `get_category_breakdown`'s `data.breakdown[].spent`
+   cents field directly.
 
-   **No bar for zero or negative net spend.** A row only ever gets a bar for a
-   positive spent amount. A budgeted category with zero or negative net spend
-   this month still gets its tick and status color, rendered normally, but no
-   bar. An unbudgeted category with zero or negative net spend is excluded from
-   the row set entirely.
+   **No bar for negative net spend.** A row only ever gets a bar for a positive
+   spent amount — a category whose only transaction(s) net negative (e.g. a
+   lone offsetting refund) is excluded from the row set entirely, same as the
+   zero-spend case above.
 
    **Shared scale, not per-row scale.** Bar length and tick position for every
    row share one axis: `max(every listed category's spent, every listed
@@ -117,13 +115,12 @@ values to hold constant — they drift as new transactions post.
    large, barely-touched budget's tick doesn't clip off the edge) at the cost of
    the top-spend category's bar not always reading as "full width."
 
-   **Sort.** Rows sort by dollars spent descending; a zero or negative
-   net-spend row sorts as if it were $0.00 (not by its actual negative value).
-   Ties broken by category name, alphabetically.
+   **Sort.** Rows sort by dollars spent descending. Ties broken by category
+   name, alphabetically.
 
-   **Empty case.** If the row set is empty (no category has positive spend and
-   no category has a budget set), render a "no spending or budgets to show"
-   placeholder line instead of an empty section.
+   **Empty case.** If the row set is empty (no category has positive spend
+   this month), render a "no spending to show" placeholder line instead of an
+   empty section.
 
 3. **Flags list** — a plain text/table block for unusual charges and
    subscriptions/recurring bills (icon + label, never color-alone; not a chart,
@@ -137,6 +134,16 @@ values to hold constant — they drift as new transactions post.
    not a single all-or-nothing gate. If both are empty after filtering, render
    "nothing to flag."
 
+   **Unusual charges excludes known-recurring merchants.** After filtering
+   `find_anomalies` to the reported month, drop any row whose `merchant` is
+   *exactly equal* to a `merchant` value in `recurring_charges`' own list
+   (the full list — not just the bill-like allowlist below). A merchant
+   `recurring_charges` already recognizes as a stable, predictable pattern
+   showing up again as "unusual" is a confusing double-flag, not a real
+   anomaly (e.g. a recurring bill whose amount ticks up slightly month to
+   month can trip `find_anomalies`' statistical threshold while still being
+   entirely expected).
+
    **Subscriptions & recurring bills, scoped to the reported month via
    cross-reference.** `recurring_charges` returns one aggregate row per
    merchant (`avg_amount_cents`, `months`, `last_date` — the single most recent
@@ -147,9 +154,18 @@ values to hold constant — they drift as new transactions post.
    month partway through. A `query_transactions` row qualifies as a match for a
    `recurring_charges` merchant only if **all** of:
    - its `merchant_norm` is *exactly equal* (never substring-matched) to that
-     merchant's `recurring_charges` `merchant` value — substring matching is
-     unsafe (e.g. `FUCHS SANITATION` vs. `FUCHS SANITATION S` are distinct
-     merchants);
+     merchant's `recurring_charges` `merchant` value, **or** to one of that
+     merchant's known aliases below — substring matching is unsafe in general
+     (e.g. `FUCHS SANITATION` vs. `FUCHS SANITATION S` are distinct merchants),
+     so a merchant whose statement descriptor drifts across billing periods is
+     only recovered via an explicit, manually-curated alias, never a fuzzy
+     rule:
+     - `CLAUDE.AI SUBSCRIP ANTHROPIC.COM` (the `recurring_charges` key) also
+       matches `ANTHROPIC CLAUDE ANTHROPIC.COM` and `PURCHASE ANTHROPIC C`;
+     - `HLU HULU.COM BILL` (the `recurring_charges` key) also matches `HULU`.
+
+     If the user's statement descriptors drift again later, this list needs a
+     manual update — not solved generically;
    - its `merchant_norm` is not the placeholder value `UNKNOWN` (the only
      fallback value `sanitize.merchant_norm()` ever produces) — `UNKNOWN` rows
      are excluded from the cross-reference outright, never matched, since the
@@ -171,10 +187,13 @@ values to hold constant — they drift as new transactions post.
 
    A recurring merchant with no qualifying match in the reported month is
    omitted from that month's section. **Known limitation:** because the match
-   is exact-string, a merchant whose `merchant_norm` drifts across billing
-   periods (a changed statement descriptor) can be silently missed even though
-   it genuinely charged that month — an accepted tradeoff against the worse
-   false-positive risk substring/fuzzy matching would reopen.
+   is exact-string (aliases above excepted), a merchant whose `merchant_norm`
+   drifts across billing periods (a changed statement descriptor) can be
+   silently missed even though it genuinely charged that month — an accepted
+   tradeoff against the worse false-positive risk substring/fuzzy matching
+   would reopen. The alias list closes this gap for the two merchants known to
+   drift today; any other merchant that starts drifting needs the same manual
+   treatment.
 
    For each included merchant, the displayed date and amount come from its
    matched `query_transactions` row(s) for the reported month — never
