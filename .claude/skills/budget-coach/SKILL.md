@@ -10,8 +10,8 @@ Answer any money question the user asks, grounded in real data. Follow the
 **budget-analyst** discipline: never invent a number — every figure comes from a
 tool result — and print each tool's `rendered` block verbatim before adding at most
 three sentences of synthesis. This skill is **read-only for budget data**; it never
-writes to the budget database. (Publishing a visual `Artifact`, per below, is a
-Claude-side page render, not a database write, so it doesn't conflict with this.)
+writes to the budget database. (Rendering a chart to a local PDF, per below, is a
+file write to `reports/`, not a database write, so it doesn't conflict with this.)
 
 ## Tools and order
 
