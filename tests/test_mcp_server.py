@@ -136,19 +136,21 @@ def test_top_merchants_data_carries_resolved_month(data_dir):
     _seed_two_months()
     result = asyncio.run(agent_tools.SPEC_BY_NAME["top_merchants"].handler({"month": "2026-06"}))
     assert result["data"]["month"] == "2026-06"
-    assert "Row" not in result["rendered"]  # bars() has no header row at all
+    # table() (unlike bars()) always adds a Row header for a numbered list.
+    assert "Row" in result["rendered"]
 
 
-def test_get_month_summary_dict_order_matches_numbered_bars_order(data_dir):
-    """Architecture §2's sub-invariant: row N of the numbered bars() output must
+def test_get_month_summary_dict_order_matches_numbered_table_order(data_dir):
+    """Architecture §2's sub-invariant: row N of the numbered table() output must
     equal the Nth entry of data["spend_by_category"] in dict-insertion order —
     checkable, not assumed, since both are built from the same sorted() call."""
     _seed()
     result = asyncio.run(agent_tools.SPEC_BY_NAME["get_month_summary"].handler({"month": "2026-06"}))
     dict_order = list(result["data"]["spend_by_category"].keys())
-    bars_lines = [ln for ln in result["rendered"].splitlines() if ln and ln[0].isdigit()]
-    bars_order = [ln.split(". ", 1)[1].split("  ")[0] for ln in bars_lines]
-    assert dict_order == bars_order
+    table_lines = [ln for ln in result["rendered"].splitlines() if ln.startswith("| ")]
+    data_rows = table_lines[2:]  # drop the header line and the --- separator line
+    table_order = [ln.removeprefix("| ").removesuffix(" |").split(" | ")[1] for ln in data_rows]
+    assert dict_order == table_order
 
 
 def test_get_category_breakdown_row_column_does_not_collide_with_count_column(data_dir):

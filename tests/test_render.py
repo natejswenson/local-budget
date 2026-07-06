@@ -79,3 +79,55 @@ def test_bars_numbered_prefixes_ordinal():
 def test_bars_numbered_false_is_byte_identical_to_current_behavior():
     items = [("Groceries", -5000), ("Gas", -1200)]
     assert r.bars(items, numbered=False) == r.bars(items)
+
+
+def test_table_drill_hint_present():
+    out = r.table([{"cat": "Groceries"}], [("cat", "Category")], drill_hint="Reply with a row number.")
+    assert out == (
+        "| Category |\n"
+        "| --- |\n"
+        "| Groceries |\n"
+        "\n"
+        "_Reply with a row number._"
+    )
+
+
+def test_table_drill_hint_absent_is_byte_identical():
+    rows = [{"cat": "Groceries"}]
+    cols = [("cat", "Category")]
+    assert r.table(rows, cols, drill_hint=None) == r.table(rows, cols)
+
+
+def test_table_drill_hint_empty_string_appends_nothing():
+    rows = [{"cat": "Groceries"}]
+    cols = [("cat", "Category")]
+    assert r.table(rows, cols, drill_hint="") == r.table(rows, cols)
+
+
+def test_table_drill_hint_suppressed_on_empty_rows():
+    assert r.table([], [("cat", "Category")], drill_hint="Reply with a row number.") == (
+        "| Category |\n| --- |"
+    )
+
+
+def test_bars_drill_hint_present():
+    out = r.bars([("Groceries", -5000)], drill_hint="Reply with a row number.")
+    assert out == (
+        "Groceries  " + "▇" * 20 + "  -$50.00 (100%)\n"
+        "\n"
+        "_Reply with a row number._"
+    )
+
+
+def test_bars_drill_hint_absent_is_byte_identical():
+    items = [("Groceries", -5000)]
+    assert r.bars(items, drill_hint=None) == r.bars(items)
+
+
+def test_bars_drill_hint_empty_string_appends_nothing():
+    items = [("Groceries", -5000)]
+    assert r.bars(items, drill_hint="") == r.bars(items)
+
+
+def test_bars_drill_hint_suppressed_on_empty_items():
+    assert r.bars([], drill_hint="Reply with a row number.") == ""
