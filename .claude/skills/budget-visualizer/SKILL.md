@@ -1,6 +1,6 @@
 ---
 name: budget-visualizer
-description: Shared visual-report discipline for budget skills — chart recipes, palette rules, and how to render an artifact from tool data. Referenced by name, not directly invoked.
+description: Shared visual-report discipline for budget skills — chart recipes, palette rules, and how to render a report PDF from tool data. Referenced by name, not directly invoked.
 tools: []
 ---
 
@@ -13,30 +13,46 @@ individual skill still decides WHEN to offer one.
 ## Chart-authoring procedure
 
 1. Load the `artifact-design` skill first, to calibrate how much design investment
-   the report warrants — the `Artifact` tool's own operating requirement, done once
-   before the page is written.
+   the report warrants, even though the output is a local PDF rather than a
+   published Artifact — the same typography/palette/layout discipline still
+   applies to a well-made report page.
 2. Run the `dataviz` skill's pick-form → assign-color → validate → mark → render
-   steps for each recipe below. Reuse the already-validated palette (`#2a78d6` /
-   `#3987e5` light/dark) rather than re-deriving color theory per report.
+   steps for each recipe below. Reuse the already-validated palette (`#2a78d6`)
+   rather than re-deriving color theory per report. Reports render in a single
+   fixed light theme only — no dark-mode variant, no `prefers-color-scheme` or
+   `data-theme` handling needed, since a static PDF has no viewer-side toggle.
+3. Render the finished HTML to a PDF (see "Rendering to PDF" below) instead of
+   publishing via the `Artifact` tool.
 
-**CSS gotcha — theme tokens go on `:root`, never a wrapper `<div>`.** Define
-theme custom properties (`--text-primary`, `--page`, etc.) on `:root` (the true
-document root), not on a wrapper element like `.viz-root`. `body` is `:root`'s
-descendant but a wrapper div's *ancestor* — a token declared only on the wrapper
-is invisible to `body`'s own `color`/`background` rules, and any element that
-doesn't explicitly re-declare `color` (an `<h1>`, a plain `.stat .value` tile,
-`.row-value`) falls back to default black, invisible on a dark surface. This
-applies to **all four** theme-conditional blocks: the base `:root { ... }`,
-`@media (prefers-color-scheme: dark) { ... }`, `:root[data-theme="dark"] { ... }`,
-and `:root[data-theme="light"] { ... }` — the `Artifact` tool stamps `data-theme`
-on the true root element, so a wrapper-scoped `[data-theme="dark"]` selector
-matches nothing.
+**CSS gotcha — theme tokens still go on `:root`, never a wrapper `<div>`.** Even
+with a single fixed theme, define custom properties (`--text-primary`, `--page`,
+etc.) on `:root` (the true document root), not on a wrapper element like
+`.viz-root`. `body` is `:root`'s descendant but a wrapper div's *ancestor* — a
+token declared only on the wrapper is invisible to `body`'s own
+`color`/`background` rules, and any element that doesn't explicitly re-declare
+`color` (an `<h1>`, a plain `.stat .value` tile, `.row-value`) falls back to
+default black. This is a DOM-ancestry bug, not a theming one — it applies
+regardless of how many themes a page supports.
 
-`Artifact`, `Write`, `Read`, `Edit`, and `Bash` are Claude Code session-level tools,
-already available in an interactive session. Never declare them in a skill's
-`tools:` frontmatter — that field is an MCP-domain-tool manifest, validated by
-`tests/test_skills_lint.py` against the closed `SPEC_BY_NAME` registry, which has no
-entry for any of them.
+**Rendering to PDF.** Write the finished HTML to a scratch file, then convert it
+to PDF via headless Chrome, using `Bash`:
+
+```
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --headless --disable-gpu --no-pdf-header-footer \
+  --print-to-pdf=<output-path>.pdf \
+  file://<scratch-html-path>
+```
+
+This is an environment-specific dependency (this exact Chrome path, on this
+machine) — if Chrome is missing or moves, this step breaks and should be
+reported to the user rather than silently falling back to something else.
+
+`Write`, `Read`, `Edit`, and `Bash` are Claude Code session-level tools, already
+available in an interactive session. Never declare them in a skill's `tools:`
+frontmatter — that field is an MCP-domain-tool manifest, validated by
+`tests/test_skills_lint.py` against the closed `SPEC_BY_NAME` registry, which has
+no entry for any of them.
 
 ## General rule: displayed figures are extracted, never reformatted
 
@@ -73,9 +89,9 @@ values to hold constant — they drift as new transactions post.
    horizontal bar whose length is that category's dollars spent this month
    (positive spend only — see below), with a thin (2px) tick mark at the
    category's budget position when a budget is set. Unfilled track = dataviz's
-   "Gridline (hairline)" chart-chrome neutral (light `#e1e0d9` / dark
-   `#2c2c2a`) — never a tint of the fill color, since the fixed Status palette
-   has no tint/step table. Fill color uses three of dataviz's fixed Status
+   "Gridline (hairline)" chart-chrome neutral (`#e1e0d9`) — never a tint of the
+   fill color, since the fixed Status palette has no tint/step table. Fill color
+   uses three of dataviz's fixed Status
    palette's four tiers — `good` (`#0ca30c`), `warning` (`#fab219`), `critical`
    (`#d03b3b`) — `serious` is deliberately unused. The critical tier is keyed to
    `budget_overview`'s own `over` boolean (exact `spent > budget`, the same flag
