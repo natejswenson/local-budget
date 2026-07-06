@@ -19,6 +19,19 @@ individual skill still decides WHEN to offer one.
    steps for each recipe below. Reuse the already-validated palette (`#2a78d6` /
    `#3987e5` light/dark) rather than re-deriving color theory per report.
 
+**CSS gotcha — theme tokens go on `:root`, never a wrapper `<div>`.** Define
+theme custom properties (`--text-primary`, `--page`, etc.) on `:root` (the true
+document root), not on a wrapper element like `.viz-root`. `body` is `:root`'s
+descendant but a wrapper div's *ancestor* — a token declared only on the wrapper
+is invisible to `body`'s own `color`/`background` rules, and any element that
+doesn't explicitly re-declare `color` (an `<h1>`, a plain `.stat .value` tile,
+`.row-value`) falls back to default black, invisible on a dark surface. This
+applies to **all four** theme-conditional blocks: the base `:root { ... }`,
+`@media (prefers-color-scheme: dark) { ... }`, `:root[data-theme="dark"] { ... }`,
+and `:root[data-theme="light"] { ... }` — the `Artifact` tool stamps `data-theme`
+on the true root element, so a wrapper-scoped `[data-theme="dark"]` selector
+matches nothing.
+
 `Artifact`, `Write`, `Read`, `Edit`, and `Bash` are Claude Code session-level tools,
 already available in an interactive session. Never declare them in a skill's
 `tools:` frontmatter — that field is an MCP-domain-tool manifest, validated by
@@ -84,14 +97,63 @@ values to hold constant — they drift as new transactions post.
    anomalies, and recurring-charge flags (icon + label, never color-alone; not a
    chart, since these are discrete named items). `find_anomalies` returns ~2 years
    of history, not just the reported month — filter its rows to the reported month
-   before rendering. `recurring_charges` returns one aggregate row per merchant
-   (only a single `last_date`, no per-occurrence dates) — it cannot be
-   month-filtered correctly, so render it unfiltered, labeled "currently-detected
-   recurring charges" (as-of-now state). Over-budget categories come from
-   `budget_overview`, already month-scoped. The three subsections (over-budget,
-   anomalies, recurring charges) are each independently shown-or-omitted based on
-   whether that subsection has rows — not a single all-or-nothing gate. If all
-   three are empty after filtering, render "nothing to flag."
+   before rendering. Over-budget categories come from `budget_overview`, already
+   month-scoped. The three subsections (over-budget, anomalies, recurring charges)
+   are each independently shown-or-omitted based on whether that subsection has
+   rows — not a single all-or-nothing gate. If all three are empty after
+   filtering, render "nothing to flag."
+
+   **Recurring charges, scoped to the reported month via cross-reference.**
+   `recurring_charges` returns one aggregate row per merchant (`avg_amount_cents`,
+   `months`, `last_date` — the single most recent charge system-wide, no
+   per-occurrence dates), so it cannot be month-filtered directly. Instead,
+   cross-reference it against `query_transactions(month=<reported period>,
+   limit=500)` — the explicit `limit=500` is required; the default `limit=50`
+   silently truncates a busy month partway through. A `query_transactions` row
+   qualifies as a match for a `recurring_charges` merchant only if **all** of:
+   - its `merchant_norm` is *exactly equal* (never substring-matched) to that
+     merchant's `recurring_charges` `merchant` value — substring matching is
+     unsafe (e.g. `FUCHS SANITATION` vs. `FUCHS SANITATION S` are distinct
+     merchants);
+   - its `merchant_norm` is not the placeholder value `UNKNOWN` (the only
+     fallback value `sanitize.merchant_norm()` ever produces) — `UNKNOWN` rows
+     are excluded from the cross-reference outright, never matched, since the
+     placeholder can't be reliably attributed to one recurring merchant;
+   - `amount_cents < 0` and its category is spend-eligible (`is_spend()`),
+     mirroring `detect._spend_rows`' own "what counts as a charge" logic — a
+     refund/credit or non-spend-category row must never count as a match, even
+     with an exact `merchant_norm` equality.
+
+   A recurring merchant with no qualifying match in the reported month is
+   omitted from that month's section. **Known limitation:** because the match
+   is exact-string, a merchant whose `merchant_norm` drifts across billing
+   periods (a changed statement descriptor) can be silently missed even though
+   it genuinely charged that month — an accepted tradeoff against the worse
+   false-positive risk substring/fuzzy matching would reopen.
+
+   For each included merchant, the displayed date and amount come from its
+   matched `query_transactions` row(s) for the reported month — never
+   `recurring_charges`' own `avg_amount_cents`/`last_date`, which are global,
+   as-of-now figures that can point outside the reported month. When more than
+   one row qualifies for the same merchant in the month, display the single
+   most recent (latest-dated) one. When multiple qualifying rows share that
+   latest date, no arithmetic is performed on the amounts (never sum them, per
+   `budget-analyst` rule 3) — display the first such row in `query_transactions`'
+   returned order instead. The column header reads "Amount" (not "Avg amount",
+   which no longer describes a single month-scoped charge). "Months seen" stays
+   `recurring_charges`' own global `months` figure, unchanged — it's not
+   misleading in a month-scoped report. The section label reads "recurring
+   charges in \<reported month\>" (not "currently-detected recurring charges
+   (as-of-now)"). Because `recurring_charges`' own `rendered` block is still
+   printed verbatim earlier in the same turn (per `budget-analyst` rule 2), add
+   a short caption noting these figures are intentionally scoped to the month
+   and may differ from the all-time figures shown in that earlier block for the
+   same merchant.
+
+   This `query_transactions(month=<period>, limit=500)` cross-reference call is
+   exempt from `budget-analyst` rule 2 — its `rendered` block is raw transaction
+   data used only internally to compute this section, never printed to the user
+   as its own block.
 
 Every new hue a recipe introduces must pass `dataviz`'s own
 `scripts/validate_palette.js` (resolved from that skill's own base directory at
