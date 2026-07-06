@@ -40,20 +40,21 @@ results — the last call cross-references recurring merchants against the
 reported month for the flags section's subscriptions & recurring bills
 subsection (see **budget-visualizer** Recipe 3); its `rendered` block is
 internal-only and exempt from **budget-analyst** rule 2, never printed to the
-user — then follow **budget-visualizer**'s recipes to build one HTML artifact,
-in this fixed order: stat row → spend-vs-budget chart → flags. Name the
-scratch file per period (e.g.
-`budget-report-2026-06.html`) so reports for different months in the same session
-don't collide. Publish via the `Artifact` tool. Then ask one cleanup question:
-"Want me to delete the local scratch file now, or keep it in case you want
-changes?" — never phrase this as deleting the artifact/page itself, since that
-isn't possible (there is no tool to delete a published Artifact).
+user — then follow **budget-visualizer**'s recipes to build one HTML page, in
+this fixed order: stat row → spend-vs-budget chart → flags. Write it to a
+scratch file, then render it to PDF (see **budget-visualizer**'s "Rendering to
+PDF" section) at `reports/budget-report-<period>.pdf` (e.g.
+`reports/budget-report-2026-06.pdf`) — the `reports/` directory is gitignored,
+so this never risks committing personal financial data. Regenerating the same
+period overwrites its existing PDF; different periods get their own file, so
+nothing collides. Tell the user the file path and that it's theirs to open,
+move, or delete — this is a plain local file, fully under their (and your)
+control, unlike a published `Artifact`.
 
-If the user later asks for a tweak in the same session, redeploy to the same
-Artifact URL by reading the same scratch file, editing it, and calling `Artifact`
-again — this is why "keep it" is the sensible default when the user is ambiguous.
-If the scratch file was already deleted, rebuild fresh instead: re-gather the tool
-data, re-render, and publish via a new `Artifact` call (this produces a new URL).
+If the user later asks for a tweak in the same session, edit the same scratch
+HTML file and re-render it to the same PDF path (overwriting it). If the
+scratch file was already discarded, rebuild fresh instead: re-gather the tool
+data, re-render, and re-run the PDF conversion.
 
 **Direct-visual-request carve-out.** When the request is specifically and only for
 the visual/chart report (e.g. "show me the visual report for June," not a general
