@@ -94,15 +94,24 @@ values to hold constant — they drift as new transactions post.
    uses three of dataviz's fixed Status
    palette's four tiers — `good` (`#0ca30c`), `warning` (`#fab219`), `critical`
    (`#d03b3b`) — `serious` is deliberately unused. The critical tier is keyed to
-   `budget_overview`'s own `over` boolean (exact `spent > budget`, the same flag
-   behind its `⚠` marker), not the rounded `pct` field — `pct` only decides
-   warning (`over == False AND pct >= 80`) vs. good (`over == False AND pct <
+   `budget_overview`'s own `over` boolean (the same flag behind its `⚠`
+   marker), not the rounded `pct` field — `pct` only decides warning
+   (`over == False AND pct >= 80`) vs. good (`over == False AND pct <
    80`). A category with no budget set at all, or a zero/negative net spend
    this month, also gets `good` (there's no over-budget signal possible without
    a budget to compare against, or without positive spend to compare) — this is
    not a new fourth tier, just the existing `good` color. Trailing text reads
    `"$spent of $budget · pct%"` for budgeted rows or just `"$spent"` for
    unbudgeted rows.
+
+   **Floor categories flip the meaning of `over`, not the rendering logic.**
+   For a floor-type category (e.g. Investments — more spend is good),
+   `budget_overview`'s `over` field is already direction-aware server-side:
+   `over == false` means spend is at/above the target (render `good`), and
+   `over == true` means spend is under the target (render `critical`). Same
+   field, same color mapping as above — no visualizer-side branching needed —
+   just don't assume `over == true` always means "spent too much" when reading
+   the word "over."
 
    **Row set and sourcing.** A category belongs in the row set only if its
    actual spend this month is *positive* (check the value itself — a category

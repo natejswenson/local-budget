@@ -29,3 +29,10 @@ calling the write tool. One confirmation per write.
 
 Never write without the user's yes. If the user declines a proposed category, move
 on to the next item in the queue.
+
+**Never propose "Random."** It's a last-resort catch-all, not a default for
+ambiguous merchants — proposing it defeats the point of categorizing at all.
+If nothing fits, say so and leave the item in the review queue for the user
+to decide, rather than defaulting into Random. (The write tools also refuse
+`category="Random"` unless explicitly confirmed, as a backstop — but the
+right move here is to just not propose it.)

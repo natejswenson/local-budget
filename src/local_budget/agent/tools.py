@@ -339,7 +339,8 @@ async def delete_user_note(args: dict) -> dict:
 @_with_rw_conn
 async def set_merchant_category(args: dict, conn) -> dict:
     n = manual.set_merchant_category(args["merchant_norm"], args["category"],
-                                     args.get("subcategory"), conn=conn)
+                                     args.get("subcategory"),
+                                     confirm_random=bool(args.get("confirm_random", False)), conn=conn)
     return {"ok": True, "rendered": f"✓ pinned {args['merchant_norm']} → {args['category']} "
                                     f"({n} transaction(s) + a rule)"}
 
@@ -347,7 +348,8 @@ async def set_merchant_category(args: dict, conn) -> dict:
 @_with_rw_conn
 async def set_txn_category(args: dict, conn) -> dict:
     manual.set_transaction_category(int(args["txn_id"]), args["category"],
-                                    args.get("subcategory"), conn=conn)
+                                    args.get("subcategory"),
+                                    confirm_random=bool(args.get("confirm_random", False)), conn=conn)
     return {"ok": True, "rendered": f"✓ txn {args['txn_id']} → {args['category']}"}
 
 
@@ -362,6 +364,18 @@ async def remove_category(args: dict, conn) -> dict:
     r = manual.remove_category(args["name"], args["merge_into"], conn=conn)
     return {"ok": True, "data": r,
             "rendered": f"✓ merged {args['name']} → {args['merge_into']} ({r['moved_txns']} transaction(s))"}
+
+
+@_with_rw_conn
+async def mark_floor_category(args: dict, conn) -> dict:
+    categories.mark_floor_category(args["name"], conn=conn)
+    return {"ok": True, "rendered": f"✓ {args['name']} is now floor-type (more spend is good)"}
+
+
+@_with_rw_conn
+async def unmark_floor_category(args: dict, conn) -> dict:
+    categories.unmark_floor_category(args["name"], conn=conn)
+    return {"ok": True, "rendered": f"✓ {args['name']} reverted to ceiling-type (less spend is good)"}
 
 
 @_with_rw_conn
@@ -547,13 +561,19 @@ TOOL_SPECS: list[ToolSpec] = [
     # ── write tools ──
     ToolSpec("set_merchant_category",
              "Pin a merchant (merchant_norm substring) to a category (+ optional subcategory): "
-             "adds a rule and recategorizes that merchant's existing transactions.",
+             "adds a rule and recategorizes that merchant's existing transactions. Setting "
+             "category='Random' requires confirm_random=true — it's discouraged, pick a real "
+             "category or leave it in the review queue.",
              _obj({"merchant_norm": {"type": "string"}, "category": {"type": "string"},
-                   "subcategory": {"type": "string"}}, ["merchant_norm", "category"]),
+                   "subcategory": {"type": "string"}, "confirm_random": {"type": "boolean"}},
+                  ["merchant_norm", "category"]),
              set_merchant_category),
-    ToolSpec("set_txn_category", "Categorize a SINGLE transaction by txn_id (no rule).",
+    ToolSpec("set_txn_category", "Categorize a SINGLE transaction by txn_id (no rule). Setting "
+             "category='Random' requires confirm_random=true — it's discouraged, pick a real "
+             "category or leave it in the review queue.",
              _obj({"txn_id": {"type": "integer"}, "category": {"type": "string"},
-                   "subcategory": {"type": "string"}}, ["txn_id", "category"]),
+                   "subcategory": {"type": "string"}, "confirm_random": {"type": "boolean"}},
+                  ["txn_id", "category"]),
              set_txn_category),
     ToolSpec("add_custom_category", "Add a user-defined spend category.",
              _obj({"name": {"type": "string"}}, ["name"]), add_custom_category),
@@ -561,8 +581,16 @@ TOOL_SPECS: list[ToolSpec] = [
              "transactions/rules/budgets, then hides it).",
              _obj({"name": {"type": "string"}, "merge_into": {"type": "string"}},
                   ["name", "merge_into"]), remove_category),
+    ToolSpec("mark_floor_category", "Mark a category as floor-type: MORE spend is good (e.g. "
+             "Investments), the opposite of every other (ceiling-type) category.",
+             _obj({"name": {"type": "string"}}, ["name"]), mark_floor_category),
+    ToolSpec("unmark_floor_category", "Revert a category to ordinary ceiling-type semantics "
+             "(less spend is good).",
+             _obj({"name": {"type": "string"}}, ["name"]), unmark_floor_category),
     ToolSpec("set_budget_limit", "Set a monthly budget limit (cents) for a category or "
-             "(category, subcategory).",
+             "(category, subcategory). Direction (over-budget-is-bad vs under-target-is-bad) "
+             "comes from the category's floor/ceiling marking (see mark_floor_category), not "
+             "from this call.",
              _obj({"category": {"type": "string"}, "amount_cents": {"type": "integer"},
                    "subcategory": {"type": "string"}}, ["category", "amount_cents"]),
              set_budget_limit),
@@ -578,7 +606,9 @@ TOOL_SPECS: list[ToolSpec] = [
              _obj({"period": {"type": "string"}, "markdown": {"type": "string"}},
                   ["period", "markdown"]), save_brief),
     # ── Phase-4 read tools ──
-    ToolSpec("budget_overview", "Spend vs budget per category for a month (over-budget flagged).",
+    ToolSpec("budget_overview", "Spend vs budget per category for a month (over-budget flagged; "
+             "floor categories like Investments flip the comparison — under-target is flagged "
+             "instead of over-budget).",
              _obj({"month": {"type": "string"}}), budget_overview),
     ToolSpec("income_by_source", "Income grouped by source for a month.",
              _obj({"month": {"type": "string"}}), income_by_source),
