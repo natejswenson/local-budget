@@ -31,6 +31,7 @@ _EXPECTED_TOOLS = {
     "run_sql", "save_user_note", "list_user_notes", "delete_user_note",
     # write (Phase 3)
     "set_merchant_category", "set_txn_category", "add_custom_category", "remove_category",
+    "mark_floor_category", "unmark_floor_category",
     "set_budget_limit", "clear_budget_limit", "set_expected_income", "split_subscriptions",
     "save_brief",
     # read (Phase 4)

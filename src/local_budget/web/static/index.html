@@ -499,6 +499,7 @@ async function render(){
 
 function renderInsight(i){
   if(i.kind==='over_budget') return row('warn','⚠',`Over budget: ${esc(i.label)}`,`${fmt2(i.actual_cents)} of ${fmt2(i.limit_cents)} limit`, fmt(i.amount_cents)+' over');
+  if(i.kind==='under_target') return row('warn','⚠',`Under target: ${esc(i.label)}`,`${fmt2(i.actual_cents)} of ${fmt2(i.limit_cents)} target`, fmt(i.amount_cents)+' short');
   if(i.kind==='subscriptions') return row('sub','🔁',esc(i.label),'recurring — cancel any you don\'t use', fmt(i.amount_cents)+'/mo');
   // reduce
   return row('cut','💸',esc(i.label),`${fmt(i.monthly_cents)}/mo — discretionary, easiest to trim`, fmt(i.amount_cents));
@@ -835,9 +836,9 @@ function postJSON(path, body){
 // "Untracked spending" line — no zero-based pressure to allocate every dollar.
 let budFactor=1;   // period multiplier for the active scope (1 = single month)
 let budCats=[];    // last-rendered category payload (for the remove/merge modal preview)
-function budgetDelta(spent, budget){
-  if(budget==null) return '<span class="dl none">—</span>';
-  const d=spent-budget;            // budget here is the PERIOD budget (monthly × factor)
+function budgetDelta(o){
+  if(o.budget_cents==null) return '<span class="dl none">—</span>';
+  const d=o.over_cents;            // direction-aware: positive always means "off track"
   return d>0 ? `<span class="dl over">+${bnum(d)}</span>`
        : d<0 ? `<span class="dl under">${bnum(d)}</span>`
        : '<span class="dl flat">0</span>';
@@ -866,14 +867,14 @@ function budgetRow(c, cls){
       +`<button class="bcat-rm" data-rmcat="${esc(c.category)}" title="Remove — merge into another category">−</button></div>`
     +budCell(c.category, null, c)
     +`<div class="num bsp">${bnum(c.spent_cents)}</div>`
-    +`<div class="num">${budgetDelta(c.spent_cents, c.budget_cents)}</div></div>`
+    +`<div class="num">${budgetDelta(c)}</div></div>`
     +budgetBar(c);
   if(open && hasSubs){
     h+='<div class="bsubs">'+c.subcategories.map(s=>`<div class="bud2-r bsub">`
       +`<div class="bcat">${esc(s.subcategory)}</div>`
       +budCell(c.category, s.subcategory, s)
       +`<div class="num bsp">${bnum(s.spent_cents)}</div>`
-      +`<div class="num">${budgetDelta(s.spent_cents, s.budget_cents)}</div></div>`
+      +`<div class="num">${budgetDelta(s)}</div></div>`
       +budgetBar(s)).join('')+'</div>';
   }
   return h;
@@ -892,12 +893,12 @@ async function renderBudgets(){
   const tracked   = cats.filter(c=>c.budget_cents!=null);
   const untracked = cats.filter(c=>c.budget_cents==null && c.spent_cents!==0).sort((a,c)=>c.spent_cents-a.spent_cents);
   // needs attention (over) first, by amount over desc; then on track, by % of budget used desc.
-  const over = tracked.filter(c=>c.over).sort((a,c)=>(c.spent_cents-c.budget_cents)-(a.spent_cents-a.budget_cents));
+  const over = tracked.filter(c=>c.over).sort((a,c)=>c.over_cents-a.over_cents);
   const onTrack = tracked.filter(c=>!c.over).sort((a,c)=>(c.pct||0)-(a.pct||0) || c.spent_cents-a.spent_cents);
   const budgeted = tracked.reduce((s,c)=>s+c.budget_cents,0);
   const tspent   = tracked.reduce((s,c)=>s+c.spent_cents,0);
   const uspent   = untracked.reduce((s,c)=>s+c.spent_cents,0);
-  const overTot  = over.reduce((s,c)=>s+(c.spent_cents-c.budget_cents),0);
+  const overTot  = over.reduce((s,c)=>s+c.over_cents,0);
   const cell=(k,v,c)=>`<div class="bud2-s"><div class="sk">${k}</div><div class="sv${c?' '+c:''}">${bnum(v)}</div></div>`;
   const remaining = budgeted - tspent;   // budget triad: coherent in any period (period totals)
   $('#bud-summary').innerHTML = cell('Budgeted', budgeted)+cell('Spent', tspent)
