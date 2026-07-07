@@ -18,7 +18,9 @@ SPEND_CATEGORIES: frozenset[str] = frozenset({
     "Dining Out",
     "Transportation",      # gas, parking, transit, rideshare
     "Shopping",            # retail, Amazon, general merchandise
-    "Utilities",           # electric, gas, internet, phone
+    "Utilities",           # catch-all for utility-type bills not covered by a
+                           # dedicated category (see Phone, Electricity,
+                           # Gas/Propane, Internet, Sewer/Water/Trash)
     "Housing",             # rent, mortgage, HOA
     "Health",              # medical, pharmacy, dental, fitness
     "Entertainment",       # events, hobbies, games, streaming-as-fun
