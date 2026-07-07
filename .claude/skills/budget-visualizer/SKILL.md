@@ -187,19 +187,24 @@ values to hold constant — they drift as new transactions post.
      are excluded from the cross-reference outright, never matched, since the
      placeholder can't be reliably attributed to one recurring merchant;
    - `amount_cents < 0` and its category is an *exact match* for one of a fixed
-     bill-like allowlist — `{"Subscriptions", "Utilities", "Insurance",
-     "Housing", "NY529", "Sewer/Water/Trash"}` — not the broader `is_spend()`
-     check. The first four are this project's built-in categories representing
-     inherently auto-billed obligations; `NY529` and `Sewer/Water/Trash` are the
-     user's own custom categories for recurring obligations, named explicitly
-     since a custom category's meaning can't be derived generically. This
-     narrower guard is what keeps the section to genuine bills/subscriptions
-     (Netflix, Claude, Verizon) rather than merchants the user just happens to
-     visit most months (gas stations, grocery/warehouse stores, restaurants). A
-     refund/credit, a non-spend category, or a spend-eligible-but-not-allowlisted
-     category must never count as a match, even with an exact `merchant_norm`
-     equality. If the user adds further custom bill-like categories later, this
-     allowlist needs a manual update — not solved generically.
+     bill-like allowlist — `{"Subscriptions", "Insurance", "Housing", "NY529"}`
+     — not the broader `is_spend()` check. `Subscriptions`, `Insurance`, and
+     `Housing` are this project's built-in categories; `NY529` is the user's
+     own custom category, named explicitly since a custom category's meaning
+     can't be derived generically. Essential fixed-utility categories (`Phone`,
+     `Electricity`, `Gas/Propane`, `Internet`, `Sewer/Water/Trash`) are
+     deliberately excluded — Verizon, the electric co-op, propane, and the
+     garbage hauler recur every month by nature and aren't "subscriptions" the
+     user would ever reconsider, so flagging them here is just noise. This
+     narrower guard is what keeps the section to genuine discretionary
+     subscriptions and large fixed obligations (Netflix, Claude, mortgage)
+     rather than merchants the user just happens to visit most months (gas
+     stations, grocery/warehouse stores, restaurants) — or bills that recur but
+     were never in question. A refund/credit, a non-spend category, or a
+     spend-eligible-but-not-allowlisted category must never count as a match,
+     even with an exact `merchant_norm` equality. If the user adds further
+     discretionary-subscription categories later, this allowlist needs a
+     manual update — not solved generically.
 
    A recurring merchant with no qualifying match in the reported month is
    omitted from that month's section. **Known limitation:** because the match
