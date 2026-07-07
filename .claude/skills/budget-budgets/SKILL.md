@@ -13,6 +13,9 @@ before synthesizing.
 ## Read first
 
 1. `budget_overview` — spend vs. limit per category, with over-budget flagged.
+   "Over" is direction-relative, not universally "spent more than": a
+   floor-type category (e.g. Investments — set via `mark_floor_category`)
+   flags "over" when spend falls *under* its target, not over it.
 2. `get_category_breakdown` — drill into a category's spending when deciding a limit.
 
 Print each tool's `rendered` block verbatim.

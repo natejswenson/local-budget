@@ -272,14 +272,17 @@ def insights(month: str | None = None) -> list[dict]:
         s = _month_summary(conn, month)
         nmonths = _scope_month_count(conn, month)
         subs = subcategory_breakdown("Subscriptions", month) if "Subscriptions" in s["spend_by_category"] else []
+        floor_set = categories.floor_categories(conn=conn)
     spend = s["spend_by_category"]
     out: list[dict] = []
 
-    # 1) Over-budget — you set the limit and crossed it (most urgent).
+    # 1) Over-budget / under-target — you set the limit and missed it (most urgent).
     for b in s["budgets"]:
         if b["over_cents"] > 0:
             label = f"{b['category']} / {b['subcategory']}" if b["subcategory"] else b["category"]
-            out.append({"kind": "over_budget", "label": label, "amount_cents": b["over_cents"],
+            kind = categories.off_track_label(b["category"], floor_set=floor_set,
+                                              under="under_target", over="over_budget")
+            out.append({"kind": kind, "label": label, "amount_cents": b["over_cents"],
                         "actual_cents": b["actual_cents"], "limit_cents": b["limit_cents"]})
 
     # 2) Biggest discretionary categories — where you can actually cut.
@@ -319,6 +322,7 @@ def budget_status(conn: sqlite3.Connection, month: str) -> list[dict]:
     so the Overview "over budget" insight and the Budgets tab cannot diverge in a scope."""
     from . import budgets as budgets_mod
     frag, params, factor = _budget_scope(conn, month)
+    floor_set = categories.floor_categories(conn=conn)
     out = []
     for (category, subcategory), limit_cents in budgets_mod.active_limits(conn).items():   # current limit, all scopes
         if subcategory is None:
@@ -338,7 +342,11 @@ def budget_status(conn: sqlite3.Connection, month: str) -> list[dict]:
             "subcategory": subcategory,
             "limit_cents": period_limit,
             "actual_cents": actual,
-            "over_cents": actual - period_limit,
+            # Direction-aware, sign-normalized: positive always means "bad" —
+            # over the limit for a ceiling category, under it for a floor one
+            # (e.g. Investments). Direction is a property of `category`, not
+            # `subcategory` (it cascades to all subcategories underneath).
+            "over_cents": categories.off_track_delta(category, actual, period_limit, floor_set=floor_set),
         })
     return sorted(out, key=lambda d: (d["category"], d["subcategory"] or ""))
 
@@ -525,6 +533,7 @@ def budget_overview(month: str | None = None) -> dict:
         # any past month against the budget they have SET NOW ("how did I do in May vs my
         # budget?"), so selecting an old month never shows an empty budget (design 2026-06-13).
         active = budgets_mod.active_limits(conn)
+        floor_set = categories.floor_categories(conn=conn)
         # Budget spend: un-averaged NET total over the closed completed-months window
         # (excludes the in-progress month for ranges; design 2026-06-13). NET (no
         # amount_cents<0 filter) so a refund/credit reduces the category exactly as it
@@ -576,12 +585,19 @@ def budget_overview(month: str | None = None) -> dict:
             subs.append({
                 "subcategory": sub, "budget_cents": sb, "monthly_budget_cents": sb_m,
                 "spent_cents": ss, "suggested_cents": int(avg_sub.get((cat, sub), 0)),
-                "over": sb is not None and ss > sb, "pct": _pct(ss, sb),
+                # Direction-aware (floor categories flip the comparison). `floor_set`
+                # was fetched once above (while the connection was still open) so
+                # this per-row check never re-reads the DB.
+                "over": sb is not None and categories.is_off_track(cat, ss, sb, floor_set=floor_set),
+                "over_cents": categories.off_track_delta(cat, ss, sb, floor_set=floor_set) if sb is not None else None,
+                "pct": _pct(ss, sb),
             })
         out_cats.append({
             "category": cat, "budget_cents": budget, "monthly_budget_cents": monthly,
             "spent_cents": spent, "suggested_cents": int(avg_cat.get(cat, 0)),
-            "over": budget is not None and spent > budget, "pct": _pct(spent, budget),
+            "over": budget is not None and categories.is_off_track(cat, spent, budget, floor_set=floor_set),
+            "over_cents": categories.off_track_delta(cat, spent, budget, floor_set=floor_set) if budget is not None else None,
+            "pct": _pct(spent, budget),
             "sub_total_cents": sub_total,
             "subs_exceed": monthly is not None and sub_total > monthly,
             "subcategories": subs,
