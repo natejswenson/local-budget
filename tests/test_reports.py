@@ -912,6 +912,29 @@ def test_budget_overview_over_cents_direction_aware(data_dir):
     assert ov2["over_cents"] == 10000   # positive even though spend is UNDER the target
 
 
+def test_budget_overview_floor_field(data_dir):
+    # Category-level AND subcategory-level dicts carry a `floor` boolean so a
+    # downstream chart-builder can key off the payload directly instead of
+    # relying on out-of-band memory of a prior mark_floor_category call.
+    db.init_schema()
+    categories.mark_floor_category("Investments")
+    with db.connect() as conn:
+        _seed_txn(conn, "2026-06-10", -200000, "Investments", subcategory="401k")
+        _seed_txn(conn, "2026-06-11", -30000, "Dining Out")
+    budgets.set_limit("Investments", 300000)
+    budgets.set_limit("Investments", 350000, subcategory="401k")
+    budgets.set_limit("Dining Out", 10000)
+
+    by_cat = {c["category"]: c for c in reports.budget_overview("2026-06")["categories"]}
+    inv = by_cat["Investments"]
+    assert inv["floor"] is True
+    sub = {s["subcategory"]: s for s in inv["subcategories"]}["401k"]
+    assert sub["floor"] is True
+
+    dining = by_cat["Dining Out"]
+    assert dining["floor"] is False
+
+
 def test_budget_overview_exposes_onboarded_flag(data_dir):
     # The Budgets-tab payload carries the first-run signal for the setup wizard:
     # False until the budget_onboarded setting is written, then True.

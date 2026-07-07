@@ -104,14 +104,24 @@ values to hold constant — they drift as new transactions post.
    `"$spent of $budget · pct%"` for budgeted rows or just `"$spent"` for
    unbudgeted rows.
 
-   **Floor categories flip the meaning of `over`, not the rendering logic.**
-   For a floor-type category (e.g. Investments — more spend is good),
-   `budget_overview`'s `over` field is already direction-aware server-side:
-   `over == false` means spend is at/above the target (render `good`), and
-   `over == true` means spend is under the target (render `critical`). Same
-   field, same color mapping as above — no visualizer-side branching needed —
-   just don't assume `over == true` always means "spent too much" when reading
-   the word "over."
+   **Floor categories flip the meaning of `over`, and override the pct-based
+   rule above.** Identify a floor-type row from `budget_overview`'s own
+   payload, not from memory of a prior `mark_floor_category` call — every
+   category-level and subcategory-level dict now carries a `"floor"` boolean
+   field alongside `over`/`over_cents`. Check `floor == true` on the row
+   itself; never assume a category is floor-type based on its name or on
+   having seen it marked floor-type earlier in the conversation, since the
+   set of floor categories can change between calls. For a floor-type row
+   (e.g. Investments — more spend is good), `budget_overview`'s `over` field
+   is already direction-aware server-side: `over == false` means spend is
+   at/above the target, and `over == true` means spend is under the target.
+   For these rows, color is decided by `over` ALONE — `over == false` →
+   `good` unconditionally, `over == true` → `critical` unconditionally. The
+   general paragraph's `pct >= 80 → warning` rule does NOT apply to floor
+   categories: `pct` never selects `warning` for a floor row, even when
+   spend is well past 100% of the target (which is the expected, desired
+   state for a floor category doing well). Don't assume `over == true`
+   always means "spent too much" when reading the word "over."
 
    **Row set and sourcing.** A category belongs in the row set only if its
    actual spend this month is *positive* (check the value itself — a category
@@ -129,10 +139,33 @@ values to hold constant — they drift as new transactions post.
    displayed text) may read `get_category_breakdown`'s `data.breakdown[].spent`
    cents field directly.
 
+   **Floor carve-out on the row set.** The positive-spend gate above is a
+   ceiling-category rule and does not apply to floor-type rows. A floor-type
+   row (`floor == true`) belongs in the row set whenever `over == true` —
+   i.e. whenever the floor target is still unmet — even if spend this month
+   is exactly $0.00 or net negative. A budgeted floor category sitting at
+   $0.00 (e.g. Investments with no contribution posted yet) is not "nothing
+   to show": it's the single most off-track case the floor feature exists to
+   surface, so it must render rather than silently drop out. This keeps the
+   PDF in sync with `budget_overview`'s own payload, which still emits
+   `over: true, floor: true, spent_cents: 0` for such a row, and with the web
+   Budgets tab, which already renders it under "under target" — the two
+   surfaces must not disagree about whether a maximally-missed floor goal is
+   worth showing. A floor-type row only falls back to the general
+   zero/negative-spend exclusion once its target is met or exceeded (`over ==
+   false`); ceiling (non-floor) categories are untouched by this carve-out
+   and keep the positive-spend-only rule exactly as written above.
+
    **No bar for negative net spend.** A row only ever gets a bar for a positive
    spent amount — a category whose only transaction(s) net negative (e.g. a
    lone offsetting refund) is excluded from the row set entirely, same as the
-   zero-spend case above.
+   zero-spend case above. This exclusion is itself subject to the floor
+   carve-out immediately above: a floor-type row with `over == true` and a
+   zero or negative net spend still belongs in the row set and must still
+   render — it just renders with no bar (bar length floors at zero; a
+   negative or zero spend has nothing positive to draw), showing only its
+   tick mark, color, and trailing "$spent" text. Only ceiling (non-floor)
+   rows are excluded outright for zero/negative net spend.
 
    **Shared scale, not per-row scale.** Bar length and tick position for every
    row share one axis: `max(every listed category's spent, every listed
@@ -143,9 +176,10 @@ values to hold constant — they drift as new transactions post.
    **Sort.** Rows sort by dollars spent descending. Ties broken by category
    name, alphabetically.
 
-   **Empty case.** If the row set is empty (no category has positive spend
-   this month), render a "no spending to show" placeholder line instead of an
-   empty section.
+   **Empty case.** If the row set is empty — no category has positive spend
+   this month, and no floor-type category is currently `over == true` per the
+   carve-out above — render a "no spending to show" placeholder line instead
+   of an empty section.
 
 3. **Flags list** — a plain text/table block for unusual charges and
    subscriptions/recurring bills (icon + label, never color-alone; not a chart,

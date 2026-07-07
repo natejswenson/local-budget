@@ -153,11 +153,14 @@ def remove_category(name: str, merge_into: str, conn=None) -> dict:
         merged_budget = conn.execute(
             "DELETE FROM budgets WHERE category = ?", (name,)).rowcount > 0
 
-        # 4) Vocabulary — hide the merged-away category; drop it if it was custom.
-        # Both writes reuse THIS transaction via the conn-aware categories helpers,
+        # 4) Vocabulary — hide the merged-away category; drop it if it was custom;
+        # clear any floor-type marking so a future category re-created with this
+        # same name doesn't silently inherit stale floor semantics.
+        # All writes reuse THIS transaction via the conn-aware categories helpers,
         # which own the settings-blob encoding (F-1: no inline json here).
         categories.mark_hidden(name, conn=conn)
         categories.remove_custom(name, conn=conn)
+        categories.unmark_floor_category(name, conn=conn)
 
     return {"moved_txns": moved_txns, "moved_rules": moved_rules,
             "merged_budget": merged_budget, "summed_limit_cents": summed_limit_cents}

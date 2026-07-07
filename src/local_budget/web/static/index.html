@@ -216,6 +216,7 @@
   .bbud input::placeholder{color:var(--faint);opacity:.45}
   .dl{font-size:13px;font-variant-numeric:tabular-nums}
   .dl.over{color:var(--over)}
+  .dl.short{color:var(--amber)}  /* floor-category shortfall — distinct from the ceiling "over" alarm color */
   .dl.under,.dl.flat,.dl.none{color:var(--faint)}
   .bcaret{cursor:pointer;color:var(--faint);transition:transform .12s;display:inline-block;font-size:15px;line-height:1}
   .bcaret.open{transform:rotate(90deg)}
@@ -800,10 +801,13 @@ async function openReview(){
   if(!SPEND_CATS.length){ try{ SPEND_CATS = await api('/categories'); }catch(e){} }
   const ms = await api('/merchants?limit=200&only_uncertain=true');
   if(!ms.length){ $('#review-panel').style.display='none'; await checkInbox(); return; }
-  // SPEND_CATS already includes the builtin 'Random' (from /api/categories); only add
-  // the two structural manual-recategorize options. (Don't re-list 'Random' — it would
-  // double-list, and a removed 'Random' must not reappear.)
-  const allcats = SPEND_CATS.concat(['Transfer','Income']);
+  // SPEND_CATS includes the builtin 'Random', but the review panel deliberately
+  // excludes it from the picker (skills are told never to propose it; the manual
+  // review picker shouldn't offer it either) — a merchant already pinned to
+  // 'Random' still shows it as its current value via the cur-not-in-allcats
+  // fallback below, so it stays visible without being newly selectable. Also add
+  // the two structural manual-recategorize options.
+  const allcats = SPEND_CATS.filter(c=>c!=='Random').concat(['Transfer','Income']);
   $('#review-list').innerHTML =
     '<tr><th>Merchant</th><th class="num">#</th><th class="num">Spent</th><th>Category</th></tr>' +
     ms.map(m=>{
@@ -815,8 +819,8 @@ async function openReview(){
   $('#review-panel').scrollIntoView({behavior:'smooth'});
   document.querySelectorAll('#review-list select').forEach(sel=>{
     sel.onchange=async()=>{ sel.disabled=true;
-      try{ await fetch('/api/merchant-category',{method:'POST',headers:{'content-type':'application/json'},
-        body:JSON.stringify({merchant:decodeURIComponent(sel.dataset.m),category:sel.value})}); }catch(e){ alert(e.message); }
+      try{ await postJSON('/api/merchant-category',{merchant:decodeURIComponent(sel.dataset.m),category:sel.value}); }
+      catch(e){ alert(e.message); }
       sel.disabled=false; await render(); }; });
 }
 $('#review-done').onclick=async()=>{ $('#review-panel').style.display='none'; await render(); await checkInbox(); };
@@ -839,6 +843,17 @@ let budCats=[];    // last-rendered category payload (for the remove/merge modal
 function budgetDelta(o){
   if(o.budget_cents==null) return '<span class="dl none">—</span>';
   const d=o.over_cents;            // direction-aware: positive always means "off track"
+  if(o.floor){
+    // Floor category (e.g. Investments): over_cents>0 means spend fell SHORT
+    // of the target — bad, but NOT an overspend, so it gets "short" wording
+    // and a distinct (non-red-alarm) style instead of the ceiling "+$X over"
+    // badge. over_cents<0 means spend is past the target (good), shown as a
+    // plain "+" surplus in the same muted style the ceiling "under budget"
+    // case uses. Mirrors renderInsight's `under_target` kind copy.
+    return d>0 ? `<span class="dl short">${bnum(d)} short</span>`
+         : d<0 ? `<span class="dl under">+${bnum(-d)}</span>`
+         : '<span class="dl flat">0</span>';
+  }
   return d>0 ? `<span class="dl over">+${bnum(d)}</span>`
        : d<0 ? `<span class="dl under">${bnum(d)}</span>`
        : '<span class="dl flat">0</span>';
@@ -892,27 +907,40 @@ async function renderBudgets(){
   const cats=b.categories;
   const tracked   = cats.filter(c=>c.budget_cents!=null);
   const untracked = cats.filter(c=>c.budget_cents==null && c.spent_cents!==0).sort((a,c)=>c.spent_cents-a.spent_cents);
-  // needs attention (over) first, by amount over desc; then on track, by % of budget used desc.
-  const over = tracked.filter(c=>c.over).sort((a,c)=>c.over_cents-a.over_cents);
+  // needs attention (ceiling over-budget) and under target (floor shortfall) are
+  // both "off track" (c.over) but mean opposite things — split them the same way
+  // reports.insights()/agent's insights() handler and renderInsight already do
+  // (kind==='under_target' gets its own "short of target" bucket, never folded
+  // into the "over budget" one). Each sorted by amount off-track desc; on track
+  // by % of budget used desc.
+  const over  = tracked.filter(c=>c.over && !c.floor).sort((a,c)=>c.over_cents-a.over_cents);
+  const short = tracked.filter(c=>c.over && c.floor).sort((a,c)=>c.over_cents-a.over_cents);
   const onTrack = tracked.filter(c=>!c.over).sort((a,c)=>(c.pct||0)-(a.pct||0) || c.spent_cents-a.spent_cents);
   const budgeted = tracked.reduce((s,c)=>s+c.budget_cents,0);
   const tspent   = tracked.reduce((s,c)=>s+c.spent_cents,0);
   const uspent   = untracked.reduce((s,c)=>s+c.spent_cents,0);
-  const overTot  = over.reduce((s,c)=>s+c.over_cents,0);
+  const overTot   = over.reduce((s,c)=>s+c.over_cents,0);
+  const shortTot  = short.reduce((s,c)=>s+c.over_cents,0);
   const cell=(k,v,c)=>`<div class="bud2-s"><div class="sk">${k}</div><div class="sv${c?' '+c:''}">${bnum(v)}</div></div>`;
   const remaining = budgeted - tspent;   // budget triad: coherent in any period (period totals)
   $('#bud-summary').innerHTML = cell('Budgeted', budgeted)+cell('Spent', tspent)
     +cell(remaining<0?'Over':'Remaining', Math.abs(remaining), remaining<0?'neg':'');
+  const insightParts = [];
+  if(over.length) insightParts.push(`<b>${over.length}</b> ${over.length===1?'category is':'categories are'} over budget, by <b>${bnum(overTot)}</b> total`);
+  if(short.length) insightParts.push(`<b>${short.length}</b> ${short.length===1?'category is':'categories are'} under target, by <b>${bnum(shortTot)}</b> short`);
   $('#bud-insight').innerHTML = !tracked.length
     ? 'No targets yet — set one on any line below, or tap <b>Set up</b> for a guided start.'
-    : over.length
-      ? `<b>${over.length}</b> of ${tracked.length} tracked ${over.length===1?'category is':'categories are'} over, by <b>${bnum(overTot)}</b> total.`
+    : insightParts.length
+      ? `Of <b>${tracked.length}</b> tracked: ` + insightParts.join('; ') + '.'
       : `All <b>${tracked.length}</b> tracked categories are within budget. ✓`;
+  let trackedHtml = '';
+  if(over.length) trackedHtml += '<div class="bgrp attn">needs attention</div>'+over.map(c=>budgetRow(c,'')).join('');
+  if(short.length) trackedHtml += '<div class="bgrp attn">under target</div>'+short.map(c=>budgetRow(c,'')).join('');
+  if((over.length||short.length) && onTrack.length) trackedHtml += '<div class="bgrp">on track</div>';
+  trackedHtml += onTrack.map(c=>budgetRow(c,'')).join('');
   $('#bud-tracked').innerHTML = !tracked.length
     ? '<div class="bud2-empty">No tracked categories yet — set a target on a line below.</div>'
-    : (over.length ? '<div class="bgrp attn">needs attention</div>'+over.map(c=>budgetRow(c,'')).join('')
-        +(onTrack.length?'<div class="bgrp">on track</div>':'') : '')
-      + onTrack.map(c=>budgetRow(c,'')).join('');
+    : trackedHtml;
   let ut='';
   if(untracked.length){
     ut=`<div class="bud2-untrk-head" id="untrk-toggle">`

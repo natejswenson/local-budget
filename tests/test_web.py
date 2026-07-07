@@ -367,6 +367,15 @@ def test_set_category_rejects_unknown(client):
     assert r.status_code == 400
 
 
+def test_set_category_rejects_random_without_confirm(client):
+    # F1 regression: the endpoint has no confirm_random passthrough, so posting
+    # category="Random" (e.g. the review panel, if it ever offered it) must 400
+    # rather than silently no-op. The frontend fix is to stop offering "Random"
+    # in the review picker and to surface this 400 via postJSON's r.ok check.
+    r = client.post("/api/merchant-category", json={"merchant": "WALMART", "category": "Random"})
+    assert r.status_code == 400
+
+
 def test_inbox_endpoint_counts_only(client, tmp_path, monkeypatch):
     from local_budget import db, inbox_adapter
     box = tmp_path / "inbox"

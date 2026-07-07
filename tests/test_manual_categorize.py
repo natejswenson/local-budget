@@ -114,6 +114,25 @@ def test_remove_category_rejects_mismatched_floor_direction(data_dir, tmp_path):
     assert result["moved_txns"] == 0
 
 
+def test_remove_category_clears_floor_marking_so_recreated_category_is_not_floor(data_dir, tmp_path):
+    # A removed floor category must not leave its name floor-typed behind — otherwise
+    # re-creating a category with the same name later silently inherits stale floor
+    # semantics (flips over/under-budget meaning with no indication why).
+    _seed(tmp_path)
+    categories.add_custom_category("Investments")
+    categories.mark_floor_category("Investments")
+    categories.add_custom_category("Savings")
+    categories.mark_floor_category("Savings")
+    assert categories.is_floor("Investments")
+
+    manual.remove_category("Investments", "Savings")  # merge into another floor category
+    assert not categories.is_floor("Investments")
+
+    # re-creating a category with the same (now-hidden) name must NOT come back floor-typed
+    categories.add_custom_category("Investments")
+    assert not categories.is_floor("Investments")
+
+
 # ── CLI: Random-category confirmation (must not trap the user in a retry loop) ──
 def test_cli_review_confirms_random_then_applies(data_dir, tmp_path):
     _seed(tmp_path)

@@ -133,6 +133,32 @@ def test_query_transactions_month_wins_when_days_also_given(data_dir):
     assert rows[0]["posted_date"] == "2026-07-15"
 
 
+def test_insights_under_target_rendered_separately_from_ways_to_save(data_dir, tmp_path):
+    """S1 regression: a floor category (e.g. Investments) short of its target must
+    NOT render under '## Ways to save' with plain '- label: $amount' — that reads
+    as 'cut this' when reports.insights() actually means 'add more'. It must render
+    under its own heading with 'short of target' wording instead."""
+    from local_budget import budgets, categories
+    from local_budget.categorize.manual import set_merchant_category as setc
+    from local_budget.ingest import importer
+    from ofx_fixtures import write_ofx
+
+    db.init_schema()
+    categories.mark_floor_category("Investments")
+    importer.import_file(write_ofx(tmp_path / "wf.qfx", [
+        {"trntype": "DEBIT", "dtposted": "20260603", "amount": "-200.00", "fitid": "N1", "name": "529 PLAN"}]))
+    setc("529 PLAN", "Investments")
+    budgets.set_limit("Investments", 30000)  # $300 target, $200 spent -> $100 short
+
+    result = asyncio.run(agent_tools.SPEC_BY_NAME["insights"].handler({"month": "all"}))
+    rendered = result["rendered"]
+    assert any(i["kind"] == "under_target" for i in result["data"]["insights"])
+    ways_to_save = rendered.split("## Under target")[0]
+    assert "Investments" not in ways_to_save          # not flattened into "Ways to save"
+    assert "## Under target" in rendered
+    assert "Investments: $100.00 short of target" in rendered
+
+
 def test_top_merchants_data_carries_resolved_month(data_dir):
     _seed_two_months()
     result = asyncio.run(agent_tools.SPEC_BY_NAME["top_merchants"].handler({"month": "2026-06"}))
