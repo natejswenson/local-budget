@@ -462,10 +462,21 @@ async def subcategory_breakdown(args: dict) -> dict:
 
 async def insights(args: dict) -> dict:
     data = reports.insights(args.get("month"))
+    # `under_target` (a floor category, e.g. Investments, short of its target) means
+    # "add more", the opposite of every other kind here ("cut this"/"over budget"/
+    # "cancel this subscription") — render it under its own heading with "short of
+    # target" wording so it never reads as a cut (reports.insights() is the source
+    # of truth for `kind`; see categories.off_track_label).
+    save_items = [i for i in data if i["kind"] != "under_target"]
+    under_items = [i for i in data if i["kind"] == "under_target"]
     lines = ["## Ways to save"]
-    lines += [f"- {i['label']}: {render.money(i['amount_cents'])}" for i in data]
-    if len(lines) == 1:
+    lines += [f"- {i['label']}: {render.money(i['amount_cents'])}" for i in save_items]
+    if not save_items:
         lines.append("- (nothing obvious flagged)")
+    if under_items:
+        lines.append("## Under target (add more)")
+        lines += [f"- {i['label']}: {render.money(i['amount_cents'])} short of target"
+                  for i in under_items]
     return {"data": {"insights": data}, "rendered": "\n".join(lines)}
 
 
@@ -619,7 +630,9 @@ TOOL_SPECS: list[ToolSpec] = [
              _obj({"category": {"type": "string"}, "month": {"type": "string"}}, ["category"]),
              subcategory_breakdown),
     ToolSpec("insights", "Deterministic 'ways to save' for a month (over-budget, biggest "
-             "discretionary, subscriptions).", _obj({"month": {"type": "string"}}), insights),
+             "discretionary, subscriptions; floor categories like Investments falling short "
+             "of target are flagged separately as 'under target' — add more, not a cut).",
+             _obj({"month": {"type": "string"}}), insights),
     ToolSpec("monthly_trend", "Spend + income per month (most recent N, oldest-first).",
              _obj({"limit": {"type": "integer"}}), monthly_trend),
     ToolSpec("review_queue", "The categorization review queue: uncategorized merchants + "

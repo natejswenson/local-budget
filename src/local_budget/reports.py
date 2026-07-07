@@ -591,6 +591,10 @@ def budget_overview(month: str | None = None) -> dict:
                 "over": sb is not None and categories.is_off_track(cat, ss, sb, floor_set=floor_set),
                 "over_cents": categories.off_track_delta(cat, ss, sb, floor_set=floor_set) if sb is not None else None,
                 "pct": _pct(ss, sb),
+                # Lets a downstream chart-builder key off this field directly instead
+                # of relying on out-of-band memory of which categories were marked
+                # floor-type via mark_floor_category (design determinism).
+                "floor": categories.is_floor(cat, floor_set=floor_set),
             })
         out_cats.append({
             "category": cat, "budget_cents": budget, "monthly_budget_cents": monthly,
@@ -601,6 +605,9 @@ def budget_overview(month: str | None = None) -> dict:
             "sub_total_cents": sub_total,
             "subs_exceed": monthly is not None and sub_total > monthly,
             "subcategories": subs,
+            # See subcategory "floor" comment above — same rationale at the
+            # category level.
+            "floor": categories.is_floor(cat, floor_set=floor_set),
         })
 
     return {
