@@ -516,6 +516,30 @@ async def monthly_trend(args: dict, conn) -> dict:
     return {"data": {"trend": data}, "rendered": rendered}
 
 
+async def list_categories(_args: dict) -> dict:
+    """The assignable category vocabulary — every write tool validates against
+    exact names from this set, so the agent needs a way to discover it instead
+    of guessing (get_category_breakdown only shows categories that HAVE spend)."""
+    floors = categories.floor_categories()
+    customs = categories.custom_categories()
+    structural = categories.STRUCTURAL_CATEGORIES
+
+    def kind(name: str) -> str:
+        return "structural" if name in structural else "spend"
+
+    rows = [{"name": n, "kind": kind(n),
+             "floor": n in floors, "custom": n in customs}
+            for n in sorted(categories.all_categories())]
+    disp = [{"Category": r["name"], "Kind": r["kind"],
+             "Direction": "floor (more is good)" if r["floor"] else
+                          ("—" if r["kind"] == "structural" else "ceiling"),
+             "Custom": "yes" if r["custom"] else "—"} for r in rows]
+    rendered = "## Categories\n" + render.table(
+        disp, [("Category", "Category"), ("Kind", "Kind"),
+               ("Direction", "Direction"), ("Custom", "Custom")])
+    return {"data": {"categories": rows}, "rendered": rendered}
+
+
 async def review_queue(_args: dict) -> dict:
     merchants = manual.needs_review()
     checks = manual.checks_to_review()
@@ -665,6 +689,12 @@ TOOL_SPECS: list[ToolSpec] = [
              _obj({"month": {"type": "string"}}), insights),
     ToolSpec("monthly_trend", "Spend + income per month (most recent N, oldest-first).",
              _obj({"limit": {"type": "integer"}}), monthly_trend),
+    ToolSpec("list_categories",
+             "The assignable category vocabulary: every category's exact name, kind "
+             "(spend/structural), floor-vs-ceiling direction, and custom flag. Call this "
+             "before any category write — set_merchant_category / set_txn_category / "
+             "set_budget_limit require an EXACT name from this list.",
+             _obj(), list_categories),
     ToolSpec("review_queue", "The categorization review queue: uncategorized merchants + "
              "individual checks to review.", _obj(), review_queue),
     ToolSpec("open_conflicts", "Open (unresolved) import conflicts to reconcile "

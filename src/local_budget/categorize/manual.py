@@ -36,7 +36,9 @@ def set_merchant_category(merchant_norm: str, category: str, subcategory: str | 
     Assigning `category="Random"` requires `confirm_random=True` (see
     `_check_random_confirmed`)."""
     if category not in categories.all_categories():
-        raise CategorizeError(f"unknown category {category!r}")
+        raise CategorizeError(
+            f"unknown category {category!r} — valid: "
+            f"{', '.join(sorted(categories.all_categories()))}")
     _check_random_confirmed(category, confirm_random)
     subcategory = (subcategory or "").strip() or None
     merchant_norm = merchant_norm.strip().upper()
@@ -66,7 +68,9 @@ def set_transaction_category(txn_id: int, category: str, subcategory: str | None
     Assigning `category="Random"` requires `confirm_random=True` (see
     `_check_random_confirmed`, same guard as `set_merchant_category`)."""
     if category not in categories.all_categories():
-        raise CategorizeError(f"unknown category {category!r}")
+        raise CategorizeError(
+            f"unknown category {category!r} — valid: "
+            f"{', '.join(sorted(categories.all_categories()))}")
     _check_random_confirmed(category, confirm_random)
     subcategory = (subcategory or "").strip() or None
     with db.writer(conn) as conn:
