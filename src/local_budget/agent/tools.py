@@ -272,19 +272,32 @@ async def top_merchants(args: dict, conn) -> dict:
 async def compare_periods(args: dict, conn) -> dict:
     a, b = args["month_a"], args["month_b"]
 
-    def spend(month: str) -> int:
+    def by_cat(month: str) -> dict[str, int]:
         rows = _rows(conn, "SELECT category, SUM(-amount_cents) AS s FROM transactions "
                            "WHERE status = 'posted' AND posted_date LIKE ? AND amount_cents < 0 "
                            "GROUP BY category", (f"{month}-%",))
-        return sum(int(r["s"]) for r in rows if categories.is_spend(r["category"]))
+        return {r["category"]: int(r["s"]) for r in rows if categories.is_spend(r["category"])}
 
-    sa, sb = spend(a), spend(b)
+    ca, cb = by_cat(a), by_cat(b)
+    sa, sb = sum(ca.values()), sum(cb.values())
+    # Per-category deltas so "what changed between A and B" is one call, not a
+    # hand-diffed pair of breakdowns (which rule 3 forbids the model to compute).
+    per_cat = sorted(
+        ({"category": c, "a_cents": ca.get(c, 0), "b_cents": cb.get(c, 0),
+          "delta_cents": ca.get(c, 0) - cb.get(c, 0)} for c in set(ca) | set(cb)),
+        key=lambda r: abs(r["delta_cents"]), reverse=True)
     data = {"month_a": a, "spend_a_cents": sa, "month_b": b, "spend_b_cents": sb,
-            "delta_cents": sa - sb,
+            "delta_cents": sa - sb, "by_category": per_cat,
             "unresolved_conflicts": {"a": _conflicts_for(conn, a), "b": _conflicts_for(conn, b)}}
-    rendered = (f"**{a}** {render.money(sa)} vs **{b}** {render.money(sb)} — "
-                f"delta **{render.money(sa - sb)}**")
-    return {"data": data, "rendered": rendered}
+    # Headline line is unchanged (byte-compat); the delta table appends below.
+    lines = [f"**{a}** {render.money(sa)} vs **{b}** {render.money(sb)} — "
+             f"delta **{render.money(sa - sb)}**"]
+    if per_cat:
+        disp = [{"Category": r["category"], a: render.money(r["a_cents"]),
+                 b: render.money(r["b_cents"]), "Δ": render.money(r["delta_cents"])}
+                for r in per_cat]
+        lines += ["", render.table(disp, [("Category", "Category"), (a, a), (b, b), ("Δ", "Δ")])]
+    return {"data": data, "rendered": "\n".join(lines)}
 
 
 @_with_ro_conn
@@ -603,7 +616,8 @@ TOOL_SPECS: list[ToolSpec] = [
     ToolSpec("top_merchants", "Top merchants by spend for a month (YYYY-MM).",
              _obj({"month": {"type": "string"}, "limit": {"type": "integer"}}), top_merchants),
     ToolSpec("compare_periods",
-             "Compare spend between two months (YYYY-MM each). Returns each total and the delta.",
+             "Compare spend between two months (YYYY-MM each). Returns each total, the overall "
+             "delta, and a per-category delta table (sorted by biggest change).",
              _obj({"month_a": {"type": "string"}, "month_b": {"type": "string"}}, ["month_a", "month_b"]),
              compare_periods),
     ToolSpec("recurring_charges", "Detected recurring/subscription charges (near-monthly, stable amount).",

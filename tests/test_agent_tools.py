@@ -334,3 +334,32 @@ def test_unknown_category_error_lists_valid_names(data_dir, tmp_path):
     res = _call("set_merchant_category", {"merchant_norm": "WALMART", "category": "Grocerys"})
     assert "unknown category" in res["error"]
     assert "Groceries" in res["error"]          # recovery path: the valid names
+
+
+def test_compare_periods_per_category_deltas(data_dir, tmp_path):
+    # B4: "what changed between A and B" is one call — per-category deltas in
+    # data + a rendered table, headline line unchanged.
+    _seed(tmp_path)
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO transactions (account_id, fitid, posted_date, amount_cents, status, "
+            "txn_type, payee, memo, merchant_norm, category, category_source, raw_ofx, imported_at) "
+            "VALUES (1, 'M1', '2026-05-03', -2000, 'posted', 'DEBIT', 'WALMART', 'memo', "
+            "'WALMART', 'Groceries', 'rule', 'raw', ?)", (db.now_iso(),))
+        conn.execute(
+            "INSERT INTO transactions (account_id, fitid, posted_date, amount_cents, status, "
+            "txn_type, payee, memo, merchant_norm, category, category_source, raw_ofx, imported_at) "
+            "VALUES (1, 'M2', '2026-05-08', -9000, 'posted', 'DEBIT', 'SHELL', 'memo', "
+            "'SHELL', 'Gas', 'rule', 'raw', ?)", (db.now_iso(),))
+
+    res = _call("compare_periods", {"month_a": "2026-06", "month_b": "2026-05"})
+    d = res["data"]
+    assert d["spend_a_cents"] == 5000 and d["spend_b_cents"] == 11000
+    per = {r["category"]: r for r in d["by_category"]}
+    assert per["Gas"] == {"category": "Gas", "a_cents": 0, "b_cents": 9000, "delta_cents": -9000}
+    assert per["Groceries"]["delta_cents"] == 3000
+    # sorted by |delta| — Gas first
+    assert d["by_category"][0]["category"] == "Gas"
+    # headline preserved + table appended
+    assert res["rendered"].startswith("**2026-06** $50.00 vs **2026-05** $110.00 — delta **-$60.00**")
+    assert "| Category |" in res["rendered"] and "-$90.00" in res["rendered"]
