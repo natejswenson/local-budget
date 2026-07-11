@@ -279,3 +279,32 @@ def test_empty_db_hint_absent_once_seeded(data_dir, tmp_path):
     _seed(tmp_path)
     assert "budget intake" not in _call("get_month_summary", {"month": "2026-06"})["rendered"]
     assert "budget intake" not in _call("budget_overview", {"month": "2026-06"})["rendered"]
+
+
+def test_txn_id_surfaced_for_single_txn_categorization(data_dir, tmp_path):
+    # A2: the drill hints promise row→set_txn_category(txn_id), so both
+    # query_transactions and review_queue's checks table must surface the id.
+    _seed(tmp_path)
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO transactions (account_id, fitid, posted_date, amount_cents, status, "
+            "txn_type, payee, memo, merchant_norm, category, category_source, raw_ofx, imported_at) "
+            "VALUES (1, 'C1', '2026-06-07', -20000, 'posted', 'CHECK', 'CHECK 101', 'memo', "
+            "'CHECK 101', 'Checks', 'rule', 'raw', ?)", (db.now_iso(),))
+
+    qt = _call("query_transactions", {"month": "2026-06"})
+    assert "Txn id" in qt["rendered"]
+    assert all("txn_id" in r for r in qt["data"]["rows"])
+
+    rq = _call("review_queue", {})
+    assert "Txn id" in rq["rendered"]
+    check = rq["data"]["checks"][0]
+    assert check["txn_id"]
+
+    # end-to-end: the id read from review_queue drives set_txn_category
+    res = _call("set_txn_category", {"txn_id": check["txn_id"], "category": "Housing"})
+    assert res.get("ok"), res
+    with db.connect() as conn:
+        cat = conn.execute("SELECT category FROM transactions WHERE txn_id=?",
+                           (check["txn_id"],)).fetchone()[0]
+    assert cat == "Housing"
