@@ -480,6 +480,27 @@ async def save_brief(args: dict) -> dict:
     return {"ok": True, "path": out.name}
 
 
+async def render_report(args: dict) -> dict:
+    """Deterministic visual-report PDF (design 2026-07-11). File-backed like
+    save_brief: period regex-validated, output confined under reports_dir(),
+    0600. The optional narrative is HTML-escaped into a fixed slot — the
+    agent's only free-text contribution to the page."""
+    from ..report import render as report_render
+    period = (args.get("period") or "").strip()
+    if not report_render.PERIOD_RE.match(period):
+        return _err("invalid period (use YYYY-MM)")
+    try:
+        result = report_render.render_report(period, args.get("narrative"))
+    except report_render.ChromeNotFoundError as e:
+        return _err(f"{e}. Fallback: the hand-authored HTML recipe in "
+                    "budget-visualizer's appendix still works with any browser.")
+    except Exception as e:  # noqa: BLE001 — tool boundary
+        return _err(f"render_report failed: {e}")
+    return {"ok": True, "path": result["path"],
+            "rendered": f"✓ visual report saved to {result['path']} — "
+                        "yours to open, move, or delete"}
+
+
 # ── Phase-4 read tools (back the skills; {data, rendered}) ────────────────────
 async def budget_overview(args: dict) -> dict:
     data = reports.budget_overview(args.get("month"))
@@ -735,6 +756,14 @@ TOOL_SPECS: list[ToolSpec] = [
              _obj({"month": {"type": "string"}}), insights),
     ToolSpec("monthly_trend", "Spend + income per month (most recent N, oldest-first).",
              _obj({"limit": {"type": "integer"}}), monthly_trend),
+    ToolSpec("render_report",
+             "Render the month's visual report PDF (stat row, spend-vs-budget chart, "
+             "trend, flags) deterministically to reports/budget-report-<period>.pdf. "
+             "period is YYYY-MM; optional narrative is a short plain-text paragraph "
+             "placed under the headline. Writes a local file — confirm with the user "
+             "before calling.",
+             _obj({"period": {"type": "string"}, "narrative": {"type": "string"}},
+                  ["period"]), render_report),
     ToolSpec("list_categories",
              "The assignable category vocabulary: every category's exact name, kind "
              "(spend/structural), floor-vs-ceiling direction, and custom flag. Call this "

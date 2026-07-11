@@ -20,7 +20,7 @@ SKILLS_DIR = REPO_ROOT / ".claude" / "skills"
 
 # Write tools: a manifest containing any of these means the skill can write.
 WRITE_PREFIXES = ("set_", "add_", "remove_", "clear_", "mark_", "unmark_", "delete_")
-WRITE_EXACT = {"split_subscriptions", "save_brief", "save_user_note"}
+WRITE_EXACT = {"split_subscriptions", "save_brief", "save_user_note", "render_report"}
 
 EXPECTED_SKILL_DIRS = [
     "budget-setup",

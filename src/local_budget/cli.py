@@ -217,6 +217,19 @@ def add_category(name: str) -> None:
     click.echo(f"  ✓ added category: {categories.add_custom_category(name)}")
 
 
+@main.command("report-pdf")
+@click.argument("period")
+def report_pdf(period: str) -> None:
+    """Render the visual report PDF for PERIOD (YYYY-MM) — the no-MCP path to
+    the same deterministic renderer the render_report tool uses."""
+    from .report import render as report_render
+    try:
+        out = report_render.render_report(period)
+    except (ValueError, report_render.ChromeNotFoundError) as e:
+        raise SystemExit(f"✗ {e}") from e
+    click.echo(f"  ✓ report saved to {out['path']}")
+
+
 @main.command()
 @click.option("--month", default=None, help="YYYY-MM (default current month)")
 @click.option("--json", "as_json", is_flag=True, help="machine-readable output")

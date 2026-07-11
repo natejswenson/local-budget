@@ -13,6 +13,13 @@ from local_budget import paths
 from local_budget.report import pdf
 
 
+@pytest.fixture(autouse=True)
+def no_network_egress():
+    """Override the conftest socket-block: the tool tests drive async handlers
+    via asyncio (which needs the self-pipe socket) but perform NO network I/O."""
+    yield
+
+
 # ── reports_dir hardening (siege S3) ─────────────────────────────────────────
 def test_reports_dir_override_and_0700(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCAL_BUDGET_REPORTS_DIR", str(tmp_path / "r"))
@@ -106,3 +113,45 @@ def test_render_pdf_integration(tmp_path):
     blob = out.read_bytes()
     assert blob[:5] == b"%PDF-" and len(blob) > 1000
     assert stat.S_IMODE(out.stat().st_mode) == 0o600
+
+
+# ── the render_report MCP tool + report-pdf CLI (mocked render) ──────────────
+def test_render_report_tool_validates_and_reports_path(data_dir, monkeypatch, tmp_path):
+    import asyncio
+
+    from local_budget import db
+    from local_budget.agent import tools
+    from local_budget.report import render as report_render
+
+    db.init_schema()
+
+    def _call(args):
+        return asyncio.run(tools.SPEC_BY_NAME["render_report"].handler(args))
+
+    assert "invalid period" in _call({"period": "junk"})["error"]
+    assert "invalid period" in _call({"period": "../etc"})["error"]
+
+    monkeypatch.setattr(report_render, "render_pdf",
+                        lambda page, out, **kw: out.write_bytes(b"%PDF") or out)
+    monkeypatch.setenv("LOCAL_BUDGET_REPORTS_DIR", str(tmp_path / "reports"))
+    res = _call({"period": "2026-06", "narrative": "steady month"})
+    assert res.get("ok"), res
+    assert res["path"].endswith("budget-report-2026-06.pdf")
+    assert "✓ visual report saved" in res["rendered"]
+
+
+def test_render_report_tool_chrome_missing_names_fallback(data_dir, monkeypatch):
+    import asyncio
+
+    from local_budget import db
+    from local_budget.agent import tools
+    from local_budget.report import render as report_render
+
+    db.init_schema()
+
+    def _no_chrome(page, out, **kw):
+        raise pdf.ChromeNotFoundError("no Chrome/Chromium found")
+
+    monkeypatch.setattr(report_render, "render_pdf", _no_chrome)
+    res = asyncio.run(tools.SPEC_BY_NAME["render_report"].handler({"period": "2026-06"}))
+    assert "Fallback" in res["error"] and "budget-visualizer" in res["error"]
