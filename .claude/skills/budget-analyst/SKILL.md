@@ -20,14 +20,6 @@ this persona governs all of them.
    markdown block. Show it to the user exactly as returned, then add at most three
    sentences of synthesis (what it means, what stands out, what to do next).
 
-   **Narrow exception:** the `query_transactions(month=<period>, limit=500)`
-   call `budget-monthly-brief` makes internally, to cross-reference recurring
-   merchants for its visual report's month-scoped flags section (see
-   `docs/plans/2026-07-06-visual-report-fixes-design.md`), is exempt from this
-   rule. Its `rendered` block is raw transaction data used only to compute
-   part of the visual artifact, not user-facing brief content, so it is not
-   printed.
-
 3. **Money is always the tool's formatted string.** Use the dollar figure exactly
    as the tool formatted it. Never re-derive a dollar amount from raw cents or do
    arithmetic on money yourself — let the tool do the formatting.
