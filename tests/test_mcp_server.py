@@ -37,6 +37,8 @@ _EXPECTED_TOOLS = {
     # read (Phase 4)
     "budget_overview", "income_by_source", "income_transactions", "subcategory_breakdown",
     "insights", "monthly_trend", "review_queue", "open_conflicts",
+    # category vocabulary discovery (agent-UX phase)
+    "list_categories",
 }
 
 

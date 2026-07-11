@@ -308,3 +308,29 @@ def test_txn_id_surfaced_for_single_txn_categorization(data_dir, tmp_path):
         cat = conn.execute("SELECT category FROM transactions WHERE txn_id=?",
                            (check["txn_id"],)).fetchone()[0]
     assert cat == "Housing"
+
+
+def test_list_categories_vocabulary_and_flags(data_dir, tmp_path):
+    # B1: the write tools demand exact category names; list_categories is how
+    # the agent discovers the vocabulary (breakdown only shows spent-in cats).
+    _seed(tmp_path)
+    from local_budget import categories
+    categories.add_custom_category("Hobby Farm")
+    categories.mark_floor_category("Investments")
+
+    res = _call("list_categories", {})
+    rows = {r["name"]: r for r in res["data"]["categories"]}
+    assert set(rows) == categories.all_categories()
+    assert rows["Investments"]["floor"] is True
+    assert rows["Hobby Farm"]["custom"] is True
+    assert rows["Income"]["kind"] == "structural"
+    assert rows["Groceries"] == {"name": "Groceries", "kind": "spend",
+                                 "floor": False, "custom": False}
+    assert "floor (more is good)" in res["rendered"]
+
+
+def test_unknown_category_error_lists_valid_names(data_dir, tmp_path):
+    _seed(tmp_path)
+    res = _call("set_merchant_category", {"merchant_norm": "WALMART", "category": "Grocerys"})
+    assert "unknown category" in res["error"]
+    assert "Groceries" in res["error"]          # recovery path: the valid names
