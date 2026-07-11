@@ -12,12 +12,16 @@ sentences of synthesis per section.
 
 ## Compose the brief (read tools, in order)
 
-1. `get_month_summary` — the headline: spent, income, net.
-2. `get_category_breakdown` — where the money goes.
-3. `monthly_trend` — the spend trend across recent months.
-4. `insights` — concrete ways to save.
-5. `find_anomalies` — unusual charges worth flagging.
-6. `recurring_charges` — subscriptions and recurring flags.
+1. `get_month_summary` — the headline: spent, income, net, AND the numbered
+   "Where it goes" category table (this is the brief's category section —
+   do NOT also call `get_category_breakdown` here: two numbered lists of the
+   same rows in one turn make every row reference ambiguous by construction;
+   keep `get_category_breakdown` for later drill-downs only).
+2. `monthly_trend` — the spend trend across recent months.
+3. `insights` — concrete ways to save.
+4. `find_anomalies` — unusual charges worth flagging (pass the brief's month
+   so the rendered block is scoped, not two years of history).
+5. `recurring_charges` — subscriptions and recurring flags.
 
 Print each tool's `rendered` block verbatim. The brief reads: spent / income / net
 → where it goes → ways to save → flags.
