@@ -236,6 +236,21 @@ def test_run_sql_rejects_forbidden_keyword(data_dir, tmp_path):
         assert "error" in res, q
 
 
+def test_run_sql_denies_raw_payee_memo(data_dir, tmp_path):
+    # payee/memo are authorizer read-denied to the agent (supersedes decision
+    # #4); merchant_norm remains the readable merchant text.
+    _seed(tmp_path)
+    for q in ("SELECT payee FROM transactions",
+              "SELECT memo FROM transactions",
+              "SELECT payee AS p FROM transactions",          # alias doesn't evade
+              "SELECT 1 FROM transactions WHERE payee LIKE 'W%'"):  # WHERE read
+        res = _call("run_sql", {"query": q})
+        assert "error" in res, q
+        assert "WALMART" not in json.dumps(res), q
+    ok = _call("run_sql", {"query": "SELECT merchant_norm FROM transactions"})
+    assert "error" not in ok and ok["data"]["count"] == 3
+
+
 def test_run_sql_exception_scrubbed(data_dir, tmp_path):
     # A query that errors must not leak SQLite value/constraint text (I16).
     _seed(tmp_path)

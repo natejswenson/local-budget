@@ -17,8 +17,9 @@ session under your own subscription auth.
    standalone stdio MCP server that exposes **28 deterministic tools** (19 read,
    9 write) over `budget.db`. Every tool runs behind a connection-scoped,
    column-level SQLite authorizer (`db.agent_connect`): imported facts are
-   immutable, account numbers and raw OFX are read-denied, and payee/memo are
-   redacted on read. Read tools return a `{data, rendered}` pair so the agent can
+   immutable, and account numbers, raw OFX, and raw payee/memo are read-denied —
+   the sanitized `merchant_norm` is the agent's only merchant text. Read tools
+   return a `{data, rendered}` pair so the agent can
    print an exact, deterministic markdown block instead of paraphrasing numbers.
 3. **The skills.** Eight no-code `budget-*` skills (under `.claude/skills/`)
    orchestrate those tools in your session — grounded in a shared
@@ -37,8 +38,9 @@ merchants,"* *"Give me a monthly brief."*
 
 - **One local DB.** Everything lives in `data/budget.db`, which is **gitignored**
   and never committed.
-- **Account numbers masked at import** and read-denied to the agent; **payee/memo
-  redacted on read** by the authorizer.
+- **Account numbers masked at import** and read-denied to the agent; **raw
+  payee/memo read-denied** by the authorizer — the agent sees only the
+  sanitized `merchant_norm`.
 - **The agent can never alter an imported fact.** The write authorizer permits
   only the derived category columns and the app-config tables — not the imported
   transaction rows. No tool can rewrite history.
