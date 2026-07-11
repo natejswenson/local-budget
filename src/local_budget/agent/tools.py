@@ -79,7 +79,8 @@ def _with_rw_conn(fn):
             with db.agent_connect(write=True) as conn:
                 return await fn(args, conn)
         except Exception as e:  # noqa: BLE001 — tool boundary
-            return _err(str(e))
+            # Name the failing tool so a multi-write turn reads unambiguously.
+            return _err(f"{fn.__name__} failed: {e}")
     return wrapper
 
 
@@ -349,7 +350,17 @@ async def run_sql(args: dict) -> dict:
         with db.agent_connect() as conn:
             cur = conn.execute(q)
             rows = [dict(r) for r in cur.fetchmany(ROW_CAP + 1)]
-    except sqlite3.Error:
+    except sqlite3.Error as e:
+        # Classified, still row-data-free (I16): authorizer aborts and missing
+        # schema names echo only identifiers the agent itself wrote — never a
+        # value from the DB. Everything else stays the generic string.
+        msg = str(e)
+        if "prohibited" in msg:
+            return _err("denied: the query reads an agent-blocked column or table "
+                        "(raw_ofx, payee, memo, acct_hash are read-denied — use "
+                        "merchant_norm for merchant text)")
+        if msg.startswith("no such"):
+            return _err(f"invalid query: {msg}")
         return _err("query failed (rejected or invalid)")
     # Defense-in-depth: payee/memo are authorizer-denied outright, and every
     # string cell still passes through the account-number redactor (design §3)
@@ -502,9 +513,16 @@ async def income_transactions(args: dict) -> dict:
 
 async def subcategory_breakdown(args: dict) -> dict:
     data = reports.subcategory_breakdown(args["category"], args.get("month"))
-    rows = [{"Subcategory": r["subcategory"], "Spent": render.money(r["spent_cents"])} for r in data]
+    # Avg/mo + Budget were computed by reports.subcategory_breakdown all along
+    # but dropped at render time — they're exactly what the subscriptions skill
+    # needs for price-creep and limit checks (and what the CLI already shows).
+    rows = [{"Subcategory": r["subcategory"], "Spent": render.money(r["spent_cents"]),
+             "Avg/mo": render.money(r["monthly_avg_cents"]),
+             "Budget": render.money(r["limit_cents"]) if r["limit_cents"] is not None else "—"}
+            for r in data]
     rendered = f"## {args['category']} — by subcategory\n" + render.table(
-        rows, [("Subcategory", "Subcategory"), ("Spent", "Spent")])
+        rows, [("Subcategory", "Subcategory"), ("Spent", "Spent"),
+               ("Avg/mo", "Avg/mo"), ("Budget", "Budget")])
     return {"data": {"subcategories": data}, "rendered": rendered}
 
 
