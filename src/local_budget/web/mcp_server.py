@@ -16,6 +16,13 @@ from mcp.server.lowlevel import Server
 from ..agent import tools as agent_tools
 
 
+def _jsonable(obj: dict) -> dict:
+    """Round-trip through JSON with default=str so non-JSON values (dates,
+    Decimals) never break the SDK's structuredContent serialization — the same
+    coercion the old json.dumps(default=str) text path applied."""
+    return json.loads(json.dumps(obj, default=str))
+
+
 def build_server() -> Server:
     server: Server = Server("budget")
 
@@ -25,15 +32,26 @@ def build_server() -> Server:
                 for s in agent_tools.TOOL_SPECS]
 
     @server.call_tool()
-    async def _call(name: str, arguments: dict) -> list[types.TextContent]:
+    async def _call(
+        name: str, arguments: dict
+    ) -> tuple[list[types.TextContent], dict] | dict:
         spec = agent_tools.SPEC_BY_NAME.get(name)
         if spec is None:
-            return [types.TextContent(type="text", text=json.dumps({"error": f"unknown tool: {name}"}))]
+            return {"error": f"unknown tool: {name}"}
         result = await spec.handler(arguments or {})
-        # Prefer the deterministic rendered markdown; fall back to JSON for
-        # error/notes payloads that carry no `rendered`.
-        text = result.get("rendered") or json.dumps(result.get("data", result), default=str)
-        return [types.TextContent(type="text", text=text)]
+        # The deterministic `rendered` markdown stays the text block (skills print
+        # it verbatim — byte-identical to the pre-structuredContent transport),
+        # while the structured `data` payload rides in structuredContent so the
+        # client model can resolve row references (txn_id, merchant, cents)
+        # without parsing the printed table (budget-analyst rule 6).
+        rendered = result.get("rendered")
+        if rendered:
+            structured = {"data": result["data"]} if "data" in result else {
+                k: v for k, v in result.items() if k != "rendered"}
+            return [types.TextContent(type="text", text=rendered)], _jsonable(structured)
+        # No rendered (errors, notes, write acks): the dict alone — the SDK
+        # serializes it into a JSON text block AND structuredContent.
+        return _jsonable(result)
 
     return server
 
