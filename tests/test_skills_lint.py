@@ -19,8 +19,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SKILLS_DIR = REPO_ROOT / ".claude" / "skills"
 
 # Write tools: a manifest containing any of these means the skill can write.
-WRITE_PREFIXES = ("set_", "add_", "remove_", "clear_")
-WRITE_EXACT = {"split_subscriptions", "save_brief"}
+WRITE_PREFIXES = ("set_", "add_", "remove_", "clear_", "mark_", "unmark_", "delete_")
+WRITE_EXACT = {"split_subscriptions", "save_brief", "save_user_note"}
 
 EXPECTED_SKILL_DIRS = [
     "budget-setup",
@@ -31,6 +31,9 @@ EXPECTED_SKILL_DIRS = [
     "budget-income",
     "budget-subscriptions",
     "budget-reconcile",
+    # shared reference skills (no tools of their own, but must exist: the
+    # user-facing skills point at them by name)
+    "budget-visualizer",
 ]
 
 # Executable fenced-block languages that are forbidden (no-code skills).
