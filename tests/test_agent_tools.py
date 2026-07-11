@@ -252,11 +252,17 @@ def test_run_sql_denies_raw_payee_memo(data_dir, tmp_path):
 
 
 def test_run_sql_exception_scrubbed(data_dir, tmp_path):
-    # A query that errors must not leak SQLite value/constraint text (I16).
+    # A query that errors must not leak SQLite VALUE/constraint text (I16).
+    # Schema identifiers the agent itself wrote may echo back ("no such
+    # column: X") — that's the recovery path, not a data leak; row values
+    # (WALMART / amounts) must never appear.
     _seed(tmp_path)
     res = _call("run_sql", {"query": "SELECT nonexistent_column FROM transactions"})
-    assert res["error"] == "query failed (rejected or invalid)"
-    assert "nonexistent_column" not in json.dumps(res)
+    assert res["error"].startswith("invalid query: no such column")
+    assert "WALMART" not in json.dumps(res) and "5000" not in json.dumps(res)
+    # denied columns get the classified authorizer message with the fix named
+    denied = _call("run_sql", {"query": "SELECT payee FROM transactions"})
+    assert denied["error"].startswith("denied:") and "merchant_norm" in denied["error"]
 
 
 def test_query_transactions_filters(data_dir, tmp_path):
@@ -392,3 +398,23 @@ def test_find_anomalies_month_and_limit_scope_output_only(data_dir, tmp_path):
 
     limited = _call("find_anomalies", {"limit": 1})["data"]["anomalies"]
     assert len(limited) == 1
+
+
+def test_subcategory_breakdown_renders_avg_and_budget(data_dir, tmp_path):
+    # C3: Avg/mo + Budget were computed but dropped at render time — the
+    # subscriptions skill needs both for price-creep/limit checks.
+    _seed(tmp_path)
+    with db.connect() as conn:
+        for i, dt in enumerate(["2026-05-05", "2026-06-05"]):
+            conn.execute(
+                "INSERT INTO transactions (account_id, fitid, posted_date, amount_cents, status, "
+                "txn_type, payee, memo, merchant_norm, category, subcategory, category_source, raw_ofx, imported_at) "
+                "VALUES (1, ?, ?, -1500, 'posted', 'DEBIT', 'NETFLIX', 'memo', "
+                "'NETFLIX', 'Subscriptions', 'Netflix', 'rule', 'raw', ?)", (f"N{i}", dt, db.now_iso()))
+    _call("set_budget_limit", {"category": "Subscriptions", "subcategory": "Netflix", "amount_cents": 2000})
+
+    res = _call("subcategory_breakdown", {"category": "Subscriptions", "month": "2026-06"})
+    assert "Avg/mo" in res["rendered"] and "Budget" in res["rendered"]
+    row = [r for r in res["data"]["subcategories"] if r["subcategory"] == "Netflix"][0]
+    assert row["monthly_avg_cents"] == 1500 and row["limit_cents"] == 2000
+    assert "$20.00" in res["rendered"]
