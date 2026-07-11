@@ -1,7 +1,7 @@
 ---
 name: budget-setup
 description: First-run onboarding — load data via the CLI, then hand off to categorize and budgets.
-tools: [get_month_summary, review_queue, query_transactions]
+tools: [get_month_summary, review_queue, query_transactions, list_categories]
 ---
 
 # Budget Setup
@@ -12,8 +12,13 @@ This skill performs no writes of its own — it loads data and hands off.
 
 ## Step 1 — Load the data (CLI, not a tool)
 
-Data import happens at the command line, not through a tool. Tell the user to run
-one of these in their terminal:
+Data import happens at the command line, not through a tool. For a true first
+run, tell the user to start with:
+
+- `budget setup` — initializes the database and asks for their name (reports
+  and briefs render with it; skipping this just means unnamed reports).
+
+Then load transactions with one of:
 
 - `budget import <file>` to load a specific statement file (CSV/OFX), or
 - `budget intake` to pull in everything staged for import.
