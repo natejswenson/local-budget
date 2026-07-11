@@ -26,8 +26,10 @@ def test_table_alignment_and_null():
     )
 
 
-def test_table_empty_is_header_only():
-    assert r.table([], [("cat", "Category")]) == "| Category |\n| --- |"
+def test_table_empty_renders_explicit_empty_state():
+    # Skills print `rendered` verbatim — a header-only skeleton reads as a
+    # broken response, so empty rows get an explicit line instead.
+    assert r.table([], [("cat", "Category")]) == "(nothing to show)"
 
 
 def test_bars_share_and_widths():
@@ -65,7 +67,7 @@ def test_table_numbered_false_is_byte_identical_to_current_behavior():
 
 
 def test_table_numbered_empty_rows():
-    assert r.table([], [("cat", "Category")], numbered=True) == "| Row | Category |\n| --- | --- |"
+    assert r.table([], [("cat", "Category")], numbered=True) == "(nothing to show)"
 
 
 def test_bars_numbered_prefixes_ordinal():
@@ -106,7 +108,7 @@ def test_table_drill_hint_empty_string_appends_nothing():
 
 def test_table_drill_hint_suppressed_on_empty_rows():
     assert r.table([], [("cat", "Category")], drill_hint="Reply with a row number.") == (
-        "| Category |\n| --- |"
+        "(nothing to show)"
     )
 
 

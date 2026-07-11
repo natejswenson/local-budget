@@ -146,6 +146,79 @@ def add_custom_category(name: str, conn=None) -> str:
     return name
 
 
+# ── floor-type (more-is-better) category marking ─────────────────────────────
+def floor_categories(conn=None) -> frozenset[str]:
+    """Categories where MORE spend is good (e.g. Investments), the opposite of
+    every other (ceiling-type) category. Persisted the same way as
+    `hidden_categories` — a JSON array under a settings key — so marking a
+    category as floor-type is a live, no-deploy operation."""
+    from . import db
+    raw = db.get_setting("floor_categories", conn=conn)
+    return frozenset(json.loads(raw)) if raw else frozenset()
+
+
+def mark_floor_category(name: str, conn=None) -> None:
+    """Mark `name` as floor-type (more spend is good)."""
+    from . import db
+    cur = set(floor_categories(conn=conn))
+    cur.add(name)
+    db.set_setting("floor_categories", json.dumps(sorted(cur)), conn=conn)
+
+
+def unmark_floor_category(name: str, conn=None) -> None:
+    """Un-mark `name` as floor-type — reverts it to ordinary ceiling semantics."""
+    from . import db
+    cur = {c for c in floor_categories(conn=conn) if c != name}
+    db.set_setting("floor_categories", json.dumps(sorted(cur)), conn=conn)
+
+
+def is_floor(category: str, conn=None, floor_set: frozenset[str] | None = None) -> bool:
+    """True if `category` is marked floor-type (more spend is good). Pass an
+    already-fetched `floor_set` (from `floor_categories()`) to skip the DB read
+    when checking many categories in a loop/request — every consumer that
+    previously re-read `floor_categories` once per row should fetch it once
+    up front and thread it through instead."""
+    if floor_set is not None:
+        return category in floor_set
+    return category in floor_categories(conn=conn)
+
+
+def off_track_delta(category: str, actual_cents: int, limit_cents: int, conn=None,
+                    floor_set: frozenset[str] | None = None) -> int:
+    """Direction-aware, sign-normalized "how far off track" — positive always
+    means "bad", regardless of whether `category` is ceiling- or floor-type.
+
+    Ceiling category (the default): `actual_cents - limit_cents` — positive
+    when spend exceeds the limit.
+    Floor category: `limit_cents - actual_cents` — positive when spend falls
+    short of the target.
+
+    This is the one place the sign gets normalized; every consumer (the
+    `over`/`over_cents` boolean/magnitude, the "$X over/under target" display)
+    derives from this value rather than re-deriving `actual > limit` locally.
+    """
+    if is_floor(category, conn=conn, floor_set=floor_set):
+        return limit_cents - actual_cents
+    return actual_cents - limit_cents
+
+
+def is_off_track(category: str, actual_cents: int, limit_cents: int, conn=None,
+                 floor_set: frozenset[str] | None = None) -> bool:
+    """Convenience wrapper: True if `off_track_delta(...) > 0` — i.e. "bad"."""
+    return off_track_delta(category, actual_cents, limit_cents, conn=conn, floor_set=floor_set) > 0
+
+
+def off_track_label(category: str, *, conn=None, floor_set: frozenset[str] | None = None,
+                    under: str = "UNDER", over: str = "OVER") -> str:
+    """Direction-aware label for a category currently flagged off-track:
+    `under` (short of a floor target) or `over` (past a ceiling limit) by
+    default — pass different literal strings (e.g. insights()'s
+    'under_target'/'over_budget' kinds) as needed. The single place this
+    is_floor-driven label choice is made, so callers never re-derive it
+    locally with their own ternary."""
+    return under if is_floor(category, conn=conn, floor_set=floor_set) else over
+
+
 def spend_categories() -> frozenset[str]:
     """Builtin + user-added spend categories, minus hidden (removed)."""
     return (SPEND_CATEGORIES | custom_categories()) - hidden_categories()
