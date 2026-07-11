@@ -34,7 +34,10 @@ def table(
 ) -> str:
     """GitHub-flavored markdown table. ``cols`` = ``[(key, header), ...]``.
     A column is right-aligned iff every populated cell looks numeric. ``None``
-    renders as ``—``. Empty ``rows`` → a header-only table.
+    renders as ``—``. Empty ``rows`` → ``"(nothing to show)"`` — skills print
+    ``rendered`` verbatim, and a header-only skeleton table reads as a broken
+    response, so every table-shaped tool gets the same explicit empty state
+    (matching top_merchants' "(no spend)" precedent).
 
     ``numbered=True`` prepends a 1-indexed ``Row`` column (never ``#`` — some
     callers already use ``#`` for an unrelated count column; see design doc
@@ -46,6 +49,8 @@ def table(
     deterministic property of the tool output rather than each call site
     needing its own empty check (see design doc
     2026-07-05-drilldown-tabular-and-followup-design.md)."""
+    if not rows:
+        return "(nothing to show)"
     keys = [k for k, _ in cols]
     headers = [h for _, h in cols]
     if numbered:
