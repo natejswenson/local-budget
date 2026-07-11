@@ -39,6 +39,8 @@ _EXPECTED_TOOLS = {
     "insights", "monthly_trend", "review_queue", "open_conflicts",
     # category vocabulary discovery (agent-UX phase)
     "list_categories",
+    # deterministic visual-report renderer (design 2026-07-11)
+    "render_report",
 }
 
 
