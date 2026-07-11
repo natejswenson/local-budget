@@ -55,6 +55,19 @@ def briefings_dir() -> Path:
     return d
 
 
+def reports_dir() -> Path:
+    """Rendered visual-report PDFs — full monthly financials, so the same 0700
+    regime as data/ and briefings/ (siege S3: the old skill-prose path wrote
+    0644 files into a 0755 dir). `LOCAL_BUDGET_REPORTS_DIR` overrides the
+    location; the default is the same `reports/` the prose path used, so
+    nothing moves for the user."""
+    override = os.environ.get("LOCAL_BUDGET_REPORTS_DIR")
+    d = Path(override) if override else (data_dir().parent / "reports")
+    d.mkdir(parents=True, exist_ok=True)
+    _chmod(d, DIR_MODE)
+    return d
+
+
 def user_notes_path() -> Path:
     """Non-financial user-preference notes (the only agent write path — M2)."""
     return data_dir() / "user_notes.md"

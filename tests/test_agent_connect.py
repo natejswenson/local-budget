@@ -4,8 +4,8 @@ The agent/skill layer's ONLY door into budget.db. write=False denies every
 write; write=True allows ONLY the derived columns {category,subcategory,
 category_source} on transactions plus the app-config tables {category_rules,
 budgets,settings}. Imported facts + status + every unlisted table/column are
-immutable to skills; raw_ofx/acct_hash/inbox_files.filename/import_runs PII
-columns are read-denied (the statement aborts).
+immutable to skills; raw_ofx/payee/memo/acct_hash/inbox_files.filename/
+import_runs PII columns are read-denied (the statement aborts).
 """
 from __future__ import annotations
 
@@ -38,10 +38,20 @@ def seeded_db(tmp_path):
 
 
 # --- read side ---
-def test_agent_connect_reads_payee_memo(seeded_db):           # decision #4
+def test_agent_connect_reads_merchant_norm_and_category(seeded_db):
+    # Supersedes decision #4: raw payee/memo are now read-denied (see below);
+    # merchant_norm + the derived columns remain the agent's readable surface.
     with db.agent_connect(seeded_db) as c:
-        row = c.execute("SELECT payee, memo, category FROM transactions LIMIT 1").fetchone()
-    assert row is not None and row["payee"] == "STARBUCKS 1234567"
+        row = c.execute(
+            "SELECT merchant_norm, category FROM transactions LIMIT 1").fetchone()
+    assert row is not None and row["merchant_norm"] == "STARBUCKS"
+
+
+@pytest.mark.parametrize("col", ["payee", "memo"])
+def test_agent_connect_denies_payee_memo_read(seeded_db, col):
+    with db.agent_connect(seeded_db) as c:
+        with pytest.raises(sqlite3.DatabaseError):
+            c.execute(f"SELECT {col} FROM transactions LIMIT 1").fetchall()
 
 
 def test_agent_connect_denies_raw_ofx_read(seeded_db):
