@@ -363,3 +363,32 @@ def test_compare_periods_per_category_deltas(data_dir, tmp_path):
     # headline preserved + table appended
     assert res["rendered"].startswith("**2026-06** $50.00 vs **2026-05** $110.00 — delta **-$60.00**")
     assert "| Category |" in res["rendered"] and "-$90.00" in res["rendered"]
+
+
+def test_find_anomalies_month_and_limit_scope_output_only(data_dir, tmp_path):
+    # C2: detection baselines use full history; month/limit scope only what is
+    # returned. No args → unchanged full span.
+    db.init_schema()
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO accounts (account_id, institution, acct_type, acct_last4, acct_hash, created_at) "
+            "VALUES (1, 'WF', 'CHECKING', '1234', 'hash-1', ?)", (db.now_iso(),))
+        # steady $15 charges over 2025, then two big spikes in different months
+        fixtures = [(f"S{i}", f"2025-{m:02d}-05", -1500) for i, m in enumerate(range(1, 13))]
+        fixtures += [("A1", "2026-05-10", -90000), ("A2", "2026-06-10", -95000)]
+        for fitid, dt, cents in fixtures:
+            conn.execute(
+                "INSERT INTO transactions (account_id, fitid, posted_date, amount_cents, status, "
+                "txn_type, payee, memo, merchant_norm, category, category_source, raw_ofx, imported_at) "
+                "VALUES (1, ?, ?, ?, 'posted', 'DEBIT', 'NETFLIX', 'memo', "
+                "'NETFLIX', 'Subscriptions', 'rule', 'raw', ?)", (fitid, dt, cents, db.now_iso()))
+
+    full = _call("find_anomalies", {})["data"]["anomalies"]
+    dates = {r["posted_date"] for r in full}
+    assert {"2026-05-10", "2026-06-10"} <= dates
+
+    scoped = _call("find_anomalies", {"month": "2026-06"})["data"]["anomalies"]
+    assert scoped and all(r["posted_date"].startswith("2026-06-") for r in scoped)
+
+    limited = _call("find_anomalies", {"limit": 1})["data"]["anomalies"]
+    assert len(limited) == 1
