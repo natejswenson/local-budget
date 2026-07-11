@@ -319,7 +319,16 @@ async def find_anomalies(args: dict, conn) -> dict:
     sd = float(args.get("sd_threshold") or detect.ANOMALY_DEFAULT_SD)
     rows = _rows(conn, "SELECT posted_date, amount_cents, merchant_norm, category "
                        "FROM transactions WHERE status = 'posted'")
+    # Detection always runs over FULL history (per-merchant baselines need it);
+    # month/limit only scope which flagged rows are returned — without them the
+    # rendered block spans ~2 years, which skills then print verbatim.
     found = detect.find_anomalies(rows, sd)
+    month = args.get("month")
+    if month:
+        found = [r for r in found if str(r.get("posted_date", "")).startswith(f"{month}-")]
+    limit = args.get("limit")
+    if limit:
+        found = found[: max(int(limit), 0)]
     disp = [{"Date": r.get("posted_date"), "Merchant": r.get("merchant") or "—",
              "Amount": render.money(int(r["amount_cents"]))} for r in found]
     rendered = "## Unusual charges\n" + render.table(
@@ -622,8 +631,13 @@ TOOL_SPECS: list[ToolSpec] = [
              compare_periods),
     ToolSpec("recurring_charges", "Detected recurring/subscription charges (near-monthly, stable amount).",
              _obj(), recurring_charges),
-    ToolSpec("find_anomalies", "Transactions far above their merchant's historical mean (default 2 sd).",
-             _obj({"sd_threshold": {"type": "number"}}), find_anomalies),
+    ToolSpec("find_anomalies",
+             "Transactions far above their merchant's historical mean (default 2 sd). "
+             "UNSCOPED by default — returns flags across ~2 years of history; pass month "
+             "(YYYY-MM) and/or limit to scope the output (detection baselines still use "
+             "full history).",
+             _obj({"sd_threshold": {"type": "number"}, "month": {"type": "string"},
+                   "limit": {"type": "integer"}}), find_anomalies),
     ToolSpec("run_sql",
              "Run a read-only SELECT/WITH query against the `transactions` table (columns: "
              "posted_date, amount_cents, status, category, subcategory, category_source, "
