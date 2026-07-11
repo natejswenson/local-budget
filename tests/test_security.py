@@ -53,6 +53,22 @@ def test_import_redacts_account_number_in_raw_ofx(data_dir, tmp_path):
     assert sanitize.REDACTED in raw
 
 
+def test_import_redacts_account_number_in_stored_payee_memo(data_dir, tmp_path):
+    # I14 extended to the payee/memo columns: raw_ofx was redacted at import but
+    # payee/memo were stored verbatim, leaving an unredacted copy of any
+    # embedded account-style run at rest. merchant_norm derivation still runs on
+    # the raw text, so grouping is unchanged.
+    _import_one(tmp_path)
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT payee, memo, merchant_norm FROM transactions WHERE fitid='G1'"
+        ).fetchone()
+    assert MEMO_ACCT not in (row["memo"] or "")
+    assert sanitize.REDACTED in row["memo"]
+    assert row["payee"] == "WALMART"            # no digits → untouched
+    assert row["merchant_norm"] == "WALMART"    # grouping key unchanged
+
+
 # ── S7: no full account number at rest in accounts ───────────────────────────
 def test_accounts_store_only_last4_and_hash_never_full_number(data_dir, tmp_path):
     _import_one(tmp_path)
