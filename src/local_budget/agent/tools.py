@@ -136,11 +136,16 @@ def _empty_db_hint(conn=None) -> list[str]:
 
 
 def _txn_table(rows: list[dict]) -> str:
+    # `Txn id` is the stable handle set_txn_category needs — surfacing it here
+    # (and in review_queue's checks table) is what makes single-transaction
+    # categorization actually reachable from a printed table.
     disp = [{"Date": r["posted_date"], "Amount": render.money(int(r["amount_cents"])),
              "Category": r.get("category") or "—", "Merchant": r.get("merchant_norm") or "—",
-             "Acct": r.get("account_last4") or "—", "Type": r.get("txn_type") or "—"} for r in rows]
+             "Acct": r.get("account_last4") or "—", "Type": r.get("txn_type") or "—",
+             "Txn id": r.get("txn_id") or "—"} for r in rows]
     return render.table(disp, [("Date", "Date"), ("Amount", "Amount"), ("Category", "Category"),
-                               ("Merchant", "Merchant"), ("Acct", "Acct"), ("Type", "Type")])
+                               ("Merchant", "Merchant"), ("Acct", "Acct"), ("Type", "Type"),
+                               ("Txn id", "Txn id")])
 
 
 # ── read tools ───────────────────────────────────────────────────────────────
@@ -234,7 +239,7 @@ async def query_transactions(args: dict, conn) -> dict:
         where.append("ABS(t.amount_cents) >= ?")
         params.append(cents_from_amount_str(str(args["min_amount_dollars"])))
     limit = min(int(args.get("limit") or 50), ROW_CAP)
-    sql = ("SELECT t.posted_date, t.amount_cents, t.category, t.merchant_norm, "
+    sql = ("SELECT t.txn_id, t.posted_date, t.amount_cents, t.category, t.merchant_norm, "
            "a.acct_last4 AS account_last4, t.txn_type "
            "FROM transactions t JOIN accounts a ON a.account_id = t.account_id "
            "WHERE " + " AND ".join(where) + " ORDER BY t.posted_date DESC LIMIT ?")
@@ -516,15 +521,18 @@ async def review_queue(_args: dict) -> dict:
     checks = manual.checks_to_review()
     m_rows = [{"Merchant": r["merchant"], "#": r["count"], "Spent": render.money(r["spent_cents"])}
               for r in merchants]
+    # Txn id makes the drill hint's promise real: set_txn_category(txn_id=…)
+    # needs a handle, and the checks table is where the agent learns it.
     c_rows = [{"Date": r["posted_date"], "Amount": render.money(r["amount_cents"]),
-               "Merchant": r["merchant_norm"]} for r in checks]
+               "Merchant": r["merchant_norm"], "Txn id": r["txn_id"]} for r in checks]
     parts = [
         "## Uncategorized merchants",
         render.table(m_rows, [("Merchant", "Merchant"), ("#", "#"), ("Spent", "Spent")],
                      numbered=True,
                      drill_hint="Reply with a row number to categorize that merchant.") if m_rows else "(none)",
         "\n## Checks to review",
-        render.table(c_rows, [("Date", "Date"), ("Amount", "Amount"), ("Merchant", "Merchant")],
+        render.table(c_rows, [("Date", "Date"), ("Amount", "Amount"), ("Merchant", "Merchant"),
+                              ("Txn id", "Txn id")],
                      numbered=True,
                      drill_hint="Reply with a row number to categorize that transaction.") if c_rows else "(none)",
     ]
