@@ -79,7 +79,8 @@ def _with_rw_conn(fn):
             with db.agent_connect(write=True) as conn:
                 return await fn(args, conn)
         except Exception as e:  # noqa: BLE001 — tool boundary
-            return _err(str(e))
+            # Name the failing tool so a multi-write turn reads unambiguously.
+            return _err(f"{fn.__name__} failed: {e}")
     return wrapper
 
 
@@ -116,12 +117,36 @@ def _flag_lines(conflicts: dict, uncategorized: dict | None = None) -> list[str]
     return out
 
 
+_EMPTY_DB_HINT = ("_(no transactions imported yet — run `budget intake` or "
+                  "`budget import <file>` in a terminal, then ask again)_")
+
+
+def _empty_db_hint(conn=None) -> list[str]:
+    """One-line import pointer appended to the two entry-point read tools when
+    the DB holds no posted transactions — a cold all-zero summary otherwise
+    gives the user no direction. Only get_month_summary/budget_overview carry
+    it (lean; every other tool stays unchanged)."""
+    if conn is not None:
+        n = conn.execute(
+            "SELECT COUNT(*) AS n FROM transactions WHERE status='posted'").fetchone()["n"]
+    else:
+        with db.agent_connect() as c:
+            n = c.execute(
+                "SELECT COUNT(*) AS n FROM transactions WHERE status='posted'").fetchone()["n"]
+    return [] if n else ["", _EMPTY_DB_HINT]
+
+
 def _txn_table(rows: list[dict]) -> str:
+    # `Txn id` is the stable handle set_txn_category needs — surfacing it here
+    # (and in review_queue's checks table) is what makes single-transaction
+    # categorization actually reachable from a printed table.
     disp = [{"Date": r["posted_date"], "Amount": render.money(int(r["amount_cents"])),
              "Category": r.get("category") or "—", "Merchant": r.get("merchant_norm") or "—",
-             "Acct": r.get("account_last4") or "—", "Type": r.get("txn_type") or "—"} for r in rows]
+             "Acct": r.get("account_last4") or "—", "Type": r.get("txn_type") or "—",
+             "Txn id": r.get("txn_id") or "—"} for r in rows]
     return render.table(disp, [("Date", "Date"), ("Amount", "Amount"), ("Category", "Category"),
-                               ("Merchant", "Merchant"), ("Acct", "Acct"), ("Type", "Type")])
+                               ("Merchant", "Merchant"), ("Acct", "Acct"), ("Type", "Type"),
+                               ("Txn id", "Txn id")])
 
 
 # ── read tools ───────────────────────────────────────────────────────────────
@@ -156,6 +181,7 @@ async def get_month_summary(args: dict, conn) -> dict:
                                numbered=True,
                                drill_hint="Reply with a row number to see that category's transactions.")]
     lines += _flag_lines(conflicts, uncategorized)
+    lines += _empty_db_hint(conn)
     return {"data": data, "rendered": "\n".join(lines)}
 
 
@@ -214,7 +240,7 @@ async def query_transactions(args: dict, conn) -> dict:
         where.append("ABS(t.amount_cents) >= ?")
         params.append(cents_from_amount_str(str(args["min_amount_dollars"])))
     limit = min(int(args.get("limit") or 50), ROW_CAP)
-    sql = ("SELECT t.posted_date, t.amount_cents, t.category, t.merchant_norm, "
+    sql = ("SELECT t.txn_id, t.posted_date, t.amount_cents, t.category, t.merchant_norm, "
            "a.acct_last4 AS account_last4, t.txn_type "
            "FROM transactions t JOIN accounts a ON a.account_id = t.account_id "
            "WHERE " + " AND ".join(where) + " ORDER BY t.posted_date DESC LIMIT ?")
@@ -247,19 +273,32 @@ async def top_merchants(args: dict, conn) -> dict:
 async def compare_periods(args: dict, conn) -> dict:
     a, b = args["month_a"], args["month_b"]
 
-    def spend(month: str) -> int:
+    def by_cat(month: str) -> dict[str, int]:
         rows = _rows(conn, "SELECT category, SUM(-amount_cents) AS s FROM transactions "
                            "WHERE status = 'posted' AND posted_date LIKE ? AND amount_cents < 0 "
                            "GROUP BY category", (f"{month}-%",))
-        return sum(int(r["s"]) for r in rows if categories.is_spend(r["category"]))
+        return {r["category"]: int(r["s"]) for r in rows if categories.is_spend(r["category"])}
 
-    sa, sb = spend(a), spend(b)
+    ca, cb = by_cat(a), by_cat(b)
+    sa, sb = sum(ca.values()), sum(cb.values())
+    # Per-category deltas so "what changed between A and B" is one call, not a
+    # hand-diffed pair of breakdowns (which rule 3 forbids the model to compute).
+    per_cat = sorted(
+        ({"category": c, "a_cents": ca.get(c, 0), "b_cents": cb.get(c, 0),
+          "delta_cents": ca.get(c, 0) - cb.get(c, 0)} for c in set(ca) | set(cb)),
+        key=lambda r: abs(r["delta_cents"]), reverse=True)
     data = {"month_a": a, "spend_a_cents": sa, "month_b": b, "spend_b_cents": sb,
-            "delta_cents": sa - sb,
+            "delta_cents": sa - sb, "by_category": per_cat,
             "unresolved_conflicts": {"a": _conflicts_for(conn, a), "b": _conflicts_for(conn, b)}}
-    rendered = (f"**{a}** {render.money(sa)} vs **{b}** {render.money(sb)} — "
-                f"delta **{render.money(sa - sb)}**")
-    return {"data": data, "rendered": rendered}
+    # Headline line is unchanged (byte-compat); the delta table appends below.
+    lines = [f"**{a}** {render.money(sa)} vs **{b}** {render.money(sb)} — "
+             f"delta **{render.money(sa - sb)}**"]
+    if per_cat:
+        disp = [{"Category": r["category"], a: render.money(r["a_cents"]),
+                 b: render.money(r["b_cents"]), "Δ": render.money(r["delta_cents"])}
+                for r in per_cat]
+        lines += ["", render.table(disp, [("Category", "Category"), (a, a), (b, b), ("Δ", "Δ")])]
+    return {"data": data, "rendered": "\n".join(lines)}
 
 
 @_with_ro_conn
@@ -281,7 +320,16 @@ async def find_anomalies(args: dict, conn) -> dict:
     sd = float(args.get("sd_threshold") or detect.ANOMALY_DEFAULT_SD)
     rows = _rows(conn, "SELECT posted_date, amount_cents, merchant_norm, category "
                        "FROM transactions WHERE status = 'posted'")
+    # Detection always runs over FULL history (per-merchant baselines need it);
+    # month/limit only scope which flagged rows are returned — without them the
+    # rendered block spans ~2 years, which skills then print verbatim.
     found = detect.find_anomalies(rows, sd)
+    month = args.get("month")
+    if month:
+        found = [r for r in found if str(r.get("posted_date", "")).startswith(f"{month}-")]
+    limit = args.get("limit")
+    if limit:
+        found = found[: max(int(limit), 0)]
     disp = [{"Date": r.get("posted_date"), "Merchant": r.get("merchant") or "—",
              "Amount": render.money(int(r["amount_cents"]))} for r in found]
     rendered = "## Unusual charges\n" + render.table(
@@ -302,11 +350,21 @@ async def run_sql(args: dict) -> dict:
         with db.agent_connect() as conn:
             cur = conn.execute(q)
             rows = [dict(r) for r in cur.fetchmany(ROW_CAP + 1)]
-    except sqlite3.Error:
+    except sqlite3.Error as e:
+        # Classified, still row-data-free (I16): authorizer aborts and missing
+        # schema names echo only identifiers the agent itself wrote — never a
+        # value from the DB. Everything else stays the generic string.
+        msg = str(e)
+        if "prohibited" in msg:
+            return _err("denied: the query reads an agent-blocked column or table "
+                        "(raw_ofx, payee, memo, acct_hash are read-denied — use "
+                        "merchant_norm for merchant text)")
+        if msg.startswith("no such"):
+            return _err(f"invalid query: {msg}")
         return _err("query failed (rejected or invalid)")
-    # Redaction-on-read: a free-form SELECT can surface raw payee/memo, so every
-    # string cell passes through the account-number redactor (design §3 — closes
-    # the largest read-side leak). Non-str values pass through unchanged.
+    # Defense-in-depth: payee/memo are authorizer-denied outright, and every
+    # string cell still passes through the account-number redactor (design §3)
+    # in case a future column carries embedded digits. Non-str values unchanged.
     rows = [{k: (sanitize.redact_account_numbers(v) if isinstance(v, str) else v)
              for k, v in r.items()} for r in rows]
     truncated = len(rows) > ROW_CAP
@@ -339,7 +397,8 @@ async def delete_user_note(args: dict) -> dict:
 @_with_rw_conn
 async def set_merchant_category(args: dict, conn) -> dict:
     n = manual.set_merchant_category(args["merchant_norm"], args["category"],
-                                     args.get("subcategory"), conn=conn)
+                                     args.get("subcategory"),
+                                     confirm_random=bool(args.get("confirm_random", False)), conn=conn)
     return {"ok": True, "rendered": f"✓ pinned {args['merchant_norm']} → {args['category']} "
                                     f"({n} transaction(s) + a rule)"}
 
@@ -347,7 +406,8 @@ async def set_merchant_category(args: dict, conn) -> dict:
 @_with_rw_conn
 async def set_txn_category(args: dict, conn) -> dict:
     manual.set_transaction_category(int(args["txn_id"]), args["category"],
-                                    args.get("subcategory"), conn=conn)
+                                    args.get("subcategory"),
+                                    confirm_random=bool(args.get("confirm_random", False)), conn=conn)
     return {"ok": True, "rendered": f"✓ txn {args['txn_id']} → {args['category']}"}
 
 
@@ -362,6 +422,18 @@ async def remove_category(args: dict, conn) -> dict:
     r = manual.remove_category(args["name"], args["merge_into"], conn=conn)
     return {"ok": True, "data": r,
             "rendered": f"✓ merged {args['name']} → {args['merge_into']} ({r['moved_txns']} transaction(s))"}
+
+
+@_with_rw_conn
+async def mark_floor_category(args: dict, conn) -> dict:
+    categories.mark_floor_category(args["name"], conn=conn)
+    return {"ok": True, "rendered": f"✓ {args['name']} is now floor-type (more spend is good)"}
+
+
+@_with_rw_conn
+async def unmark_floor_category(args: dict, conn) -> dict:
+    categories.unmark_floor_category(args["name"], conn=conn)
+    return {"ok": True, "rendered": f"✓ {args['name']} reverted to ceiling-type (less spend is good)"}
 
 
 @_with_rw_conn
@@ -408,6 +480,27 @@ async def save_brief(args: dict) -> dict:
     return {"ok": True, "path": out.name}
 
 
+async def render_report(args: dict) -> dict:
+    """Deterministic visual-report PDF (design 2026-07-11). File-backed like
+    save_brief: period regex-validated, output confined under reports_dir(),
+    0600. The optional narrative is HTML-escaped into a fixed slot — the
+    agent's only free-text contribution to the page."""
+    from ..report import render as report_render
+    period = (args.get("period") or "").strip()
+    if not report_render.PERIOD_RE.match(period):
+        return _err("invalid period (use YYYY-MM)")
+    try:
+        result = report_render.render_report(period, args.get("narrative"))
+    except report_render.ChromeNotFoundError as e:
+        return _err(f"{e}. Fallback: the hand-authored HTML recipe in "
+                    "budget-visualizer's appendix still works with any browser.")
+    except Exception as e:  # noqa: BLE001 — tool boundary
+        return _err(f"render_report failed: {e}")
+    return {"ok": True, "path": result["path"],
+            "rendered": f"✓ visual report saved to {result['path']} — "
+                        "yours to open, move, or delete"}
+
+
 # ── Phase-4 read tools (back the skills; {data, rendered}) ────────────────────
 async def budget_overview(args: dict) -> dict:
     data = reports.budget_overview(args.get("month"))
@@ -416,8 +509,9 @@ async def budget_overview(args: dict) -> dict:
              "Budget": render.money(c["budget_cents"]) if c["budget_cents"] is not None else "—",
              "%": f"{c['pct']}%" if c["pct"] is not None else "—"}
             for c in data["categories"]]
-    rendered = "## Budget overview\n" + render.table(
-        rows, [("Category", "Category"), ("Spent", "Spent"), ("Budget", "Budget"), ("%", "% used")])
+    rendered = "\n".join(["## Budget overview\n" + render.table(
+        rows, [("Category", "Category"), ("Spent", "Spent"), ("Budget", "Budget"), ("%", "% used")]),
+        *_empty_db_hint()])
     return {"data": data, "rendered": rendered}
 
 
@@ -440,18 +534,36 @@ async def income_transactions(args: dict) -> dict:
 
 async def subcategory_breakdown(args: dict) -> dict:
     data = reports.subcategory_breakdown(args["category"], args.get("month"))
-    rows = [{"Subcategory": r["subcategory"], "Spent": render.money(r["spent_cents"])} for r in data]
+    # Avg/mo + Budget were computed by reports.subcategory_breakdown all along
+    # but dropped at render time — they're exactly what the subscriptions skill
+    # needs for price-creep and limit checks (and what the CLI already shows).
+    rows = [{"Subcategory": r["subcategory"], "Spent": render.money(r["spent_cents"]),
+             "Avg/mo": render.money(r["monthly_avg_cents"]),
+             "Budget": render.money(r["limit_cents"]) if r["limit_cents"] is not None else "—"}
+            for r in data]
     rendered = f"## {args['category']} — by subcategory\n" + render.table(
-        rows, [("Subcategory", "Subcategory"), ("Spent", "Spent")])
+        rows, [("Subcategory", "Subcategory"), ("Spent", "Spent"),
+               ("Avg/mo", "Avg/mo"), ("Budget", "Budget")])
     return {"data": {"subcategories": data}, "rendered": rendered}
 
 
 async def insights(args: dict) -> dict:
     data = reports.insights(args.get("month"))
+    # `under_target` (a floor category, e.g. Investments, short of its target) means
+    # "add more", the opposite of every other kind here ("cut this"/"over budget"/
+    # "cancel this subscription") — render it under its own heading with "short of
+    # target" wording so it never reads as a cut (reports.insights() is the source
+    # of truth for `kind`; see categories.off_track_label).
+    save_items = [i for i in data if i["kind"] != "under_target"]
+    under_items = [i for i in data if i["kind"] == "under_target"]
     lines = ["## Ways to save"]
-    lines += [f"- {i['label']}: {render.money(i['amount_cents'])}" for i in data]
-    if len(lines) == 1:
+    lines += [f"- {i['label']}: {render.money(i['amount_cents'])}" for i in save_items]
+    if not save_items:
         lines.append("- (nothing obvious flagged)")
+    if under_items:
+        lines.append("## Under target (add more)")
+        lines += [f"- {i['label']}: {render.money(i['amount_cents'])} short of target"
+                  for i in under_items]
     return {"data": {"insights": data}, "rendered": "\n".join(lines)}
 
 
@@ -465,20 +577,47 @@ async def monthly_trend(args: dict, conn) -> dict:
     return {"data": {"trend": data}, "rendered": rendered}
 
 
+async def list_categories(_args: dict) -> dict:
+    """The assignable category vocabulary — every write tool validates against
+    exact names from this set, so the agent needs a way to discover it instead
+    of guessing (get_category_breakdown only shows categories that HAVE spend)."""
+    floors = categories.floor_categories()
+    customs = categories.custom_categories()
+    structural = categories.STRUCTURAL_CATEGORIES
+
+    def kind(name: str) -> str:
+        return "structural" if name in structural else "spend"
+
+    rows = [{"name": n, "kind": kind(n),
+             "floor": n in floors, "custom": n in customs}
+            for n in sorted(categories.all_categories())]
+    disp = [{"Category": r["name"], "Kind": r["kind"],
+             "Direction": "floor (more is good)" if r["floor"] else
+                          ("—" if r["kind"] == "structural" else "ceiling"),
+             "Custom": "yes" if r["custom"] else "—"} for r in rows]
+    rendered = "## Categories\n" + render.table(
+        disp, [("Category", "Category"), ("Kind", "Kind"),
+               ("Direction", "Direction"), ("Custom", "Custom")])
+    return {"data": {"categories": rows}, "rendered": rendered}
+
+
 async def review_queue(_args: dict) -> dict:
     merchants = manual.needs_review()
     checks = manual.checks_to_review()
     m_rows = [{"Merchant": r["merchant"], "#": r["count"], "Spent": render.money(r["spent_cents"])}
               for r in merchants]
+    # Txn id makes the drill hint's promise real: set_txn_category(txn_id=…)
+    # needs a handle, and the checks table is where the agent learns it.
     c_rows = [{"Date": r["posted_date"], "Amount": render.money(r["amount_cents"]),
-               "Merchant": r["merchant_norm"]} for r in checks]
+               "Merchant": r["merchant_norm"], "Txn id": r["txn_id"]} for r in checks]
     parts = [
         "## Uncategorized merchants",
         render.table(m_rows, [("Merchant", "Merchant"), ("#", "#"), ("Spent", "Spent")],
                      numbered=True,
                      drill_hint="Reply with a row number to categorize that merchant.") if m_rows else "(none)",
         "\n## Checks to review",
-        render.table(c_rows, [("Date", "Date"), ("Amount", "Amount"), ("Merchant", "Merchant")],
+        render.table(c_rows, [("Date", "Date"), ("Amount", "Amount"), ("Merchant", "Merchant"),
+                              ("Txn id", "Txn id")],
                      numbered=True,
                      drill_hint="Reply with a row number to categorize that transaction.") if c_rows else "(none)",
     ]
@@ -525,19 +664,26 @@ TOOL_SPECS: list[ToolSpec] = [
     ToolSpec("top_merchants", "Top merchants by spend for a month (YYYY-MM).",
              _obj({"month": {"type": "string"}, "limit": {"type": "integer"}}), top_merchants),
     ToolSpec("compare_periods",
-             "Compare spend between two months (YYYY-MM each). Returns each total and the delta.",
+             "Compare spend between two months (YYYY-MM each). Returns each total, the overall "
+             "delta, and a per-category delta table (sorted by biggest change).",
              _obj({"month_a": {"type": "string"}, "month_b": {"type": "string"}}, ["month_a", "month_b"]),
              compare_periods),
     ToolSpec("recurring_charges", "Detected recurring/subscription charges (near-monthly, stable amount).",
              _obj(), recurring_charges),
-    ToolSpec("find_anomalies", "Transactions far above their merchant's historical mean (default 2 sd).",
-             _obj({"sd_threshold": {"type": "number"}}), find_anomalies),
+    ToolSpec("find_anomalies",
+             "Transactions far above their merchant's historical mean (default 2 sd). "
+             "UNSCOPED by default — returns flags across ~2 years of history; pass month "
+             "(YYYY-MM) and/or limit to scope the output (detection baselines still use "
+             "full history).",
+             _obj({"sd_threshold": {"type": "number"}, "month": {"type": "string"},
+                   "limit": {"type": "integer"}}), find_anomalies),
     ToolSpec("run_sql",
              "Run a read-only SELECT/WITH query against the `transactions` table (columns: "
              "posted_date, amount_cents, status, category, subcategory, category_source, "
              "merchant_norm, txn_type, txn_id, account_id). Rows of ALL statuses are visible — "
              "add `WHERE status='posted'` to match the spend tools. No writes, no ATTACH; PII "
-             "columns (raw_ofx, acct_hash) are blocked by the authorizer.",
+             "columns (raw_ofx, payee, memo, acct_hash) are read-blocked by the authorizer — "
+             "merchant_norm is the only merchant text.",
              _obj({"query": {"type": "string"}}, ["query"]), run_sql),
     ToolSpec("save_user_note", "Save a NEW durable user preference (one sentence). Not financial data.",
              _obj({"note": {"type": "string"}}, ["note"]), save_user_note),
@@ -547,13 +693,19 @@ TOOL_SPECS: list[ToolSpec] = [
     # ── write tools ──
     ToolSpec("set_merchant_category",
              "Pin a merchant (merchant_norm substring) to a category (+ optional subcategory): "
-             "adds a rule and recategorizes that merchant's existing transactions.",
+             "adds a rule and recategorizes that merchant's existing transactions. Setting "
+             "category='Random' requires confirm_random=true — it's discouraged, pick a real "
+             "category or leave it in the review queue.",
              _obj({"merchant_norm": {"type": "string"}, "category": {"type": "string"},
-                   "subcategory": {"type": "string"}}, ["merchant_norm", "category"]),
+                   "subcategory": {"type": "string"}, "confirm_random": {"type": "boolean"}},
+                  ["merchant_norm", "category"]),
              set_merchant_category),
-    ToolSpec("set_txn_category", "Categorize a SINGLE transaction by txn_id (no rule).",
+    ToolSpec("set_txn_category", "Categorize a SINGLE transaction by txn_id (no rule). Setting "
+             "category='Random' requires confirm_random=true — it's discouraged, pick a real "
+             "category or leave it in the review queue.",
              _obj({"txn_id": {"type": "integer"}, "category": {"type": "string"},
-                   "subcategory": {"type": "string"}}, ["txn_id", "category"]),
+                   "subcategory": {"type": "string"}, "confirm_random": {"type": "boolean"}},
+                  ["txn_id", "category"]),
              set_txn_category),
     ToolSpec("add_custom_category", "Add a user-defined spend category.",
              _obj({"name": {"type": "string"}}, ["name"]), add_custom_category),
@@ -561,8 +713,16 @@ TOOL_SPECS: list[ToolSpec] = [
              "transactions/rules/budgets, then hides it).",
              _obj({"name": {"type": "string"}, "merge_into": {"type": "string"}},
                   ["name", "merge_into"]), remove_category),
+    ToolSpec("mark_floor_category", "Mark a category as floor-type: MORE spend is good (e.g. "
+             "Investments), the opposite of every other (ceiling-type) category.",
+             _obj({"name": {"type": "string"}}, ["name"]), mark_floor_category),
+    ToolSpec("unmark_floor_category", "Revert a category to ordinary ceiling-type semantics "
+             "(less spend is good).",
+             _obj({"name": {"type": "string"}}, ["name"]), unmark_floor_category),
     ToolSpec("set_budget_limit", "Set a monthly budget limit (cents) for a category or "
-             "(category, subcategory).",
+             "(category, subcategory). Direction (over-budget-is-bad vs under-target-is-bad) "
+             "comes from the category's floor/ceiling marking (see mark_floor_category), not "
+             "from this call.",
              _obj({"category": {"type": "string"}, "amount_cents": {"type": "integer"},
                    "subcategory": {"type": "string"}}, ["category", "amount_cents"]),
              set_budget_limit),
@@ -578,7 +738,9 @@ TOOL_SPECS: list[ToolSpec] = [
              _obj({"period": {"type": "string"}, "markdown": {"type": "string"}},
                   ["period", "markdown"]), save_brief),
     # ── Phase-4 read tools ──
-    ToolSpec("budget_overview", "Spend vs budget per category for a month (over-budget flagged).",
+    ToolSpec("budget_overview", "Spend vs budget per category for a month (over-budget flagged; "
+             "floor categories like Investments flip the comparison — under-target is flagged "
+             "instead of over-budget).",
              _obj({"month": {"type": "string"}}), budget_overview),
     ToolSpec("income_by_source", "Income grouped by source for a month.",
              _obj({"month": {"type": "string"}}), income_by_source),
@@ -589,9 +751,25 @@ TOOL_SPECS: list[ToolSpec] = [
              _obj({"category": {"type": "string"}, "month": {"type": "string"}}, ["category"]),
              subcategory_breakdown),
     ToolSpec("insights", "Deterministic 'ways to save' for a month (over-budget, biggest "
-             "discretionary, subscriptions).", _obj({"month": {"type": "string"}}), insights),
+             "discretionary, subscriptions; floor categories like Investments falling short "
+             "of target are flagged separately as 'under target' — add more, not a cut).",
+             _obj({"month": {"type": "string"}}), insights),
     ToolSpec("monthly_trend", "Spend + income per month (most recent N, oldest-first).",
              _obj({"limit": {"type": "integer"}}), monthly_trend),
+    ToolSpec("render_report",
+             "Render the month's visual report PDF (stat row, spend-vs-budget chart, "
+             "trend, flags) deterministically to reports/budget-report-<period>.pdf. "
+             "period is YYYY-MM; optional narrative is a short plain-text paragraph "
+             "placed under the headline. Writes a local file — confirm with the user "
+             "before calling.",
+             _obj({"period": {"type": "string"}, "narrative": {"type": "string"}},
+                  ["period"]), render_report),
+    ToolSpec("list_categories",
+             "The assignable category vocabulary: every category's exact name, kind "
+             "(spend/structural), floor-vs-ceiling direction, and custom flag. Call this "
+             "before any category write — set_merchant_category / set_txn_category / "
+             "set_budget_limit require an EXACT name from this list.",
+             _obj(), list_categories),
     ToolSpec("review_queue", "The categorization review queue: uncategorized merchants + "
              "individual checks to review.", _obj(), review_queue),
     ToolSpec("open_conflicts", "Open (unresolved) import conflicts to reconcile "
