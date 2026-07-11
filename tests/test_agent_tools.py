@@ -265,3 +265,17 @@ def test_query_transactions_filters(data_dir, tmp_path):
     assert payload["count"] == 1                       # the conflict row is not status='posted'
     assert payload["rows"][0]["merchant_norm"] == "WALMART"
     assert payload["rows"][0]["account_last4"] == "1234"   # via the accounts JOIN
+
+
+def test_empty_db_hint_on_entry_point_tools(data_dir):
+    # Cold read before any import: the two entry-point tools point at the
+    # import commands instead of a bare all-zero summary.
+    db.init_schema()
+    assert "budget intake" in _call("get_month_summary", {"month": "2026-06"})["rendered"]
+    assert "budget intake" in _call("budget_overview", {"month": "2026-06"})["rendered"]
+
+
+def test_empty_db_hint_absent_once_seeded(data_dir, tmp_path):
+    _seed(tmp_path)
+    assert "budget intake" not in _call("get_month_summary", {"month": "2026-06"})["rendered"]
+    assert "budget intake" not in _call("budget_overview", {"month": "2026-06"})["rendered"]

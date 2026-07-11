@@ -116,6 +116,25 @@ def _flag_lines(conflicts: dict, uncategorized: dict | None = None) -> list[str]
     return out
 
 
+_EMPTY_DB_HINT = ("_(no transactions imported yet — run `budget intake` or "
+                  "`budget import <file>` in a terminal, then ask again)_")
+
+
+def _empty_db_hint(conn=None) -> list[str]:
+    """One-line import pointer appended to the two entry-point read tools when
+    the DB holds no posted transactions — a cold all-zero summary otherwise
+    gives the user no direction. Only get_month_summary/budget_overview carry
+    it (lean; every other tool stays unchanged)."""
+    if conn is not None:
+        n = conn.execute(
+            "SELECT COUNT(*) AS n FROM transactions WHERE status='posted'").fetchone()["n"]
+    else:
+        with db.agent_connect() as c:
+            n = c.execute(
+                "SELECT COUNT(*) AS n FROM transactions WHERE status='posted'").fetchone()["n"]
+    return [] if n else ["", _EMPTY_DB_HINT]
+
+
 def _txn_table(rows: list[dict]) -> str:
     disp = [{"Date": r["posted_date"], "Amount": render.money(int(r["amount_cents"])),
              "Category": r.get("category") or "—", "Merchant": r.get("merchant_norm") or "—",
@@ -156,6 +175,7 @@ async def get_month_summary(args: dict, conn) -> dict:
                                numbered=True,
                                drill_hint="Reply with a row number to see that category's transactions.")]
     lines += _flag_lines(conflicts, uncategorized)
+    lines += _empty_db_hint(conn)
     return {"data": data, "rendered": "\n".join(lines)}
 
 
@@ -430,8 +450,9 @@ async def budget_overview(args: dict) -> dict:
              "Budget": render.money(c["budget_cents"]) if c["budget_cents"] is not None else "—",
              "%": f"{c['pct']}%" if c["pct"] is not None else "—"}
             for c in data["categories"]]
-    rendered = "## Budget overview\n" + render.table(
-        rows, [("Category", "Category"), ("Spent", "Spent"), ("Budget", "Budget"), ("%", "% used")])
+    rendered = "\n".join(["## Budget overview\n" + render.table(
+        rows, [("Category", "Category"), ("Spent", "Spent"), ("Budget", "Budget"), ("%", "% used")]),
+        *_empty_db_hint()])
     return {"data": data, "rendered": rendered}
 
 
