@@ -14,8 +14,6 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-import pytest
-
 from local_budget.ingest import parse
 
 SECRET = "TOP-SECRET-FILE-CONTENT-1234567"
