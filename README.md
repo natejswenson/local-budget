@@ -14,8 +14,8 @@ session under your own subscription auth.
    run `budget intake` (or `budget import <file>`). Account numbers are masked at
    import time; the raw transaction is stored once in `data/budget.db`.
 2. **The MCP server.** The committed `.mcp.json` wires up `uv run budget-mcp` — a
-   standalone stdio MCP server that exposes **28 deterministic tools** (19 read,
-   9 write) over `budget.db`. Every tool runs behind a connection-scoped,
+   standalone stdio MCP server that exposes **32 deterministic tools** (18 read,
+   14 write) over `budget.db`. Every tool runs behind a connection-scoped,
    column-level SQLite authorizer (`db.agent_connect`): imported facts are
    immutable, and account numbers, raw OFX, and raw payee/memo are read-denied —
    the sanitized `merchant_norm` is the agent's only merchant text. Read tools
