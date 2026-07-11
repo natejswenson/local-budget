@@ -25,7 +25,7 @@ def client(data_dir, tmp_path):
          "name": "WALMART ACCT 4111222233334444"},
         {"trntype": "CREDIT", "dtposted": "20260601", "amount": "2000.00", "fitid": "I1", "name": "ACME PAYROLL"},
     ]))
-    return TestClient(server.create_app())
+    return TestClient(server.create_app(), base_url="http://127.0.0.1")
 
 
 def test_index_served(client):
@@ -187,7 +187,7 @@ def test_budget_posts_reject_non_object_json_with_400_not_500(client, data_dir):
     # must surface as HTTP 400, never an uncaught 500 (the field access would raise
     # TypeError/AttributeError, which is outside the handlers' except tuple).
     # raise_server_exceptions=False makes a regression observable as 500 (not a raise).
-    c = TestClient(server.create_app(), raise_server_exceptions=False)
+    c = TestClient(server.create_app(), raise_server_exceptions=False, base_url="http://127.0.0.1")
     headers = {"content-type": "application/json"}
     for path in ("/api/limits", "/api/subcategory-budget", "/api/budgets/income"):
         for payload in ("5", "[]", '"x"', "null"):
@@ -204,7 +204,7 @@ def test_suggest_non_str_month_coerced_not_500(data_dir):
     # (month.startswith → AttributeError → uncaught 500). It is coerced to a string
     # at the endpoint boundary and returns a valid overview.
     db.init_schema()
-    c = TestClient(server.create_app(), raise_server_exceptions=False)
+    c = TestClient(server.create_app(), raise_server_exceptions=False, base_url="http://127.0.0.1")
     for payload in ({"month": 12345}, {"month": ["x"]}):
         r = c.post("/api/budgets/suggest", json=payload)
         assert r.status_code == 200, f"{payload!r} returned {r.status_code}"
@@ -219,7 +219,7 @@ def test_oversized_amount_returns_400_not_500(client, data_dir):
     # decimal.InvalidOperation, which is NOT a ValueError. It must surface as a
     # clean 400 (AmountParseError -> ValueError), never an uncaught 500.
     # raise_server_exceptions=False makes a regression observable as 500 (not a raise).
-    c = TestClient(server.create_app(), raise_server_exceptions=False)
+    c = TestClient(server.create_app(), raise_server_exceptions=False, base_url="http://127.0.0.1")
     big = "9" * 29
     assert c.post("/api/limits", json={"category": "Groceries", "amount": big}).status_code == 400
     assert c.post("/api/budgets/income", json={"amount": big}).status_code == 400
@@ -266,7 +266,7 @@ def test_reconcile_endpoint(client, tmp_path):
 def test_auth_gate_when_token_set(data_dir, tmp_path, monkeypatch):
     db.init_schema()
     monkeypatch.setattr(server, "_API_TOKEN", "secret123")
-    c = TestClient(server.create_app())
+    c = TestClient(server.create_app(), base_url="http://127.0.0.1")
     assert c.get("/api/months").status_code == 401
     assert c.get("/api/months", headers={"authorization": "Bearer secret123"}).status_code == 200
 
@@ -282,7 +282,7 @@ def test_health_unauthenticated_and_db_free(data_dir, monkeypatch):
     # T1/I6: /health is 200 without a token (even when the gate is armed) and is
     # not under /api/, so it never needs auth and touches no DB.
     monkeypatch.setattr(server, "_API_TOKEN", "x" * 40)
-    c = TestClient(server.create_app())
+    c = TestClient(server.create_app(), base_url="http://127.0.0.1")
     r = c.get("/health")
     assert r.status_code == 200 and r.json() == {"status": "ok"}
     # an /api route IS gated — proving /health's openness is the route, not a missing gate
@@ -307,7 +307,7 @@ def test_no_intake_403_is_distinct_from_401_auth(data_dir, monkeypatch):
     db.init_schema()
     monkeypatch.setattr(server, "_API_TOKEN", "y" * 40)
     monkeypatch.setattr(server, "_NO_INTAKE", True)
-    c = TestClient(server.create_app())
+    c = TestClient(server.create_app(), base_url="http://127.0.0.1")
     assert c.post("/api/intake/run").status_code == 401                      # no token
     assert c.post("/api/intake/run",
                   headers={"authorization": "Bearer " + "y" * 40}).status_code == 403  # authed, but disabled
@@ -659,7 +659,7 @@ def test_normalize_confirm_malformed_body_is_400_not_500(data_dir):
     # FIX 1: request.json() raising on a non-JSON / empty body must surface as HTTP
     # 400, never an uncaught 500. raise_server_exceptions=False makes a regression
     # observable as a 500 status rather than a raised exception.
-    c = TestClient(server.create_app(), raise_server_exceptions=False)
+    c = TestClient(server.create_app(), raise_server_exceptions=False, base_url="http://127.0.0.1")
     headers = {"content-type": "application/json"}
     assert c.post("/api/normalize/confirm", content=b"not json",
                   headers=headers).status_code == 400
@@ -712,7 +712,7 @@ def test_normalize_confirm_hostile_input_is_400_never_500_or_corruption(data_dir
     # A real Subscriptions txn proves the valid path stays 200 (and is the corruption target).
     with db.connect() as conn:
         conn.execute("UPDATE transactions SET category='Subscriptions' WHERE merchant_norm LIKE '%WIDGETCO%'")
-    c = TestClient(server.create_app(), raise_server_exceptions=False)
+    c = TestClient(server.create_app(), raise_server_exceptions=False, base_url="http://127.0.0.1")
     assert c.post("/api/normalize/confirm", json=bad_body).status_code == 400
     # The null-canonical coercion trap must NOT have persisted a "None" canonical_merchant.
     with db.connect() as conn:
@@ -793,3 +793,53 @@ def test_budget_onboarded_endpoint_flips_flag_without_touching_budget(client):
     ov = client.get("/api/budgets").json()
     assert ov["onboarded"] is True
     assert ov["expected_income_cents"] == 0 and ov["total_budgeted_cents"] == 0   # skip ≠ save
+
+
+# ── CSRF boundary (siege S2): mutating /api/* rejects cross-origin requests ────
+# Loopback binding doesn't stop a browser the user drives from firing no-cors
+# POSTs at 127.0.0.1:8770; several mutating routes take no body, so no preflight
+# fires. The middleware requires a same-host/loopback Origin (or, header-less
+# clients, a loopback Host) whenever no bearer token is configured.
+def test_csrf_cross_origin_post_rejected(client):
+    r = client.post("/api/intake/undo", headers={"origin": "http://evil.example"})
+    assert r.status_code == 403
+    r = client.post("/api/budgets/onboarded", headers={"origin": "https://evil.example:8770"})
+    assert r.status_code == 403
+    # "null" opaque origin (sandboxed iframe) is also rejected
+    assert client.post("/api/intake/undo", headers={"origin": "null"}).status_code == 403
+
+
+def test_csrf_same_origin_and_loopback_allowed(client):
+    # same-origin dashboard fetch: Origin matches Host
+    r = client.post("/api/budgets/onboarded", headers={"origin": "http://127.0.0.1"})
+    assert r.status_code == 200
+    # another loopback-served page (local tooling) is trusted
+    r = client.post("/api/budgets/income", json={"amount": "5000"},
+                    headers={"origin": "http://localhost:9999"})
+    assert r.status_code == 200
+
+
+def test_csrf_no_origin_requires_loopback_host(data_dir):
+    # curl-style clients (no Origin): loopback Host passes, non-loopback 403s
+    # (DNS-rebinding guard). GETs are never CSRF-gated.
+    db.init_schema()
+    c = TestClient(server.create_app(), base_url="http://127.0.0.1")
+    assert c.post("/api/budgets/onboarded").status_code == 200
+    evil = TestClient(server.create_app(), raise_server_exceptions=False,
+                      base_url="http://rebound.evil.example")
+    assert evil.post("/api/budgets/onboarded").status_code == 403
+    assert evil.get("/api/budgets").status_code == 200
+
+
+def test_csrf_skipped_when_token_configured(data_dir, monkeypatch):
+    # Token deployments: the bearer gate is already CSRF-proof (browsers cannot
+    # attach the header cross-origin) — the Origin check must not double-gate.
+    db.init_schema()
+    monkeypatch.setattr(server, "_API_TOKEN", "T" * 43)
+    c = TestClient(server.create_app(), base_url="http://192.168.1.5")
+    r = c.post("/api/budgets/onboarded",
+               headers={"authorization": "Bearer " + "T" * 43,
+                        "origin": "http://evil.example"})
+    assert r.status_code == 200
+    # and without the token it is still a 401 (auth outranks CSRF)
+    assert c.post("/api/budgets/onboarded").status_code == 401
