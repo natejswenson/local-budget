@@ -53,6 +53,22 @@ def test_import_redacts_account_number_in_raw_ofx(data_dir, tmp_path):
     assert sanitize.REDACTED in raw
 
 
+def test_import_redacts_account_number_in_stored_payee_memo(data_dir, tmp_path):
+    # I14 extended to the payee/memo columns: raw_ofx was redacted at import but
+    # payee/memo were stored verbatim, leaving an unredacted copy of any
+    # embedded account-style run at rest. merchant_norm derivation still runs on
+    # the raw text, so grouping is unchanged.
+    _import_one(tmp_path)
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT payee, memo, merchant_norm FROM transactions WHERE fitid='G1'"
+        ).fetchone()
+    assert MEMO_ACCT not in (row["memo"] or "")
+    assert sanitize.REDACTED in row["memo"]
+    assert row["payee"] == "WALMART"            # no digits → untouched
+    assert row["merchant_norm"] == "WALMART"    # grouping key unchanged
+
+
 # ── S7: no full account number at rest in accounts ───────────────────────────
 def test_accounts_store_only_last4_and_hash_never_full_number(data_dir, tmp_path):
     _import_one(tmp_path)
@@ -65,14 +81,19 @@ def test_accounts_store_only_last4_and_hash_never_full_number(data_dir, tmp_path
         assert FULL_ACCT not in str(value)
 
 
-# ── I12/decision #4: agent connection read-deny smoke (matrix lives elsewhere) ─
-def test_agent_connect_blocks_pii_columns_allows_payee_memo(data_dir, tmp_path):
+# ── I12: agent connection read-deny smoke (matrix lives elsewhere) ────────────
+# Supersedes decision #4 (payee/memo were agent-readable): raw payee/memo carry
+# untruncated counterparty text (Zelle/Venmo names, full statement strings), so
+# they are read-denied like raw_ofx — merchant_norm is the agent's merchant text.
+def test_agent_connect_blocks_pii_columns_including_payee_memo(data_dir, tmp_path):
     _import_one(tmp_path)
     with db.agent_connect() as conn:
         with pytest.raises(sqlite3.DatabaseError):
             conn.execute("SELECT raw_ofx FROM transactions LIMIT 1").fetchall()
         with pytest.raises(sqlite3.DatabaseError):
             conn.execute("SELECT acct_hash FROM accounts LIMIT 1").fetchall()
-        # decision #4: payee/memo ARE readable by the agent.
-        row = conn.execute("SELECT payee, memo FROM transactions LIMIT 1").fetchone()
-    assert row is not None
+        with pytest.raises(sqlite3.DatabaseError):
+            conn.execute("SELECT payee, memo FROM transactions LIMIT 1").fetchall()
+        # the sanitized merchant text stays readable.
+        row = conn.execute("SELECT merchant_norm FROM transactions LIMIT 1").fetchone()
+    assert row is not None and row["merchant_norm"]

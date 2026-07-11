@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 from . import budgets as budgets_mod
-from . import db, detect, reconcile, reports
+from . import categories, db, detect, reconcile, reports
 from .ingest import importer
 from .money import cents_from_amount_str, dollars
 
@@ -177,8 +177,14 @@ def review() -> None:
                 break
             if ans.lower().startswith("a "):
                 ans = categories.add_custom_category(ans[2:].strip())
+            confirm_random = ans == "Random" and click.confirm(
+                "    Random is discouraged — pick a real category if possible. Use it anyway?",
+                default=False)
+            if ans == "Random" and not confirm_random:
+                click.echo("    ! skipped — pick a real category, or leave it in the review queue")
+                continue
             try:
-                n = manual.set_merchant_category(m["merchant"], ans)
+                n = manual.set_merchant_category(m["merchant"], ans, confirm_random=confirm_random)
                 click.echo(f"    ✓ {ans} ({n} rows)")
                 break
             except (manual.CategorizeError, ValueError) as e:
@@ -188,13 +194,15 @@ def review() -> None:
 @main.command(name="set-category")
 @click.argument("merchant")
 @click.argument("category")
-def set_category(merchant: str, category: str) -> None:
+@click.option("--confirm-random", is_flag=True,
+              help="required to pin a merchant to the discouraged Random catch-all")
+def set_category(merchant: str, category: str, confirm_random: bool) -> None:
     """Pin a merchant to a category (sticks for future imports), e.g.
     `budget set-category NETFLIX Subscriptions`."""
     from .categorize import manual
     db.init_schema()
     try:
-        n = manual.set_merchant_category(merchant, category)
+        n = manual.set_merchant_category(merchant, category, confirm_random=confirm_random)
     except manual.CategorizeError as e:
         raise click.ClickException(str(e)) from e
     click.echo(f"  ✓ {merchant} -> {category} ({n} rows)")
@@ -207,6 +215,19 @@ def add_category(name: str) -> None:
     from . import categories
     db.init_schema()
     click.echo(f"  ✓ added category: {categories.add_custom_category(name)}")
+
+
+@main.command("report-pdf")
+@click.argument("period")
+def report_pdf(period: str) -> None:
+    """Render the visual report PDF for PERIOD (YYYY-MM) — the no-MCP path to
+    the same deterministic renderer the render_report tool uses."""
+    from .report import render as report_render
+    try:
+        out = report_render.render_report(period)
+    except (ValueError, report_render.ChromeNotFoundError) as e:
+        raise SystemExit(f"✗ {e}") from e
+    click.echo(f"  ✓ report saved to {out['path']}")
 
 
 @main.command()
@@ -231,8 +252,13 @@ def report(month: str | None, as_json: bool) -> None:
         click.echo(f"    {cat:20s} {dollars(amt):>12s}")
     if s["budgets"]:
         click.echo("\n  Budgets:")
+        floor_set = categories.floor_categories()   # fetched once, not per-row
         for b in s["budgets"]:
-            flag = "OVER" if b["over_cents"] > 0 else "ok"
+            # Per-row: each budget dict carries its own category.
+            if b["over_cents"] <= 0:
+                flag = "ok"
+            else:
+                flag = categories.off_track_label(b["category"], floor_set=floor_set)
             click.echo(f"    {b['category']:20s} {dollars(b['actual_cents'])} / "
                        f"{dollars(b['limit_cents'])}  [{flag}]")
     c = s["unresolved_conflicts"]
@@ -294,10 +320,17 @@ def subscriptions(month: str) -> None:
         click.echo("  no subscriptions found")
         return
     click.echo(f"\nSubscriptions ({month}):")
+    # Hoisted: `subcategory_breakdown()`'s rows carry no `category` field —
+    # "Subscriptions" is a fixed literal for this whole command, so `floor_set`
+    # is fetched once and threaded through every per-row call below, which
+    # skips the DB read entirely instead of just skipping the label choice.
+    floor_set = categories.floor_categories()
     for r in rows:
         line = f"  {r['subcategory']:24s} {dollars(r['monthly_avg_cents'])}/mo"
         if r["limit_cents"]:
-            flag = "OVER" if r["monthly_avg_cents"] > r["limit_cents"] else "ok"
+            off_track = categories.is_off_track("Subscriptions", r["monthly_avg_cents"], r["limit_cents"],
+                                                floor_set=floor_set)
+            flag = categories.off_track_label("Subscriptions", floor_set=floor_set) if off_track else "ok"
             line += f"   budget {dollars(r['limit_cents'])} [{flag}]"
         click.echo(line)
     click.echo("\n  set a budget: budget set-limit Subscriptions 16 --sub <name>")

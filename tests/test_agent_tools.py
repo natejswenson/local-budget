@@ -236,12 +236,33 @@ def test_run_sql_rejects_forbidden_keyword(data_dir, tmp_path):
         assert "error" in res, q
 
 
+def test_run_sql_denies_raw_payee_memo(data_dir, tmp_path):
+    # payee/memo are authorizer read-denied to the agent (supersedes decision
+    # #4); merchant_norm remains the readable merchant text.
+    _seed(tmp_path)
+    for q in ("SELECT payee FROM transactions",
+              "SELECT memo FROM transactions",
+              "SELECT payee AS p FROM transactions",          # alias doesn't evade
+              "SELECT 1 FROM transactions WHERE payee LIKE 'W%'"):  # WHERE read
+        res = _call("run_sql", {"query": q})
+        assert "error" in res, q
+        assert "WALMART" not in json.dumps(res), q
+    ok = _call("run_sql", {"query": "SELECT merchant_norm FROM transactions"})
+    assert "error" not in ok and ok["data"]["count"] == 3
+
+
 def test_run_sql_exception_scrubbed(data_dir, tmp_path):
-    # A query that errors must not leak SQLite value/constraint text (I16).
+    # A query that errors must not leak SQLite VALUE/constraint text (I16).
+    # Schema identifiers the agent itself wrote may echo back ("no such
+    # column: X") — that's the recovery path, not a data leak; row values
+    # (WALMART / amounts) must never appear.
     _seed(tmp_path)
     res = _call("run_sql", {"query": "SELECT nonexistent_column FROM transactions"})
-    assert res["error"] == "query failed (rejected or invalid)"
-    assert "nonexistent_column" not in json.dumps(res)
+    assert res["error"].startswith("invalid query: no such column")
+    assert "WALMART" not in json.dumps(res) and "5000" not in json.dumps(res)
+    # denied columns get the classified authorizer message with the fix named
+    denied = _call("run_sql", {"query": "SELECT payee FROM transactions"})
+    assert denied["error"].startswith("denied:") and "merchant_norm" in denied["error"]
 
 
 def test_query_transactions_filters(data_dir, tmp_path):
@@ -250,3 +271,150 @@ def test_query_transactions_filters(data_dir, tmp_path):
     assert payload["count"] == 1                       # the conflict row is not status='posted'
     assert payload["rows"][0]["merchant_norm"] == "WALMART"
     assert payload["rows"][0]["account_last4"] == "1234"   # via the accounts JOIN
+
+
+def test_empty_db_hint_on_entry_point_tools(data_dir):
+    # Cold read before any import: the two entry-point tools point at the
+    # import commands instead of a bare all-zero summary.
+    db.init_schema()
+    assert "budget intake" in _call("get_month_summary", {"month": "2026-06"})["rendered"]
+    assert "budget intake" in _call("budget_overview", {"month": "2026-06"})["rendered"]
+
+
+def test_empty_db_hint_absent_once_seeded(data_dir, tmp_path):
+    _seed(tmp_path)
+    assert "budget intake" not in _call("get_month_summary", {"month": "2026-06"})["rendered"]
+    assert "budget intake" not in _call("budget_overview", {"month": "2026-06"})["rendered"]
+
+
+def test_txn_id_surfaced_for_single_txn_categorization(data_dir, tmp_path):
+    # A2: the drill hints promise row→set_txn_category(txn_id), so both
+    # query_transactions and review_queue's checks table must surface the id.
+    _seed(tmp_path)
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO transactions (account_id, fitid, posted_date, amount_cents, status, "
+            "txn_type, payee, memo, merchant_norm, category, category_source, raw_ofx, imported_at) "
+            "VALUES (1, 'C1', '2026-06-07', -20000, 'posted', 'CHECK', 'CHECK 101', 'memo', "
+            "'CHECK 101', 'Checks', 'rule', 'raw', ?)", (db.now_iso(),))
+
+    qt = _call("query_transactions", {"month": "2026-06"})
+    assert "Txn id" in qt["rendered"]
+    assert all("txn_id" in r for r in qt["data"]["rows"])
+
+    rq = _call("review_queue", {})
+    assert "Txn id" in rq["rendered"]
+    check = rq["data"]["checks"][0]
+    assert check["txn_id"]
+
+    # end-to-end: the id read from review_queue drives set_txn_category
+    res = _call("set_txn_category", {"txn_id": check["txn_id"], "category": "Housing"})
+    assert res.get("ok"), res
+    with db.connect() as conn:
+        cat = conn.execute("SELECT category FROM transactions WHERE txn_id=?",
+                           (check["txn_id"],)).fetchone()[0]
+    assert cat == "Housing"
+
+
+def test_list_categories_vocabulary_and_flags(data_dir, tmp_path):
+    # B1: the write tools demand exact category names; list_categories is how
+    # the agent discovers the vocabulary (breakdown only shows spent-in cats).
+    _seed(tmp_path)
+    from local_budget import categories
+    categories.add_custom_category("Hobby Farm")
+    categories.mark_floor_category("Investments")
+
+    res = _call("list_categories", {})
+    rows = {r["name"]: r for r in res["data"]["categories"]}
+    assert set(rows) == categories.all_categories()
+    assert rows["Investments"]["floor"] is True
+    assert rows["Hobby Farm"]["custom"] is True
+    assert rows["Income"]["kind"] == "structural"
+    assert rows["Groceries"] == {"name": "Groceries", "kind": "spend",
+                                 "floor": False, "custom": False}
+    assert "floor (more is good)" in res["rendered"]
+
+
+def test_unknown_category_error_lists_valid_names(data_dir, tmp_path):
+    _seed(tmp_path)
+    res = _call("set_merchant_category", {"merchant_norm": "WALMART", "category": "Grocerys"})
+    assert "unknown category" in res["error"]
+    assert "Groceries" in res["error"]          # recovery path: the valid names
+
+
+def test_compare_periods_per_category_deltas(data_dir, tmp_path):
+    # B4: "what changed between A and B" is one call — per-category deltas in
+    # data + a rendered table, headline line unchanged.
+    _seed(tmp_path)
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO transactions (account_id, fitid, posted_date, amount_cents, status, "
+            "txn_type, payee, memo, merchant_norm, category, category_source, raw_ofx, imported_at) "
+            "VALUES (1, 'M1', '2026-05-03', -2000, 'posted', 'DEBIT', 'WALMART', 'memo', "
+            "'WALMART', 'Groceries', 'rule', 'raw', ?)", (db.now_iso(),))
+        conn.execute(
+            "INSERT INTO transactions (account_id, fitid, posted_date, amount_cents, status, "
+            "txn_type, payee, memo, merchant_norm, category, category_source, raw_ofx, imported_at) "
+            "VALUES (1, 'M2', '2026-05-08', -9000, 'posted', 'DEBIT', 'SHELL', 'memo', "
+            "'SHELL', 'Gas', 'rule', 'raw', ?)", (db.now_iso(),))
+
+    res = _call("compare_periods", {"month_a": "2026-06", "month_b": "2026-05"})
+    d = res["data"]
+    assert d["spend_a_cents"] == 5000 and d["spend_b_cents"] == 11000
+    per = {r["category"]: r for r in d["by_category"]}
+    assert per["Gas"] == {"category": "Gas", "a_cents": 0, "b_cents": 9000, "delta_cents": -9000}
+    assert per["Groceries"]["delta_cents"] == 3000
+    # sorted by |delta| — Gas first
+    assert d["by_category"][0]["category"] == "Gas"
+    # headline preserved + table appended
+    assert res["rendered"].startswith("**2026-06** $50.00 vs **2026-05** $110.00 — delta **-$60.00**")
+    assert "| Category |" in res["rendered"] and "-$90.00" in res["rendered"]
+
+
+def test_find_anomalies_month_and_limit_scope_output_only(data_dir, tmp_path):
+    # C2: detection baselines use full history; month/limit scope only what is
+    # returned. No args → unchanged full span.
+    db.init_schema()
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO accounts (account_id, institution, acct_type, acct_last4, acct_hash, created_at) "
+            "VALUES (1, 'WF', 'CHECKING', '1234', 'hash-1', ?)", (db.now_iso(),))
+        # steady $15 charges over 2025, then two big spikes in different months
+        fixtures = [(f"S{i}", f"2025-{m:02d}-05", -1500) for i, m in enumerate(range(1, 13))]
+        fixtures += [("A1", "2026-05-10", -90000), ("A2", "2026-06-10", -95000)]
+        for fitid, dt, cents in fixtures:
+            conn.execute(
+                "INSERT INTO transactions (account_id, fitid, posted_date, amount_cents, status, "
+                "txn_type, payee, memo, merchant_norm, category, category_source, raw_ofx, imported_at) "
+                "VALUES (1, ?, ?, ?, 'posted', 'DEBIT', 'NETFLIX', 'memo', "
+                "'NETFLIX', 'Subscriptions', 'rule', 'raw', ?)", (fitid, dt, cents, db.now_iso()))
+
+    full = _call("find_anomalies", {})["data"]["anomalies"]
+    dates = {r["posted_date"] for r in full}
+    assert {"2026-05-10", "2026-06-10"} <= dates
+
+    scoped = _call("find_anomalies", {"month": "2026-06"})["data"]["anomalies"]
+    assert scoped and all(r["posted_date"].startswith("2026-06-") for r in scoped)
+
+    limited = _call("find_anomalies", {"limit": 1})["data"]["anomalies"]
+    assert len(limited) == 1
+
+
+def test_subcategory_breakdown_renders_avg_and_budget(data_dir, tmp_path):
+    # C3: Avg/mo + Budget were computed but dropped at render time — the
+    # subscriptions skill needs both for price-creep/limit checks.
+    _seed(tmp_path)
+    with db.connect() as conn:
+        for i, dt in enumerate(["2026-05-05", "2026-06-05"]):
+            conn.execute(
+                "INSERT INTO transactions (account_id, fitid, posted_date, amount_cents, status, "
+                "txn_type, payee, memo, merchant_norm, category, subcategory, category_source, raw_ofx, imported_at) "
+                "VALUES (1, ?, ?, -1500, 'posted', 'DEBIT', 'NETFLIX', 'memo', "
+                "'NETFLIX', 'Subscriptions', 'Netflix', 'rule', 'raw', ?)", (f"N{i}", dt, db.now_iso()))
+    _call("set_budget_limit", {"category": "Subscriptions", "subcategory": "Netflix", "amount_cents": 2000})
+
+    res = _call("subcategory_breakdown", {"category": "Subscriptions", "month": "2026-06"})
+    assert "Avg/mo" in res["rendered"] and "Budget" in res["rendered"]
+    row = [r for r in res["data"]["subcategories"] if r["subcategory"] == "Netflix"][0]
+    assert row["monthly_avg_cents"] == 1500 and row["limit_cents"] == 2000
+    assert "$20.00" in res["rendered"]

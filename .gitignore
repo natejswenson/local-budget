@@ -5,6 +5,7 @@ data/
 briefings/
 logs/
 backups/
+reports/
 
 # Belt-and-suspenders: raw bank exports anywhere
 *.ofx

@@ -16,14 +16,30 @@ class CategorizeError(ValueError):
     pass
 
 
+def _check_random_confirmed(category: str, confirm_random: bool) -> None:
+    """Shared guard for both setters below: `category="Random"` requires
+    `confirm_random=True` — it's a last-resort catch-all, not a default for
+    ambiguous merchants; a caller must deliberately opt in rather than
+    defaulting into it."""
+    if category == "Random" and not confirm_random:
+        raise CategorizeError("Random is discouraged — pick a real category, "
+                              "or leave it in the review queue")
+
+
 def set_merchant_category(merchant_norm: str, category: str, subcategory: str | None = None,
-                          conn=None) -> int:
+                          confirm_random: bool = False, conn=None) -> int:
     """Pin `merchant_norm` to `category` (+ optional `subcategory`): replace any
     llm/manual rule with a manual one, recategorize that merchant's existing rows,
     and rebuild agent.db. Returns the number of transactions updated. Substring
-    match (pinning "HARDWARE CO" also catches "HARDWARE CO 1465")."""
+    match (pinning "HARDWARE CO" also catches "HARDWARE CO 1465").
+
+    Assigning `category="Random"` requires `confirm_random=True` (see
+    `_check_random_confirmed`)."""
     if category not in categories.all_categories():
-        raise CategorizeError(f"unknown category {category!r}")
+        raise CategorizeError(
+            f"unknown category {category!r} — valid: "
+            f"{', '.join(sorted(categories.all_categories()))}")
+    _check_random_confirmed(category, confirm_random)
     subcategory = (subcategory or "").strip() or None
     merchant_norm = merchant_norm.strip().upper()
     with db.writer(conn) as conn:
@@ -45,11 +61,17 @@ def set_merchant_category(merchant_norm: str, category: str, subcategory: str | 
 
 
 def set_transaction_category(txn_id: int, category: str, subcategory: str | None = None,
-                             conn=None) -> None:
+                             confirm_random: bool = False, conn=None) -> None:
     """Categorize a SINGLE transaction (a one-off, no rule) — for things like
-    individual checks that each go to a different place. Rebuilds agent.db."""
+    individual checks that each go to a different place. Rebuilds agent.db.
+
+    Assigning `category="Random"` requires `confirm_random=True` (see
+    `_check_random_confirmed`, same guard as `set_merchant_category`)."""
     if category not in categories.all_categories():
-        raise CategorizeError(f"unknown category {category!r}")
+        raise CategorizeError(
+            f"unknown category {category!r} — valid: "
+            f"{', '.join(sorted(categories.all_categories()))}")
+    _check_random_confirmed(category, confirm_random)
     subcategory = (subcategory or "").strip() or None
     with db.writer(conn) as conn:
         conn.execute(
@@ -82,6 +104,11 @@ def remove_category(name: str, merge_into: str, conn=None) -> dict:
         raise CategorizeError(f"unknown target category {merge_into!r}")
     if name == merge_into:
         raise CategorizeError("cannot merge a category into itself")
+    floor_set = categories.floor_categories()
+    if categories.is_floor(name, floor_set=floor_set) != categories.is_floor(merge_into, floor_set=floor_set):
+        raise CategorizeError(
+            f"cannot merge {name!r} into {merge_into!r}: mismatched floor/ceiling "
+            "direction — summing their budget limits would be meaningless")
 
     today = date.today().isoformat()
     with db.writer(conn) as conn:
@@ -130,11 +157,14 @@ def remove_category(name: str, merge_into: str, conn=None) -> dict:
         merged_budget = conn.execute(
             "DELETE FROM budgets WHERE category = ?", (name,)).rowcount > 0
 
-        # 4) Vocabulary — hide the merged-away category; drop it if it was custom.
-        # Both writes reuse THIS transaction via the conn-aware categories helpers,
+        # 4) Vocabulary — hide the merged-away category; drop it if it was custom;
+        # clear any floor-type marking so a future category re-created with this
+        # same name doesn't silently inherit stale floor semantics.
+        # All writes reuse THIS transaction via the conn-aware categories helpers,
         # which own the settings-blob encoding (F-1: no inline json here).
         categories.mark_hidden(name, conn=conn)
         categories.remove_custom(name, conn=conn)
+        categories.unmark_floor_category(name, conn=conn)
 
     return {"moved_txns": moved_txns, "moved_rules": moved_rules,
             "merged_budget": merged_budget, "summed_limit_cents": summed_limit_cents}
