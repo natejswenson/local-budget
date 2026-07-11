@@ -90,12 +90,15 @@ def test_open_conflicts_redacts_incoming_payee():
     assert "near_duplicate" in r["rendered"]
 
 
-def test_run_sql_redacts_payee():
+def test_run_sql_denies_payee_read():
+    # Stronger than the old redact-on-read: payee/memo are authorizer-denied
+    # outright, so the raw text (and any embedded number) never leaves the DB.
     _seed()
     with db.connect() as conn:
         conn.execute("UPDATE transactions SET payee='PAYEE 9876543210' WHERE fitid='G1'")
     r = _call("run_sql", {"query": "SELECT payee FROM transactions WHERE merchant_norm='WALMART'"})
-    assert "9876543210" not in str(r["data"]["rows"]) and "9876543210" not in r["rendered"]
+    assert "error" in r
+    assert "9876543210" not in str(r)
 
 
 def test_all_phase4_read_tools_registered():

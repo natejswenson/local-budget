@@ -228,7 +228,8 @@ _AGENT_WRITE_COLS = {("transactions", "category"),
                      ("transactions", "subcategory"),
                      ("transactions", "category_source")}
 _AGENT_WRITE_TABLES = {"category_rules", "budgets", "settings"}
-_AGENT_READ_DENY = {("transactions", "raw_ofx"), ("accounts", "acct_hash"),
+_AGENT_READ_DENY = {("transactions", "raw_ofx"), ("transactions", "payee"),
+                    ("transactions", "memo"), ("accounts", "acct_hash"),
                     ("inbox_files", "filename"), ("import_runs", "source_name"),
                     ("import_runs", "error_message")}
 
@@ -260,8 +261,10 @@ def agent_connect(db_path: Path | None = None, write: bool = False) -> Iterator[
     query_only); ``write=True`` allows ONLY {category,subcategory,category_source}
     on transactions + INSERT/UPDATE/DELETE on {category_rules,budgets,settings}.
     Imported facts / status / transactions INSERT-DELETE / every unlisted table
-    are denied; raw_ofx/acct_hash/inbox_files.filename/import_runs PII columns
-    are read-denied (the statement aborts). ATTACH/PRAGMA/DDL always denied.
+    are denied; raw_ofx/payee/memo/acct_hash/inbox_files.filename/import_runs
+    PII columns are read-denied (the statement aborts — the sanitized
+    merchant_norm is the agent's only merchant text). ATTACH/PRAGMA/DDL always
+    denied.
 
     Read path relies on ``PRAGMA query_only=ON`` + the authorizer rather than
     ``mode=ro`` (it must — ``write=True`` needs a writable handle); a deliberate

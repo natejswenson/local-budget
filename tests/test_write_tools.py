@@ -109,6 +109,33 @@ def test_bad_input_returns_error_not_crash():
     assert "error" in r and _cat_of("WALMART") == "Uncategorized"  # nothing committed
 
 
+def test_set_merchant_category_random_requires_confirm():
+    _seed()
+    r = _call("set_merchant_category", {"merchant_norm": "WALMART", "category": "Random"})
+    assert "error" in r and _cat_of("WALMART") == "Uncategorized"  # nothing committed
+    r2 = _call("set_merchant_category",
+               {"merchant_norm": "WALMART", "category": "Random", "confirm_random": True})
+    assert r2["ok"] and _cat_of("WALMART") == "Random"
+
+
+def test_set_txn_category_random_requires_confirm():
+    _seed()
+    with db.connect() as c:
+        tid = c.execute("SELECT txn_id FROM transactions WHERE merchant_norm='WALMART'").fetchone()[0]
+    r = _call("set_txn_category", {"txn_id": tid, "category": "Random"})
+    assert "error" in r and _cat_of("WALMART") == "Uncategorized"
+    r2 = _call("set_txn_category", {"txn_id": tid, "category": "Random", "confirm_random": True})
+    assert r2["ok"] and _cat_of("WALMART") == "Random"
+
+
+def test_mark_and_unmark_floor_category():
+    _seed()
+    assert _call("mark_floor_category", {"name": "Investments"})["ok"]
+    assert categories.is_floor("Investments")
+    assert _call("unmark_floor_category", {"name": "Investments"})["ok"]
+    assert not categories.is_floor("Investments")
+
+
 # ── authorizer IS in the write path (entry-point, not in-isolation) ──
 def test_write_tool_opens_guarded_write_connection(monkeypatch):
     """The tool must open db.agent_connect(write=True) — NOT db.connect() — so the
@@ -158,6 +185,7 @@ def test_save_brief_rejects_escaping_period(bad):
 def test_all_write_tools_registered_and_schemas_serialize():
     import json
     writes = {"set_merchant_category", "set_txn_category", "add_custom_category", "remove_category",
+              "mark_floor_category", "unmark_floor_category",
               "set_budget_limit", "clear_budget_limit", "set_expected_income", "split_subscriptions",
               "save_brief"}
     assert writes <= set(tools.SPEC_BY_NAME)

@@ -1,7 +1,7 @@
 ---
 name: budget-coach
 description: Answer any money question, grounded in tool results. Read-only for budget data.
-tools: [get_month_summary, get_category_breakdown, query_transactions, compare_periods, top_merchants]
+tools: [get_month_summary, get_category_breakdown, query_transactions, compare_periods, top_merchants, save_user_note, list_user_notes, delete_user_note]
 ---
 
 # Budget Coach
@@ -26,18 +26,22 @@ Start broad, then drill down based on what the user asked:
 Pick the smallest set that answers the question. Print each tool's `rendered` block
 verbatim, then synthesize.
 
+## Preferences (file-backed notes, not budget data)
+
+When the user states a durable preference or standing fact worth remembering
+("treat Costco as groceries when I ask", "my mortgage payment counts as fixed"),
+offer to save it with `save_user_note` — one sentence, and confirm the exact
+wording before saving (it's a write, rule 4 applies even though it never touches
+the budget DB). `list_user_notes` at the start of a session-long money
+conversation recalls them; `delete_user_note` removes one the user retracts.
+
 ## Charts
 
-If the user asks to see a chart, graph, or visual, follow **budget-visualizer**'s
-recipes instead of reaching for the generic `dataviz` skill directly — so an ad-hoc
-chart here looks identical to one embedded in a full monthly report. This tool list
-only covers `budget-visualizer` recipe 1 (stat row). Recipe 2, the spend-vs-budget
-chart, needs `budget_overview` in addition to `get_category_breakdown`, so it can
-no longer be done ad hoc here either — same as a flags list, which needs
-`find_anomalies`/`recurring_charges`. None of those tools are in this skill's tool
-list — point the user to the full report instead: "Want to run
-`/budget-monthly-brief` for the full visual report? It covers the spend/budget
-chart and flags too."
+If the user asks to see a chart, graph, or visual, the visual report is rendered
+by the deterministic `render_report` tool (see **budget-visualizer**) — never
+hand-built here. That tool isn't in this skill's list, so point the user to the
+owning skill: "Want to run `/budget-monthly-brief` for the visual report? It
+covers the stat row, spend/budget chart, trend, and flags in one PDF."
 
 ## Handoff
 

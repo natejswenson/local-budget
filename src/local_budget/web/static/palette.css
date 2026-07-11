@@ -1,0 +1,23 @@
+/* Shared chart/status palette — the ONE source of color truth for both the
+   web dashboard (linked as a stylesheet) and the PDF report renderer
+   (parsed by local_budget/report/palette.py and inlined into the page).
+   Layout/theme chrome (--bg, --panel, …) stays in index.html — these are
+   data colors only. tests/test_report_palette.py guards drift: every token
+   here must be a valid hex color, and index.html must not redefine any of
+   them. */
+:root {
+  /* dashboard chart/status colors (dark surface) */
+  --green: #4ade80;
+  --blue: #5b9bff;
+  --red: #fb6a5e;
+  --amber: #f0b429;
+  --purple: #a78bfa;
+  --over: #d9a066; /* the ONE restrained accent on the Budgets tab (over-amounts) */
+
+  /* PDF report tokens (fixed light theme; validated per dataviz) */
+  --report-accent: #2a78d6;
+  --report-good: #0ca30c;
+  --report-warning: #fab219;
+  --report-critical: #d03b3b;
+  --report-gridline: #e1e0d9;
+}

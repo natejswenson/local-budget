@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from click.testing import CliRunner
 
-from local_budget import budgets, db, reconcile, reports
+from local_budget import budgets, categories, db, reconcile, reports
 from local_budget.cli import main
 from local_budget.ingest import importer
 
@@ -125,6 +125,43 @@ def test_cli_set_limit_rejects_sub_cent(data_dir, tmp_path):
     db.init_schema()
     result = CliRunner().invoke(main, ["set-limit", "Dining Out", "19.999"])
     assert result.exit_code != 0  # raises rather than silently rounding money
+
+
+def test_cli_report_label_direction_aware_per_row(data_dir, tmp_path):
+    # `report()` computes the label per-row off each row's own category — a mix
+    # of a floor category under target ([UNDER]) and a ceiling category over
+    # its limit ([OVER]) in the same output.
+    db.init_schema()
+    categories.mark_floor_category("Investments")
+    importer.import_file(write_ofx(tmp_path / "wf.qfx", [
+        {"trntype": "DEBIT", "dtposted": "20260603", "amount": "-200.00", "fitid": "N1", "name": "529 PLAN"},
+        {"trntype": "DEBIT", "dtposted": "20260605", "amount": "-300.00", "fitid": "D1", "name": "CHIPOTLE"}]))
+    from local_budget.categorize.manual import set_merchant_category as setc
+    setc("529 PLAN", "Investments")
+    setc("CHIPOTLE", "Dining Out")
+    budgets.set_limit("Investments", 30000)   # $300 target, $200 spent -> under
+    budgets.set_limit("Dining Out", 10000)    # $100 limit, $300 spent -> over
+    result = CliRunner().invoke(main, ["report", "--month", "2026-06"])
+    assert result.exit_code == 0, result.output
+    assert "Investments" in result.output and "[UNDER]" in result.output
+    assert "Dining Out" in result.output and "[OVER]" in result.output
+
+
+def test_cli_subscriptions_label_floor_marked(data_dir, tmp_path):
+    # `subscriptions()` hoists a single is_floor("Subscriptions") check since
+    # its rows carry no per-row category field.
+    from local_budget.categorize import manual as manual_mod
+    db.init_schema()
+    categories.mark_floor_category("Subscriptions")
+    importer.import_file(write_ofx(tmp_path / "wf.qfx", [
+        {"trntype": "DEBIT", "dtposted": "20260405", "amount": "-15.49", "fitid": "N1", "name": "NETFLIX.COM"}]))
+    manual_mod.set_merchant_category("NETFLIX", "Subscriptions")
+    manual_mod.split_subscriptions()
+    budgets.set_limit("Subscriptions", 2000, subcategory="Netflix")  # $20 target, $15.49 spent -> under
+    result = CliRunner().invoke(main, ["subscriptions", "--month", "all"])
+    assert result.exit_code == 0, result.output
+    assert "[UNDER]" in result.output
+    assert "[OVER]" not in result.output
 
 
 # ── reconcile ────────────────────────────────────────────────────────────────
@@ -283,6 +320,37 @@ def test_insights_over_budget_and_discretionary(data_dir, tmp_path):
     assert "reduce" in kinds               # discretionary categories surfaced
     over = next(i for i in ins if i["kind"] == "over_budget")
     assert over["amount_cents"] == 20000   # $200 over
+
+
+def test_insights_floor_category_under_target(data_dir, tmp_path):
+    # Investments: a floor category — spending LESS than the target is bad.
+    db.init_schema()
+    categories.mark_floor_category("Investments")
+    importer.import_file(write_ofx(tmp_path / "wf.qfx", [
+        {"trntype": "DEBIT", "dtposted": "20260603", "amount": "-200.00", "fitid": "N1", "name": "529 PLAN"}]))
+    from local_budget.categorize.manual import set_merchant_category as setc
+    setc("529 PLAN", "Investments")
+    budgets.set_limit("Investments", 30000)  # $300 target, $200 spent -> $100 short
+    ins = reports.insights("all")
+    kinds = [i["kind"] for i in ins]
+    assert "under_target" in kinds
+    assert "over_budget" not in kinds
+    miss = next(i for i in ins if i["kind"] == "under_target")
+    assert miss["amount_cents"] == 10000  # $100 short
+
+
+def test_insights_floor_category_at_or_above_target_is_silent(data_dir, tmp_path):
+    db.init_schema()
+    categories.mark_floor_category("Investments")
+    importer.import_file(write_ofx(tmp_path / "wf.qfx", [
+        {"trntype": "DEBIT", "dtposted": "20260603", "amount": "-400.00", "fitid": "N1", "name": "529 PLAN"}]))
+    from local_budget.categorize.manual import set_merchant_category as setc
+    setc("529 PLAN", "Investments")
+    budgets.set_limit("Investments", 30000)  # $300 target, $400 spent -> above target
+    ins = reports.insights("all")
+    kinds = [i["kind"] for i in ins]
+    assert "under_target" not in kinds
+    assert "over_budget" not in kinds
 
 
 # ── transactions_in_category (drill-down modal backend, §2) ───────────────────
@@ -795,6 +863,76 @@ def test_budget_status_agrees_with_overview_total_for_period(data_dir, monkeypat
     # total 120000 vs 35000×3 = 105000 → over by 15000; status and overview agree.
     assert row["actual_cents"] == 120000 and row["limit_cents"] == 105000 and row["over_cents"] == 15000
     assert ov["spent_cents"] == row["actual_cents"] and ov["over"] is (row["over_cents"] > 0)
+
+
+def test_budget_overview_floor_category_direction_aware(data_dir):
+    # A floor category (category-level AND subcategory-level) flips `over`:
+    # under the target is `over: true`; at/above it is `over: false`. The
+    # allocation-consistency check `subs_exceed` is unaffected by direction —
+    # still plain limit-vs-limit.
+    db.init_schema()
+    categories.mark_floor_category("Investments")
+    with db.connect() as conn:
+        _seed_txn(conn, "2026-06-10", -200000, "Investments", subcategory="401k")
+    budgets.set_limit("Investments", 300000)               # $3000 target
+    budgets.set_limit("Investments", 350000, subcategory="401k")  # sub target > parent
+    ov = {c["category"]: c for c in reports.budget_overview("2026-06")["categories"]}["Investments"]
+    assert ov["over"] is True   # $2000 spent < $3000 target -> bad
+    sub = {s["subcategory"]: s for s in ov["subcategories"]}["401k"]
+    assert sub["over"] is True  # same shortfall at the subcategory level
+    # subs_exceed: sub_total ($3500) > monthly ($3000) -> True regardless of
+    # direction (a pure allocation check, not a spend-vs-target check).
+    assert ov["subs_exceed"] is True
+
+    categories.unmark_floor_category("Investments")
+    budgets.clear_limit("Investments", subcategory="401k")
+    with db.connect() as conn:
+        _seed_txn(conn, "2026-06-11", -350000, "Investments")  # now $5500 total spent
+    ov2 = {c["category"]: c for c in reports.budget_overview("2026-06")["categories"]}["Investments"]
+    assert ov2["over"] is True  # ceiling semantics restored: spend > $3000 limit -> bad
+
+
+def test_budget_overview_over_cents_direction_aware(data_dir):
+    # `over_cents` is a signed, direction-aware magnitude (positive = bad),
+    # mirroring `budget_status()`'s own field — added so the dashboard can
+    # consume it directly instead of recomputing spent-budget locally (which
+    # gets the sign backwards for floor categories).
+    db.init_schema()
+    with db.connect() as conn:
+        _seed_txn(conn, "2026-06-05", -30000, "Dining Out")
+    budgets.set_limit("Dining Out", 10000)   # $100 limit, $300 spent -> $200 over
+    ov = {c["category"]: c for c in reports.budget_overview("2026-06")["categories"]}["Dining Out"]
+    assert ov["over_cents"] == 20000
+
+    categories.mark_floor_category("Investments")
+    with db.connect() as conn:
+        _seed_txn(conn, "2026-06-06", -20000, "Investments")
+    budgets.set_limit("Investments", 30000)  # $300 target, $200 spent -> $100 short
+    ov2 = {c["category"]: c for c in reports.budget_overview("2026-06")["categories"]}["Investments"]
+    assert ov2["over_cents"] == 10000   # positive even though spend is UNDER the target
+
+
+def test_budget_overview_floor_field(data_dir):
+    # Category-level AND subcategory-level dicts carry a `floor` boolean so a
+    # downstream chart-builder can key off the payload directly instead of
+    # relying on out-of-band memory of a prior mark_floor_category call.
+    db.init_schema()
+    categories.mark_floor_category("Investments")
+    with db.connect() as conn:
+        _seed_txn(conn, "2026-06-10", -200000, "Investments", subcategory="401k")
+        _seed_txn(conn, "2026-06-11", -30000, "Dining Out")
+    budgets.set_limit("Investments", 300000)
+    budgets.set_limit("Investments", 350000, subcategory="401k")
+    budgets.set_limit("Dining Out", 10000)
+
+    by_cat = {c["category"]: c for c in reports.budget_overview("2026-06")["categories"]}
+    inv = by_cat["Investments"]
+    assert inv["floor"] is True
+    sub = {s["subcategory"]: s for s in inv["subcategories"]}["401k"]
+    assert sub["floor"] is True
+
+    dining = by_cat["Dining Out"]
+    assert dining["floor"] is False
 
 
 def test_budget_overview_exposes_onboarded_flag(data_dir):

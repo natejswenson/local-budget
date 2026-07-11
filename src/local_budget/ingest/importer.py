@@ -8,6 +8,7 @@ atomically rebuilt. The raw export file is NOT retained (Decision B).
 """
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import sqlite3
 from datetime import date as Date
@@ -248,6 +249,17 @@ def _ingest_txn(conn: sqlite3.Connection, account_id: int, ptxn: parse.ParsedTxn
                 detect_near_duplicates: bool = False) -> dict:
     cents = money.cents_from_amount_str(ptxn.amount_str)
     mnorm = sanitize.merchant_norm(ptxn.payee, ptxn.memo)
+
+    # No full account number at rest (design I14): merchant_norm is derived from
+    # the RAW payee/memo above (its own redact+truncate keeps grouping stable),
+    # then every stored/compared copy of payee/memo is redacted — raw_ofx was
+    # already covered, these columns were the remaining unredacted store. The
+    # rebind keeps the fitid_collision compare (stored vs incoming) consistent.
+    ptxn = dataclasses.replace(
+        ptxn,
+        payee=sanitize.redact_account_numbers(ptxn.payee),
+        memo=sanitize.redact_account_numbers(ptxn.memo),
+    )
 
     # CSV → compute the content-only synthetic FITID with a per-key occurrence
     # ordinal scoped to THIS file (occ dict). OFX/QFX → use the bank's stable FITID.

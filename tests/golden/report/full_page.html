@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Budget report — 2026-06</title><style>
+:root{--amber:#f0b429;--blue:#5b9bff;--green:#4ade80;--over:#d9a066;--purple:#a78bfa;--red:#fb6a5e;--report-accent:#2a78d6;--report-critical:#d03b3b;--report-good:#0ca30c;--report-gridline:#e1e0d9;--report-warning:#fab219;
+  --page:#ffffff; --text-primary:#1b1f27; --text-muted:#6a7280;
+  --hairline:var(--report-gridline);}
+@page{size:letter;margin:14mm;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--page);color:var(--text-primary);
+  font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;}
+main{max-width:760px;margin:0 auto;padding:8px 0 24px;}
+h1{font-size:22px;margin:0 0 2px;}
+h3{font-size:14px;margin:18px 0 8px;}
+.subtitle{color:var(--text-muted);margin:0 0 16px;font-size:12px;}
+.stat-row{display:flex;gap:12px;margin:14px 0;}
+.stat{flex:1;border:1px solid var(--hairline);border-radius:8px;padding:10px 12px;}
+.stat .label{font-size:11px;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--text-muted);}
+.stat .value{font-size:20px;font-weight:700;margin-top:2px;}
+.sb-row{display:grid;grid-template-columns:170px 1fr 150px;gap:10px;
+  align-items:center;margin:6px 0;}
+.sb-label{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.sb-track{position:relative;height:12px;background:var(--report-gridline);
+  border-radius:6px;overflow:visible;}
+.sb-fill{position:absolute;left:0;top:0;bottom:0;border-radius:6px;display:block;}
+.tick{position:absolute;top:-3px;bottom:-3px;width:2px;
+  background:var(--text-primary);display:block;}
+.sb-value{font-size:12px;color:var(--text-muted);text-align:right;
+  font-variant-numeric:tabular-nums;}
+table{border-collapse:collapse;width:100%;font-size:13px;}
+th,td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--hairline);}
+th.num,td.num{text-align:right;font-variant-numeric:tabular-nums;}
+.caption,.empty{color:var(--text-muted);font-size:12px;}
+.narrative{border-left:3px solid var(--report-accent);padding:2px 12px;
+  margin:12px 0;color:var(--text-primary);}
+.trend svg{width:100%;height:auto;}
+.legend{display:flex;gap:14px;font-size:12px;color:var(--text-muted);margin:2px 0 6px;}
+.key{display:inline-flex;align-items:center;gap:5px;}
+.swatch{width:10px;height:10px;border-radius:2px;display:inline-block;}
+.axis{font-size:9px;fill:var(--text-muted);}
+section{break-inside:avoid;}
+</style></head><body><main><h1>Budget report — 2026-06</h1><p class="subtitle">for Nate &lt;script&gt;alert(1)&lt;/script&gt; · generated 2026-07-11</p><div class="narrative">Spending &amp; saving on track — &lt;b&gt;not bold&lt;/b&gt;</div><section class="stat-row"><div class="stat"><div class="label">Spent</div><div class="value" style="color:inherit">$1,320.00</div></div><div class="stat"><div class="label">Income</div><div class="value" style="color:inherit">$2,500.00</div></div><div class="stat"><div class="label">Net</div><div class="value" style="color:var(--report-good)">$1,180.00</div></div></section><section class="spend-budget"><div class="sb-row"><div class="sb-label">NY529</div><div class="sb-track"><span class="sb-fill" style="width:100.0%;background:var(--report-good)"></span><span class="tick" style="left:83.33%"></span></div><div class="sb-value">$600.00 of $500.00 · 120%</div></div><div class="sb-row"><div class="sb-label">Groceries</div><div class="sb-track"><span class="sb-fill" style="width:70.0%;background:var(--report-warning)"></span><span class="tick" style="left:83.33%"></span></div><div class="sb-value">$420.00 of $500.00 · 84%</div></div><div class="sb-row"><div class="sb-label">⚠ Dining Out</div><div class="sb-track"><span class="sb-fill" style="width:35.0%;background:var(--report-critical)"></span><span class="tick" style="left:33.33%"></span></div><div class="sb-value">$210.00 of $200.00 · 105%</div></div><div class="sb-row"><div class="sb-label">Gas</div><div class="sb-track"><span class="sb-fill" style="width:15.0%;background:var(--report-good)"></span></div><div class="sb-value">$90.00</div></div><div class="sb-row"><div class="sb-label">⚠ Investments</div><div class="sb-track"><span class="sb-fill" style="width:0.0%;background:var(--report-critical)"></span><span class="tick" style="left:83.33%"></span></div><div class="sb-value">$0.00 of $500.00 · 0%</div></div></section></main></body></html>
