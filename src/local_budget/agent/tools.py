@@ -304,9 +304,9 @@ async def run_sql(args: dict) -> dict:
             rows = [dict(r) for r in cur.fetchmany(ROW_CAP + 1)]
     except sqlite3.Error:
         return _err("query failed (rejected or invalid)")
-    # Redaction-on-read: a free-form SELECT can surface raw payee/memo, so every
-    # string cell passes through the account-number redactor (design §3 — closes
-    # the largest read-side leak). Non-str values pass through unchanged.
+    # Defense-in-depth: payee/memo are authorizer-denied outright, and every
+    # string cell still passes through the account-number redactor (design §3)
+    # in case a future column carries embedded digits. Non-str values unchanged.
     rows = [{k: (sanitize.redact_account_numbers(v) if isinstance(v, str) else v)
              for k, v in r.items()} for r in rows]
     truncated = len(rows) > ROW_CAP
@@ -562,7 +562,8 @@ TOOL_SPECS: list[ToolSpec] = [
              "posted_date, amount_cents, status, category, subcategory, category_source, "
              "merchant_norm, txn_type, txn_id, account_id). Rows of ALL statuses are visible — "
              "add `WHERE status='posted'` to match the spend tools. No writes, no ATTACH; PII "
-             "columns (raw_ofx, acct_hash) are blocked by the authorizer.",
+             "columns (raw_ofx, payee, memo, acct_hash) are read-blocked by the authorizer — "
+             "merchant_norm is the only merchant text.",
              _obj({"query": {"type": "string"}}, ["query"]), run_sql),
     ToolSpec("save_user_note", "Save a NEW durable user preference (one sentence). Not financial data.",
              _obj({"note": {"type": "string"}}, ["note"]), save_user_note),
