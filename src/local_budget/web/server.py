@@ -34,6 +34,39 @@ _MIN_TOKEN_LEN = 32
 _INTAKE_ROUTES = frozenset({"/api/upload", "/api/intake/run", "/api/intake/undo"})
 _NO_INTAKE = os.environ.get("LOCAL_BUDGET_NO_INTAKE", "").lower() in ("1", "true", "yes")
 
+# CSRF boundary for the token-less loopback deployment (siege S2). A browser the
+# user drives can issue cross-origin "no-cors" POSTs at http://127.0.0.1:8770 —
+# loopback binding does not stop that, and several mutating routes take no body
+# (e.g. /api/intake/undo), so no preflight fires. Mutating /api/* requests must
+# therefore present a same-host or loopback Origin (or, header-less clients like
+# curl, a loopback Host). Token deployments skip this: browsers cannot attach a
+# bearer header cross-origin, so the 401 gate above is already CSRF-proof.
+_MUTATING_METHODS = frozenset({"POST", "PUT", "DELETE", "PATCH"})
+_LOOPBACK_HOSTNAMES = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _hostname(netloc: str) -> str:
+    """Hostname portion of a `host[:port]` netloc, IPv6-bracket aware."""
+    netloc = netloc.strip().lower()
+    if netloc.startswith("["):
+        return netloc[1:netloc.index("]")] if "]" in netloc else netloc
+    return netloc.rsplit(":", 1)[0] if ":" in netloc else netloc
+
+
+def _csrf_ok(request: Request) -> bool:
+    origin = request.headers.get("origin")
+    host = request.headers.get("host", "")
+    if origin is not None:
+        # A cross-site fetch always carries Origin; "null" (sandboxed/opaque
+        # origins) fails both branches by design.
+        from urllib.parse import urlsplit
+
+        netloc = urlsplit(origin).netloc
+        return netloc == host.strip().lower() or _hostname(netloc) in _LOOPBACK_HOSTNAMES
+    # No Origin → not a browser cross-site fetch (curl, httpx, same-machine
+    # tooling). Require the request to actually target loopback.
+    return _hostname(host) in _LOOPBACK_HOSTNAMES
+
 
 def create_app() -> FastAPI:
     app = FastAPI(title="local-budget", docs_url=None, redoc_url=None)
@@ -49,6 +82,9 @@ def create_app() -> FastAPI:
             token = header[7:] if header.lower().startswith("bearer ") else ""
             if not hmac.compare_digest(token, _API_TOKEN):
                 return JSONResponse({"error": "unauthorized"}, status_code=401)
+        if (path.startswith("/api/") and not _API_TOKEN
+                and request.method in _MUTATING_METHODS and not _csrf_ok(request)):
+            return JSONResponse({"error": "cross-origin request rejected"}, status_code=403)
         if _NO_INTAKE and path in _INTAKE_ROUTES:
             return JSONResponse(
                 {"detail": "raw-file intake is disabled in this deployment (run it on the host CLI)"},
