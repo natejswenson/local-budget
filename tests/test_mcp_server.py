@@ -188,3 +188,48 @@ def test_get_category_breakdown_row_column_does_not_collide_with_count_column(da
     result = asyncio.run(agent_tools.SPEC_BY_NAME["get_category_breakdown"].handler({"month": "2026-06"}))
     header_line = result["rendered"].splitlines()[1]
     assert "| Row | Category | Spent | # |" == header_line
+
+
+# ── structuredContent transport (design: budget-analyst rule 6 needs `data`) ──
+# The server returns (rendered-text, {"data": ...}): the text block stays
+# byte-identical to the old transport (skills print it verbatim), and the
+# structured payload finally reaches the client model so row references
+# (txn_id / merchant / cents) resolve without parsing the printed table.
+def _rpc(name: str, args: dict):
+    from mcp import types
+
+    server = mcp_server.build_server()
+    handler = server.request_handlers[types.CallToolRequest]
+    req = types.CallToolRequest(
+        method="tools/call",
+        params=types.CallToolRequestParams(name=name, arguments=args))
+    return asyncio.run(handler(req)).root
+
+
+def test_call_tool_carries_rendered_text_and_structured_data(data_dir):
+    _seed()
+    res = _rpc("get_month_summary", {"month": "2026-06"})
+    assert res.isError is not True
+    # text block == the handler's rendered markdown, exactly
+    direct = asyncio.run(agent_tools.SPEC_BY_NAME["get_month_summary"].handler(
+        {"month": "2026-06"}))
+    assert res.content[0].text == direct["rendered"]
+    # structured payload carries the data dict
+    assert res.structuredContent["data"]["spend_total_cents"] == 5000
+    # no PII anywhere in the serialized result
+    blob = res.model_dump_json()
+    assert "RAW-OFX-SECRET" not in blob and "hash-secret-1" not in blob
+
+
+def test_call_tool_error_payload_still_structured(data_dir):
+    _seed()
+    res = _rpc("run_sql", {"query": "DELETE FROM transactions"})
+    assert res.structuredContent["error"].startswith("read-only")
+    assert "read-only" in res.content[0].text
+
+
+def test_call_tool_unknown_tool_is_clean_error(data_dir):
+    _seed()
+    res = _rpc("no_such_tool", {})
+    blob = res.model_dump_json()
+    assert "unknown tool" in blob
