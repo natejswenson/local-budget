@@ -1,0 +1,57 @@
+name: Bug report
+description: Something broke — an import failed, a tool returned wrong numbers, the dashboard misbehaved.
+labels: ["bug"]
+body:
+  - type: checkboxes
+    id: redaction
+    attributes:
+      label: Privacy check
+      description: This is a personal-finance tool. Never paste real bank data into a public issue.
+      options:
+        - label: I have redacted all real bank data (merchants, amounts, dates, account numbers) from this report, or replaced it with synthetic values.
+          required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: |
+        1. Ran `uv run budget import export.qfx`
+        2. Expected 42 transactions imported
+        3. Got a traceback / wrong totals / ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output or traceback
+      description: Paste the relevant (redacted) command output. Rendered as code automatically.
+      render: shell
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `uv run budget --version` (or the commit SHA you're on).
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS and Python version.
+      placeholder: macOS 15.5, Python 3.12.4
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where did it happen?
+      options:
+        - CLI (budget import / intake / report / ...)
+        - MCP server (budget-mcp tools in a Claude session)
+        - Skills (.claude/skills/budget-*)
+        - Web dashboard (budget serve)
+        - Docker
+        - Other / not sure
+    validations:
+      required: true
