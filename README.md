@@ -1,5 +1,9 @@
 # local-budget
 
+[![CI](https://github.com/natejswenson/local-budget/actions/workflows/ci.yml/badge.svg)](https://github.com/natejswenson/local-budget/actions/workflows/ci.yml)
+![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
 A **local-first, agent-first** Wells Fargo spending agent. Your data stays in one
 local `data/budget.db` on your own machine — full account numbers and every
 transaction. You don't click through an app to understand your money; you *talk*
@@ -83,7 +87,8 @@ recurring, limits, subscriptions, backup, …).
 | `budget-subscriptions` | detected recurring charges, split into their own subcategories |
 | `budget-reconcile` | review and resolve import conflicts |
 
-All eight reference the shared `budget-analyst` persona.
+All eight reference the shared `budget-analyst` persona; visual reports follow
+the shared `budget-visualizer` discipline.
 
 ## Evals
 
