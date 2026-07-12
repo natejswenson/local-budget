@@ -111,9 +111,3 @@ def add_alias(pattern: str, canonical: str, source: str = "manual") -> None:
             "INSERT INTO merchant_aliases (pattern, canonical, source, created_at) VALUES (?, ?, ?, ?) "
             "ON CONFLICT(pattern) DO UPDATE SET canonical = excluded.canonical, source = excluded.source",
             (pattern, canonical, source, db.now_iso()))
-
-
-def clear_alias(pattern: str) -> None:
-    with db.connect() as conn:
-        conn.execute("DELETE FROM merchant_aliases WHERE pattern = ?",
-                     ((pattern or "").strip().upper(),))
