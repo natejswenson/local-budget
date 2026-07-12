@@ -8,7 +8,7 @@ from local_budget.categorize.manual import friendly_name
 
 def _seed_subs(conn, merchant_norms):
     conn.execute("INSERT INTO accounts (institution,acct_type,acct_last4,acct_hash,own_account,created_at) "
-                 "SELECT 'WF','CHK','1','h',1,'2026-01-01' WHERE NOT EXISTS (SELECT 1 FROM accounts)")
+                 "SELECT 'BANK','CHK','1','h',1,'2026-01-01' WHERE NOT EXISTS (SELECT 1 FROM accounts)")
     aid = conn.execute("SELECT account_id FROM accounts LIMIT 1").fetchone()[0]
     for i, m in enumerate(merchant_norms):
         conn.execute(
@@ -196,7 +196,7 @@ def test_corrected_canonical_resyncs_subcategory(data_dir):
 def _seed_row(conn, merchant_norm, category, cents=-5000, date_="2026-06-10"):
     conn.execute(
         "INSERT INTO accounts (institution,acct_type,acct_last4,acct_hash,own_account,created_at) "
-        "SELECT 'WF','CHK','1','h',1,'2026-01-01' WHERE NOT EXISTS (SELECT 1 FROM accounts)")
+        "SELECT 'BANK','CHK','1','h',1,'2026-01-01' WHERE NOT EXISTS (SELECT 1 FROM accounts)")
     aid = conn.execute("SELECT account_id FROM accounts LIMIT 1").fetchone()[0]
     n = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
     conn.execute(

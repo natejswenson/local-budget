@@ -27,7 +27,7 @@ MEMO_ACCT = "4111222233334444"
 def _import_one(tmp_path):
     db.init_schema()
     p = write_ofx(
-        tmp_path / "wf.qfx",
+        tmp_path / "stmt.qfx",
         [{"trntype": "DEBIT", "dtposted": "20260603", "amount": "-50.00",
           "fitid": "G1", "name": "WALMART", "memo": f"ACCT {MEMO_ACCT}"}],
         acctid=FULL_ACCT,

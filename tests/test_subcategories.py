@@ -16,7 +16,7 @@ def _seed_subs(tmp_path):
         {"trntype": "DEBIT", "dtposted": "20260605", "amount": "-15.49", "fitid": "N3", "name": "NETFLIX LOS GATOS"},
         {"trntype": "DEBIT", "dtposted": "20260405", "amount": "-11.99", "fitid": "S1", "name": "SPOTIFY USA"},
     ]
-    importer.import_file(write_ofx(tmp_path / "wf.qfx", txns))
+    importer.import_file(write_ofx(tmp_path / "stmt.qfx", txns))
     # mark them Subscriptions
     manual.set_merchant_category("NETFLIX", "Subscriptions")
     manual.set_merchant_category("SPOTIFY", "Subscriptions")
