@@ -343,9 +343,9 @@
 
   <div id="tab-upload" class="tabpane" hidden>
     <section class="panel">
-      <h2 style="margin-bottom:8px">Upload a Wells Fargo export</h2>
+      <h2 style="margin-bottom:8px">Upload a bank statement export</h2>
       <p class="muted" style="font-size:13px;margin:0 0 18px">
-        Choose a file you downloaded from Wells Fargo (<b>.csv</b>, <b>.ofx</b>, or <b>.qfx</b>).
+        Choose a file you downloaded from your bank (<b>.csv</b>, <b>.ofx</b>, or <b>.qfx</b>).
         It imports straight away — duplicates are caught and new merchants get auto-categorized.
         Everything stays on this machine.</p>
       <div class="drop" id="drop">
@@ -584,7 +584,7 @@ function showFreshness(last){
   const bar=$('#freshness-bar'); if(!bar) return;
   if(!last){
     bar.className='fresh stale';
-    bar.innerHTML=`<span class="dotw"></span><span>No transactions imported yet — upload your first Wells Fargo export to get started.</span><button id="fresh-up">Upload</button>`;
+    bar.innerHTML=`<span class="dotw"></span><span>No transactions imported yet — upload your first bank statement export to get started.</span><button id="fresh-up">Upload</button>`;
     $('#fresh-up').onclick=()=>setTab('upload'); return;
   }
   const d=new Date(last); const days=Math.floor((Date.now()-d.getTime())/86400000);
@@ -644,10 +644,10 @@ async function uploadAndImport(){
     if(d.deduped>0) bits.push(`${d.deduped} already had`);
     if(d.possible_duplicates>0) bits.push(`${d.possible_duplicates} possible duplicate${d.possible_duplicates>1?'s':''} to review`);
     if(d.dropped_rows>0) bits.push(`${d.dropped_rows} row${d.dropped_rows>1?'s':''} unreadable`);
-    if(d.files_quarantined>0) bits.push(`not a recognized Wells Fargo export`);
+    if(d.files_quarantined>0) bits.push(`not a recognized bank statement export`);
     res.innerHTML = (d.files_imported>0 || d.deduped>0)
       ? `<div class="intake"><div><div class="t">✓ Imported</div><div class="d">${bits.join(' · ')||'nothing new'}</div></div></div>`
-      : `<div class="intake warn"><div><div class="t">Nothing imported</div><div class="d">${bits.join(' · ')||'that file wasn\'t a recognized Wells Fargo export'}</div></div></div>`;
+      : `<div class="intake warn"><div><div class="t">Nothing imported</div><div class="d">${bits.join(' · ')||'that file wasn\'t a recognized bank statement export'}</div></div></div>`;
     await applyIntakeResult(d);
     pickFile(null); go.textContent='Upload & import';
   }catch(e){ res.innerHTML=`<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`; go.disabled=false; go.textContent='Upload & import'; }

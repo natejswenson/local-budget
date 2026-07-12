@@ -47,13 +47,13 @@ def strip_p2p_names(text: str) -> str:
     return _P2P.sub("", text)
 
 
-# Wells Fargo transaction boilerplate, stripped so the same store collapses to
+# Bank transaction boilerplate, stripped so the same store collapses to
 # one merchant key instead of a unique string per transaction.
 # Date may be MM/DD, MM/DD YYYY, MM/DD/YYYY — and a "MM/DD YYYY" date gets
 # bridged into a ≥7-digit run by redaction, so also accept a redacted date.
-_WF_PREFIX = re.compile(
+_BOILERPLATE_PREFIX = re.compile(
     r"^.*?\bAUTHORIZED ON\s+(?:\d{1,2}/\d{1,2}(?:[ /]\d{2,4})?|\[REDACTED\])\s*", re.IGNORECASE)
-_WF_TAIL = re.compile(r"\s+(?:[SP]\d{3,}|[SP]\[REDACTED\]|\[REDACTED\]|CARD\s+\d+).*$", re.IGNORECASE)
+_BOILERPLATE_TAIL = re.compile(r"\s+(?:[SP]\d{3,}|[SP]\[REDACTED\]|\[REDACTED\]|CARD\s+\d+).*$", re.IGNORECASE)
 # Leading third-party PAYMENT-PROCESSOR code that prefixes the REAL merchant name
 # (Square "SQ *COFFEE SHOP", Toast "TST* CHIPOTLE", PayPal "PAYPAL *MERCH",
 # "GOOGLE *YOUTUBE", …). The same charge can appear with or without this prefix
@@ -76,7 +76,7 @@ _US_STATES = frozenset(
 def merchant_norm(payee: str | None, memo: str | None = None) -> str:
     """Derive the agent-visible normalized MERCHANT KEY.
 
-    Redacts ≥7-digit runs (I14) and P2P names, then strips Wells Fargo
+    Redacts ≥7-digit runs (I14) and P2P names, then strips bank
     transaction boilerplate (`PURCHASE AUTHORIZED ON MM/DD …`, trailing
     `CARD ####`/auth codes, store numbers, a trailing state code) and keeps the
     leading merchant words — so every "Walmart.com" or "Amazon" transaction maps
@@ -89,16 +89,16 @@ def merchant_norm(payee: str | None, memo: str | None = None) -> str:
     if not s:
         return "UNKNOWN"
 
-    # Strip WF boilerplate. The prefix regex accepts a redacted date too, so a
+    # Strip bank boilerplate. The prefix regex accepts a redacted date too, so a
     # "MM/DD YYYY" date that redaction bridged into [REDACTED] is still removed
     # (otherwise the tail-strip would eat the merchant — the "PURCHASE AUTHORIZED
     # ON" bug).
-    s = _WF_PREFIX.sub("", s)        # drop "PURCHASE AUTHORIZED ON 06/03 [2026] "
+    s = _BOILERPLATE_PREFIX.sub("", s)        # drop "PURCHASE AUTHORIZED ON 06/03 [2026] "
     s = _PROCESSOR_PREFIX.sub("", s) # drop a leading "SQ *"/"TST*"/"PAYPAL *" so the
                                      # real merchant survives the store-suffix strip
                                      # (red-team M11-1 — kills the processor-prefix
                                      # silent-double-count residual)
-    s = _WF_TAIL.sub("", s)          # drop trailing " [REDACTED]/S304/CARD 1840 …"
+    s = _BOILERPLATE_TAIL.sub("", s)          # drop trailing " [REDACTED]/S304/CARD 1840 …"
     s = _STORE_SUFFIX.sub(" ", s)    # drop "#520" / "*NK07Q"
     s = _NONWORD.sub(" ", s)
     words = [w for w in s.split() if w]

@@ -50,7 +50,7 @@ def _seed_rows(conn) -> None:
     conn.execute(
         "INSERT INTO accounts (account_id, institution, acct_type, acct_last4, "
         "acct_hash, own_account, nickname, created_at) "
-        "VALUES (1, 'Wells Fargo', 'checking', '0000', 'evalhash', 1, 'Eval', ?)",
+        "VALUES (1, 'Example Bank', 'checking', '0000', 'evalhash', 1, 'Eval', ?)",
         (now,),
     )
     for fitid, date, cents, payee, merch, cat, sub in _TXNS:

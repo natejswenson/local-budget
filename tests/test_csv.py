@@ -1,4 +1,4 @@
-"""CSV parsing — Wells Fargo headerless format + headered variants."""
+"""CSV parsing — headerless bank-export format + headered variants."""
 from __future__ import annotations
 
 import pytest
@@ -7,14 +7,14 @@ from local_budget import db
 from local_budget.ingest import importer, parse
 
 
-def _write(tmp_path, text, name="wf.csv"):
+def _write(tmp_path, text, name="stmt.csv"):
     p = tmp_path / name
     p.write_text(text)
     return p
 
 
-def test_wells_fargo_headerless(data_dir, tmp_path):
-    # Real WF "Download Account Activity" shape: no header, description LAST col.
+def test_headerless_csv(data_dir, tmp_path):
+    # Real headerless "download account activity" shape: no header, description LAST col.
     csv = (
         '"06/03/2024","-52.40","*","","WALMART STORE 1234"\n'
         '"06/05/2024","-23.40","*","","CHIPOTLE MEXICAN GRILL"\n'

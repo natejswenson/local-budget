@@ -18,7 +18,7 @@ JUNE = [
 ]
 
 
-def _import(tmp_path, txns, name="wf.qfx"):
+def _import(tmp_path, txns, name="stmt.qfx"):
     db.init_schema()
     return importer.import_file(write_ofx(tmp_path / name, txns))
 
@@ -51,7 +51,7 @@ def test_quarantined_excluded_and_surfaced(data_dir, tmp_path):
     # I11b: a quarantined near-dup is excluded from spend AND surfaced.
     _import(tmp_path, JUNE)
     posted = {"trntype": "DEBIT", "dtposted": "20260604", "amount": "-55.00", "fitid": "G2", "name": "WALMART"}
-    importer.import_file(write_ofx(tmp_path / "wf2.qfx", [posted]), detect_near_duplicates=True)
+    importer.import_file(write_ofx(tmp_path / "stmt2.qfx", [posted]), detect_near_duplicates=True)
     s = reports.month_summary("2026-06")
     # The $55 Walmart near-dup is quarantined -> NOT in spend total (still 180).
     assert s["spend_total_cents"] == 18000
@@ -67,7 +67,7 @@ def test_uncategorized_spend_surfaced_and_excluded(data_dir, tmp_path):
         {"trntype": "DEBIT", "dtposted": "20260603", "amount": "-50.00", "fitid": "G1", "name": "WALMART"},
         {"trntype": "DEBIT", "dtposted": "20260607", "amount": "-42.50", "fitid": "U1", "name": "SOME RANDOM VENDOR XYZ"},
     ]
-    importer.import_file(write_ofx(tmp_path / "wf.qfx", txns))
+    importer.import_file(write_ofx(tmp_path / "stmt.qfx", txns))
     s = reports.month_summary("2026-06")
     assert s["uncategorized_spend"]["count"] == 1
     assert s["uncategorized_spend"]["total_cents"] == 4250
@@ -133,7 +133,7 @@ def test_cli_report_label_direction_aware_per_row(data_dir, tmp_path):
     # its limit ([OVER]) in the same output.
     db.init_schema()
     categories.mark_floor_category("Investments")
-    importer.import_file(write_ofx(tmp_path / "wf.qfx", [
+    importer.import_file(write_ofx(tmp_path / "stmt.qfx", [
         {"trntype": "DEBIT", "dtposted": "20260603", "amount": "-200.00", "fitid": "N1", "name": "529 PLAN"},
         {"trntype": "DEBIT", "dtposted": "20260605", "amount": "-300.00", "fitid": "D1", "name": "CHIPOTLE"}]))
     from local_budget.categorize.manual import set_merchant_category as setc
@@ -153,7 +153,7 @@ def test_cli_subscriptions_label_floor_marked(data_dir, tmp_path):
     from local_budget.categorize import manual as manual_mod
     db.init_schema()
     categories.mark_floor_category("Subscriptions")
-    importer.import_file(write_ofx(tmp_path / "wf.qfx", [
+    importer.import_file(write_ofx(tmp_path / "stmt.qfx", [
         {"trntype": "DEBIT", "dtposted": "20260405", "amount": "-15.49", "fitid": "N1", "name": "NETFLIX.COM"}]))
     manual_mod.set_merchant_category("NETFLIX", "Subscriptions")
     manual_mod.split_subscriptions()
@@ -296,7 +296,7 @@ def test_timeframe_lastn_scope(data_dir, tmp_path, monkeypatch):
 
 def test_monthly_trend_includes_income(data_dir, tmp_path):
     db.init_schema()
-    importer.import_file(write_ofx(tmp_path / "wf.qfx", [
+    importer.import_file(write_ofx(tmp_path / "stmt.qfx", [
         {"trntype": "DEBIT", "dtposted": "20260605", "amount": "-100.00", "fitid": "S1", "name": "WALMART"},
         {"trntype": "CREDIT", "dtposted": "20260601", "amount": "2000.00", "fitid": "I1", "name": "ACME PAYROLL"}]))
     with db.connect() as conn:
@@ -307,7 +307,7 @@ def test_monthly_trend_includes_income(data_dir, tmp_path):
 
 def test_insights_over_budget_and_discretionary(data_dir, tmp_path):
     db.init_schema()
-    importer.import_file(write_ofx(tmp_path / "wf.qfx", [
+    importer.import_file(write_ofx(tmp_path / "stmt.qfx", [
         {"trntype": "DEBIT", "dtposted": "20260603", "amount": "-300.00", "fitid": "D1", "name": "CHIPOTLE"},
         {"trntype": "DEBIT", "dtposted": "20260605", "amount": "-500.00", "fitid": "S1", "name": "AMAZON"}]))
     from local_budget.categorize.manual import set_merchant_category as setc
@@ -326,7 +326,7 @@ def test_insights_floor_category_under_target(data_dir, tmp_path):
     # Investments: a floor category — spending LESS than the target is bad.
     db.init_schema()
     categories.mark_floor_category("Investments")
-    importer.import_file(write_ofx(tmp_path / "wf.qfx", [
+    importer.import_file(write_ofx(tmp_path / "stmt.qfx", [
         {"trntype": "DEBIT", "dtposted": "20260603", "amount": "-200.00", "fitid": "N1", "name": "529 PLAN"}]))
     from local_budget.categorize.manual import set_merchant_category as setc
     setc("529 PLAN", "Investments")
@@ -342,7 +342,7 @@ def test_insights_floor_category_under_target(data_dir, tmp_path):
 def test_insights_floor_category_at_or_above_target_is_silent(data_dir, tmp_path):
     db.init_schema()
     categories.mark_floor_category("Investments")
-    importer.import_file(write_ofx(tmp_path / "wf.qfx", [
+    importer.import_file(write_ofx(tmp_path / "stmt.qfx", [
         {"trntype": "DEBIT", "dtposted": "20260603", "amount": "-400.00", "fitid": "N1", "name": "529 PLAN"}]))
     from local_budget.categorize.manual import set_merchant_category as setc
     setc("529 PLAN", "Investments")
@@ -403,7 +403,7 @@ def test_transactions_in_category_scope_and_status(data_dir, tmp_path):
 def _seed_txn(conn, date_, cents, category, subcategory=None):
     conn.execute(
         "INSERT INTO accounts (institution,acct_type,acct_last4,acct_hash,own_account,created_at) "
-        "SELECT 'WF','CHK','1','h',1,'2026-01-01' WHERE NOT EXISTS (SELECT 1 FROM accounts)")
+        "SELECT 'BANK','CHK','1','h',1,'2026-01-01' WHERE NOT EXISTS (SELECT 1 FROM accounts)")
     aid = conn.execute("SELECT account_id FROM accounts LIMIT 1").fetchone()[0]
     n = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
     conn.execute(

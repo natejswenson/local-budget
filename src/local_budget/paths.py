@@ -74,7 +74,7 @@ def user_notes_path() -> Path:
 
 
 def default_inbox_dir() -> Path:
-    """Dedicated drop-folder for Wells Fargo exports (NOT ~/Downloads — red-team
+    """Dedicated drop-folder for bank statement exports (NOT ~/Downloads — red-team
     F5). The user can override via the `inbox_dir` setting."""
     return Path.home() / "budget-inbox"
 
