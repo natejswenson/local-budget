@@ -318,7 +318,7 @@ def _ingest_txn(conn: sqlite3.Connection, account_id: int, ptxn: parse.ParsedTxn
     # SAME charge re-downloaded, even though exact dedup couldn't match it.
     #
     # The reformat-vs-distinct call is FUNDAMENTALLY UNDECIDABLE from
-    # (account, date, cents, text) alone: WALMART STORE→WALMART SUPERCENTER (a WF
+    # (account, date, cents, text) alone: WALMART STORE→WALMART SUPERCENTER (a bank
     # reformat of ONE charge) is structurally identical to UBER TRIP/UBER EATS
     # (two genuinely-distinct charges). So we NEVER silently drop and NEVER
     # silently overwrite: a possible duplicate is ALWAYS inserted 'posted' (real
@@ -409,7 +409,7 @@ def _find_possible_duplicate(conn, account_id, posted_date, cents, mnorm,  # noq
           so a Jaccard floor would MISS it — sharing the first token is the right
           signal), regardless of the synthetic/real boundary. We flag INCLUSIVELY:
           word-boundary extensions (COSTCO vs COSTCO WHOLESALE) ARE flagged too,
-          because a WF reformat-by-appending-a-word is token-for-token
+          because a bank reformat-by-appending-a-word is token-for-token
           indistinguishable from a distinct same-chain charge (COSTCO vs COSTCO GAS).
           Per the non-destructive contract both rows still post (total always
           correct) and an advisory conflict surfaces — an over-flag is benign, a
@@ -446,7 +446,7 @@ def _find_possible_duplicate(conn, account_id, posted_date, cents, mnorm,  # noq
             continue
         # (b) different text → reformat heuristic (shared first token).
         # Boundary-agnostic. NOTE (S10-1): we deliberately do NOT exclude
-        # word-boundary extensions here. `COSTCO`→`COSTCO WHOLESALE` (a WF reformat
+        # word-boundary extensions here. `COSTCO`→`COSTCO WHOLESALE` (a bank reformat
         # that appends a word) is token-for-token INDISTINGUISHABLE from a genuinely
         # distinct same-chain charge (`COSTCO`/`COSTCO GAS`). Suppressing it traded a
         # benign advisory for a SILENT double-count. Per the non-destructive
@@ -464,7 +464,7 @@ def _shares_first_token(a: str, b: str) -> bool:
 
     A token-Jaccard floor (the old ≥0.5) MISSES real reformats:
     `WALMART STORE`→`WALMART SUPERCENTER` has Jaccard 1/3 ≈ 0.33 yet is plainly the
-    SAME charge re-described by WF. Sharing the first token is the correct, inclusive
+    SAME charge re-described by the bank. Sharing the first token is the correct, inclusive
     signal — paired with the always-post/always-surface contract, an over-flag is
     benign while a silent double-count is prevented. The case this can NOT catch
     (undecidable) is a reformat that changes the FIRST token entirely."""

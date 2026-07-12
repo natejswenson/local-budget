@@ -49,7 +49,7 @@ def _seed():
     with db.connect() as conn:
         conn.execute(
             "INSERT INTO accounts (account_id, institution, acct_type, acct_last4, acct_hash, created_at) "
-            "VALUES (1, 'WF', 'CHECKING', '1234', 'hash-secret-1', ?)", (db.now_iso(),))
+            "VALUES (1, 'BANK', 'CHECKING', '1234', 'hash-secret-1', ?)", (db.now_iso(),))
         conn.execute(
             "INSERT INTO transactions (account_id, fitid, posted_date, amount_cents, status, "
             "txn_type, payee, memo, merchant_norm, category, category_source, raw_ofx, imported_at) "
@@ -103,7 +103,7 @@ def _seed_two_months():
     with db.connect() as conn:
         conn.execute(
             "INSERT INTO accounts (account_id, institution, acct_type, acct_last4, acct_hash, created_at) "
-            "VALUES (1, 'WF', 'CHECKING', '1234', 'hash-secret-1', ?)", (db.now_iso(),))
+            "VALUES (1, 'BANK', 'CHECKING', '1234', 'hash-secret-1', ?)", (db.now_iso(),))
         conn.execute(
             "INSERT INTO transactions (account_id, fitid, posted_date, amount_cents, status, "
             "txn_type, payee, memo, merchant_norm, category, category_source, raw_ofx, imported_at) "
@@ -149,7 +149,7 @@ def test_insights_under_target_rendered_separately_from_ways_to_save(data_dir, t
 
     db.init_schema()
     categories.mark_floor_category("Investments")
-    importer.import_file(write_ofx(tmp_path / "wf.qfx", [
+    importer.import_file(write_ofx(tmp_path / "stmt.qfx", [
         {"trntype": "DEBIT", "dtposted": "20260603", "amount": "-200.00", "fitid": "N1", "name": "529 PLAN"}]))
     setc("529 PLAN", "Investments")
     budgets.set_limit("Investments", 30000)  # $300 target, $200 spent -> $100 short

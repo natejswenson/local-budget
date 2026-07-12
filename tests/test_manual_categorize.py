@@ -14,7 +14,7 @@ from ofx_fixtures import write_ofx
 
 def _seed(tmp_path):
     db.init_schema()
-    importer.import_file(write_ofx(tmp_path / "wf.qfx", [
+    importer.import_file(write_ofx(tmp_path / "stmt.qfx", [
         {"trntype": "DEBIT", "dtposted": "20260603", "amount": "-50.00", "fitid": "A1", "name": "HARDWARE CO 1465"},
         {"trntype": "DEBIT", "dtposted": "20260610", "amount": "-25.00", "fitid": "A2", "name": "HARDWARE CO 1465"},
     ]))
@@ -34,7 +34,7 @@ def test_manual_rule_wins_and_persists_for_future_imports(data_dir, tmp_path):
     categories.add_custom_category("Home Improvement")
     manual.set_merchant_category("HARDWARE CO", "Home Improvement")
     # a NEW import of the same merchant should auto-apply the manual rule
-    importer.import_file(write_ofx(tmp_path / "wf2.qfx", [
+    importer.import_file(write_ofx(tmp_path / "stmt2.qfx", [
         {"trntype": "DEBIT", "dtposted": "20260701", "amount": "-9.00", "fitid": "A3", "name": "HARDWARE CO 1465"}]),
         detect_near_duplicates=False)
     with db.connect() as conn:
@@ -66,7 +66,7 @@ def test_set_unknown_category_rejected(data_dir, tmp_path):
 def test_set_transaction_category_single_row(data_dir, tmp_path):
     # Per-transaction categorize (no rule) — e.g. individual checks.
     db.init_schema()
-    importer.import_file(write_ofx(tmp_path / "wf.qfx", [
+    importer.import_file(write_ofx(tmp_path / "stmt.qfx", [
         {"trntype": "DEBIT", "dtposted": "20260603", "amount": "-100.00", "fitid": "C1", "name": "CHECK"},
         {"trntype": "DEBIT", "dtposted": "20260604", "amount": "-50.00", "fitid": "C2", "name": "CHECK"}]))
     manual.set_merchant_category("CHECK", "Random", confirm_random=True)
@@ -90,7 +90,7 @@ def test_set_merchant_category_random_requires_confirm(data_dir, tmp_path):
 
 def test_set_transaction_category_random_requires_confirm(data_dir, tmp_path):
     db.init_schema()
-    importer.import_file(write_ofx(tmp_path / "wf.qfx", [
+    importer.import_file(write_ofx(tmp_path / "stmt.qfx", [
         {"trntype": "DEBIT", "dtposted": "20260603", "amount": "-100.00", "fitid": "C1", "name": "CHECK"}]))
     with db.connect() as conn:
         tid = conn.execute("SELECT txn_id FROM transactions WHERE fitid='C1'").fetchone()[0]

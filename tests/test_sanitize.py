@@ -75,8 +75,8 @@ def test_has_long_digit_run_detects_slash_and_dot():
     assert not sanitize.has_long_digit_run("STORE 1234 LANE 5")
 
 
-def test_merchant_norm_strips_wf_boilerplate():
-    # All these WF descriptions for the same store must collapse to one key.
+def test_merchant_norm_strips_bank_boilerplate():
+    # All these bank descriptions for the same store must collapse to one key.
     a = sanitize.merchant_norm("PURCHASE AUTHORIZED ON 10/31 WALMART.COM 8009666546 AR S304 CARD 1840")
     b = sanitize.merchant_norm("PURCHASE AUTHORIZED ON 02/23 WALMART.COM 8009666546 AR S771 CARD 1840")
     assert a == b == "WALMART.COM"
