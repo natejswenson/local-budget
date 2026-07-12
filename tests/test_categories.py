@@ -20,7 +20,7 @@ def _hide(name):
 def _seed_txn(conn, date_, cents, category, merchant="M", subcategory=None, status="posted"):
     conn.execute(
         "INSERT INTO accounts (institution,acct_type,acct_last4,acct_hash,own_account,created_at) "
-        "SELECT 'WF','CHK','1','h',1,'2026-01-01' WHERE NOT EXISTS (SELECT 1 FROM accounts)")
+        "SELECT 'BANK','CHK','1','h',1,'2026-01-01' WHERE NOT EXISTS (SELECT 1 FROM accounts)")
     aid = conn.execute("SELECT account_id FROM accounts LIMIT 1").fetchone()[0]
     n = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
     conn.execute(

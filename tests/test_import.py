@@ -7,7 +7,7 @@ from local_budget.ingest import importer
 from ofx_fixtures import write_ofx
 
 
-def _import(tmp_path, txns, name="wf.qfx", detect_dups=False, **kw):
+def _import(tmp_path, txns, name="stmt.qfx", detect_dups=False, **kw):
     db.init_schema()
     p = write_ofx(tmp_path / name, txns, **kw)
     return importer.import_file(p, detect_near_duplicates=detect_dups)
@@ -43,7 +43,7 @@ def test_account_auto_seeds_own_account(data_dir, tmp_path):
 def test_identical_reimport_is_noop(data_dir, tmp_path):
     # I7 / AC1: re-importing the identical file = 0 new, 0 conflicts.
     _import(tmp_path, [GROCERY])
-    r2 = _import(tmp_path, [GROCERY], name="wf2.qfx")
+    r2 = _import(tmp_path, [GROCERY], name="stmt2.qfx")
     assert r2["inserted"] == 0 and r2["skipped"] == 1 and r2["conflicts"] == 0
     assert len(_rows()) == 1
 
@@ -52,7 +52,7 @@ def test_overlapping_import_adds_only_new(data_dir, tmp_path):
     # I8: overlapping file imports only the new FITID.
     _import(tmp_path, [GROCERY])
     new = {"trntype": "DEBIT", "dtposted": "20260607", "amount": "-12.00", "fitid": "F2", "name": "SHELL OIL"}
-    r2 = _import(tmp_path, [GROCERY, new], name="wf2.qfx")
+    r2 = _import(tmp_path, [GROCERY, new], name="stmt2.qfx")
     assert r2["inserted"] == 1 and r2["skipped"] == 1
     assert len(_rows()) == 2
 
@@ -61,7 +61,7 @@ def test_same_fitid_changed_amount_is_conflict(data_dir, tmp_path):
     # I8b: same FITID, materially different amount -> fitid_collision, not overwrite.
     _import(tmp_path, [GROCERY])
     changed = {**GROCERY, "amount": "-99.00"}
-    r2 = _import(tmp_path, [changed], name="wf2.qfx")
+    r2 = _import(tmp_path, [changed], name="stmt2.qfx")
     assert r2["conflicts"] == 1 and r2["inserted"] == 0
     rows = _rows()
     assert len(rows) == 1 and rows[0]["amount_cents"] == -5000  # original untouched
@@ -76,7 +76,7 @@ def test_pending_to_posted_is_quarantined(data_dir, tmp_path):
     pre = {"trntype": "DEBIT", "dtposted": "20260605", "amount": "-50.00", "fitid": "PRE", "name": "SHELL OIL"}
     _import(tmp_path, [pre])
     posted = {"trntype": "DEBIT", "dtposted": "20260606", "amount": "-73.20", "fitid": "POST", "name": "SHELL OIL"}
-    r2 = _import(tmp_path, [posted], name="wf2.qfx", detect_dups=True)
+    r2 = _import(tmp_path, [posted], name="stmt2.qfx", detect_dups=True)
     assert r2["conflicts"] == 1
     assert len(_rows(status="posted")) == 1     # only the pre-auth counts
     assert len(_rows(status="conflict")) == 1   # posted row quarantined
@@ -132,5 +132,5 @@ def test_quarantined_excluded_from_posted(data_dir, tmp_path):
     pre = {"trntype": "DEBIT", "dtposted": "20260605", "amount": "-50.00", "fitid": "PRE", "name": "SHELL OIL"}
     _import(tmp_path, [pre])
     posted = {"trntype": "DEBIT", "dtposted": "20260606", "amount": "-73.20", "fitid": "POST", "name": "SHELL OIL"}
-    _import(tmp_path, [posted], name="wf2.qfx", detect_dups=True)
+    _import(tmp_path, [posted], name="stmt2.qfx", detect_dups=True)
     assert len(_rows(status="posted")) == 1  # quarantined row excluded from posted

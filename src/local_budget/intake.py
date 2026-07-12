@@ -52,7 +52,7 @@ def pending() -> dict:
 
 def run_intake() -> dict:
     """The on-launch intake (ZERO network): dispose the prior run's files (undo
-    window closed), then scan → integrity-gate → WF-validate → import (offline
+    window closed), then scan → integrity-gate → format-validate → import (offline
     rule categorization) → record. Serialized by the intake mutex; a second
     caller no-ops. The LLM step is separate and explicit (never here)."""
     with inbox_adapter.intake_lock() as got:
@@ -80,7 +80,7 @@ def run_intake() -> dict:
         run_id = importer.begin_batch_run("intake") if files else None
         for p in files:
             h = inbox_adapter.content_hash(p)
-            ok, reason = inbox_adapter.validate_wf(p)
+            ok, reason = inbox_adapter.validate_export(p)
             if not ok:
                 inbox_adapter.record_seen(h, p.name, "quarantined", None, reason)
                 quarantined += 1
