@@ -1,1 +1,1 @@
-"""Ingestion: parse Wells Fargo OFX/QFX (+ CSV fallback) → normalize → dedup."""
+"""Ingestion: parse bank OFX/QFX statements (+ CSV fallback) → normalize → dedup."""

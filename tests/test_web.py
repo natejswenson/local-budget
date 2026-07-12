@@ -20,7 +20,7 @@ def no_network_egress():
 @pytest.fixture
 def client(data_dir, tmp_path):
     db.init_schema()
-    importer.import_file(write_ofx(tmp_path / "wf.qfx", [
+    importer.import_file(write_ofx(tmp_path / "stmt.qfx", [
         {"trntype": "DEBIT", "dtposted": "20260603", "amount": "-50.00", "fitid": "G1",
          "name": "WALMART ACCT 4111222233334444"},
         {"trntype": "CREDIT", "dtposted": "20260601", "amount": "2000.00", "fitid": "I1", "name": "ACME PAYROLL"},
@@ -58,7 +58,7 @@ def test_intake_run_payload_reports_dropped_rows(client, tmp_path, monkeypatch):
     box.mkdir()
     db.set_setting("inbox_dir", str(box))
     monkeypatch.setattr(inbox_adapter, "STABILITY_SECS", 0)
-    (box / "wf.ofx").write_text(
+    (box / "stmt.ofx").write_text(
         "OFXHEADER:100\nDATA:OFXSGML\nVERSION:102\nSECURITY:NONE\nENCODING:USASCII\n"
         "CHARSET:1252\nCOMPRESSION:NONE\nOLDFILEUID:NONE\nNEWFILEUID:NONE\n\n<OFX>\n"
         "<SIGNONMSGSRSV1><SONRS><STATUS><CODE>0<SEVERITY>INFO</STATUS>"
@@ -77,7 +77,7 @@ def test_intake_run_payload_reports_dropped_rows(client, tmp_path, monkeypatch):
     assert run["dropped_rows"] >= 1
     # no filename / raw row content leaks to the browser
     rbody = str(run)
-    assert "wf.ofx" not in rbody and "SHELL" not in rbody and "NOTANUMBER" not in rbody
+    assert "stmt.ofx" not in rbody and "SHELL" not in rbody and "NOTANUMBER" not in rbody
 
 
 def test_dup_review_destructive_action_confirmed_and_safe(client):
@@ -236,7 +236,7 @@ def test_budget_post_rejects_structural_category_with_400(client):
 
 def test_conflicts_endpoint_sanitized(client, tmp_path):
     # A near-dup conflict surfaced to the UI must carry no raw payee.
-    importer.import_file(write_ofx(tmp_path / "wf2.qfx", [
+    importer.import_file(write_ofx(tmp_path / "stmt2.qfx", [
         {"trntype": "DEBIT", "dtposted": "20260603", "amount": "-50.00", "fitid": "G2",
          "name": "WALMART ACCT 4111222233334444"}]), detect_near_duplicates=True)
     rows = client.get("/api/conflicts").json()
@@ -254,7 +254,7 @@ def test_conflicts_endpoint_sanitized(client, tmp_path):
 
 
 def test_reconcile_endpoint(client, tmp_path):
-    importer.import_file(write_ofx(tmp_path / "wf2.qfx", [
+    importer.import_file(write_ofx(tmp_path / "stmt2.qfx", [
         {"trntype": "DEBIT", "dtposted": "20260603", "amount": "-50.00", "fitid": "G9", "name": "WALMART ACCT 4111222233334444"}]),
         detect_near_duplicates=True)
     cid = client.get("/api/conflicts").json()[0]["conflict_id"]
@@ -382,11 +382,11 @@ def test_inbox_endpoint_counts_only(client, tmp_path, monkeypatch):
     box.mkdir()
     db.set_setting("inbox_dir", str(box))
     monkeypatch.setattr(inbox_adapter, "STABILITY_SECS", 0)
-    (box / "wf.csv").write_text('"06/03/2026","-5.00","*","","SHELL"\n')
+    (box / "stmt.csv").write_text('"06/03/2026","-5.00","*","","SHELL"\n')
     body = client.get("/api/inbox").json()
     assert body["new_files"] == 1
     # counts only — no filename / rows leak to the browser
-    assert "filename" not in str(body) and "SHELL" not in str(body) and "wf.csv" not in str(body)
+    assert "filename" not in str(body) and "SHELL" not in str(body) and "stmt.csv" not in str(body)
 
 
 def test_intake_run_and_undo_endpoints(client, tmp_path, monkeypatch):
@@ -395,7 +395,7 @@ def test_intake_run_and_undo_endpoints(client, tmp_path, monkeypatch):
     box.mkdir()
     db.set_setting("inbox_dir", str(box))
     monkeypatch.setattr(inbox_adapter, "STABILITY_SECS", 0)
-    (box / "wf.csv").write_text('"06/03/2026","-5.00","*","","SHELL"\n"06/04/2026","-9.00","*","","WALMART"\n')
+    (box / "stmt.csv").write_text('"06/03/2026","-5.00","*","","SHELL"\n"06/04/2026","-9.00","*","","WALMART"\n')
     r = client.post("/api/intake/run").json()
     assert r["ran"] and r["files_imported"] == 1 and r["new_transactions"] == 2
     u = client.post("/api/intake/undo").json()
@@ -705,7 +705,7 @@ def test_normalize_confirm_hostile_input_is_400_never_500_or_corruption(data_dir
     # canonical_merchant. raise_server_exceptions=False makes a regression to a 500
     # observable as a status, not a raised exception.
     db.init_schema()
-    importer.import_file(write_ofx(tmp_path / "wf.qfx", [
+    importer.import_file(write_ofx(tmp_path / "stmt.qfx", [
         {"trntype": "DEBIT", "dtposted": "20260510", "amount": "-20.00", "fitid": "WC0",
          "name": "WIDGETCO ONE"},
     ]))

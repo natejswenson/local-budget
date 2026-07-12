@@ -12,8 +12,8 @@ from local_budget import db, intake
 from local_budget.ingest import importer
 
 
-def _csv(tmp_path, rows, name="wf.csv"):
-    # Wells Fargo HEADERLESS shape: Date, Amount, *, blank, Description
+def _csv(tmp_path, rows, name="stmt.csv"):
+    # Headerless bank-export shape: Date, Amount, *, blank, Description
     p = tmp_path / name
     p.write_text("".join(f'"{d}","{a}","*","","{desc}"\n' for d, a, desc in rows))
     return p
@@ -138,7 +138,7 @@ def test_import_tags_rows_with_run_id(data_dir, tmp_path):
 
 
 def test_description_drift_flagged_not_double_counted(data_dir, tmp_path):
-    # Re-download where WF reformatted the merchant text → same charge, different
+    # Re-download where the bank reformatted the merchant text → same charge, different
     # description, in a LATER file. New contract (red-team F1/S1): the drift
     # candidate is ALWAYS posted (real spend never silently dropped) AND an
     # advisory conflict is recorded (the possible duplicate is SURFACED, not a
@@ -162,7 +162,7 @@ def test_description_drift_flagged_not_double_counted(data_dir, tmp_path):
 
 
 def test_walmart_reformat_csv_redownload_surfaced_not_doubled(data_dir, tmp_path):
-    # S1 (unified): WALMART STORE → WALMART SUPERCENTER is a WF reformat of the SAME
+    # S1 (unified): WALMART STORE → WALMART SUPERCENTER is a bank reformat of the SAME
     # CSV charge across two files. token-Jaccard is only 1/3 (0.33), so the old ≥0.5
     # floor MISSED it → silent double-count. The unified predicate (shared first
     # token, not a base+descriptor extension) catches it: BOTH post (total correct)
@@ -311,7 +311,7 @@ def test_midword_truncation_still_flagged_as_drift(data_dir, tmp_path):
 ])
 def test_word_boundary_same_chain_surfaced_not_silent(data_dir, tmp_path, short_long):
     # S10-1: a word-boundary extension (COSTCO vs COSTCO GAS) is token-for-token
-    # INDISTINGUISHABLE from a WF reformat-by-appending-a-word (COSTCO vs COSTCO
+    # INDISTINGUISHABLE from a bank reformat-by-appending-a-word (COSTCO vs COSTCO
     # WHOLESALE). Per the non-destructive contract we flag INCLUSIVELY: BOTH rows
     # always post (total never silently dropped) AND the possible duplicate is
     # SURFACED (advisory conflict). An over-flag is benign — the user dismisses it,
@@ -336,7 +336,7 @@ def test_word_boundary_same_chain_surfaced_not_silent(data_dir, tmp_path, short_
 
 
 def test_append_word_reformat_surfaced_not_silent(data_dir, tmp_path):
-    # S10-1 lock: COSTCO -85.00 then (separate file) COSTCO WHOLESALE -85.00 is a WF
+    # S10-1 lock: COSTCO -85.00 then (separate file) COSTCO WHOLESALE -85.00 is a bank
     # reformat that APPENDS a word. It slips past exact dedup (different merchant_norm)
     # AND used to slip past the possible-duplicate flag (word-boundary-extension
     # exclusion) → BOTH posted with 0 surfaced conflicts = a SILENT double-count.
@@ -377,7 +377,7 @@ def test_shares_first_token_predicate():
 
 
 # ── F2: cross-download synthetic↔real content-twin (same charge, two fitids) ──
-# The same WF account's OFX export can drop a charge's <FITID> in one download
+# The same bank account's OFX export can drop a charge's <FITID> in one download
 # (recovered → synthetic `csv:` FITID) and carry the real bank FITID in another.
 # Both downloads share ONE real account_id, so exact (account, fitid) dedup misses
 # and both post unless the cross-boundary content-twin guard fires (red-team F2).

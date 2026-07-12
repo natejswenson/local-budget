@@ -47,7 +47,7 @@ def _seed(_tmp_path=None):
     with db.connect() as conn:
         conn.execute(
             "INSERT INTO accounts (account_id, institution, acct_type, acct_last4, acct_hash, created_at) "
-            "VALUES (1, 'WF', 'CHECKING', '1234', 'hash-1', ?)", (db.now_iso(),))
+            "VALUES (1, 'BANK', 'CHECKING', '1234', 'hash-1', ?)", (db.now_iso(),))
         for fitid, dt, cents, status, ttype, payee, mnorm, cat in rows:
             conn.execute(
                 "INSERT INTO transactions (account_id, fitid, posted_date, amount_cents, status, "
@@ -78,7 +78,7 @@ def test_category_breakdown_nets_refunds_like_month_summary(data_dir, tmp_path):
         {"trntype": "DEBIT", "dtposted": "20260603", "amount": "-50.00", "fitid": "G1", "name": "WALMART"},
         {"trntype": "CREDIT", "dtposted": "20260604", "amount": "10.00", "fitid": "R1", "name": "WALMART"},
     ]
-    importer.import_file(write_ofx(tmp_path / "wf.qfx", txns))
+    importer.import_file(write_ofx(tmp_path / "stmt.qfx", txns))
 
     summary = _call("get_month_summary", {"month": "2026-06"})["data"]
     bd_res = _call("get_category_breakdown", {"month": "2026-06"})
@@ -100,7 +100,7 @@ def test_month_summary_surfaces_uncategorized(data_dir, tmp_path):
         {"trntype": "DEBIT", "dtposted": "20260603", "amount": "-50.00", "fitid": "G1", "name": "WALMART"},
         {"trntype": "DEBIT", "dtposted": "20260607", "amount": "-42.50", "fitid": "U1", "name": "SOME RANDOM VENDOR XYZ"},
     ]
-    importer.import_file(write_ofx(tmp_path / "wf.qfx", txns))
+    importer.import_file(write_ofx(tmp_path / "stmt.qfx", txns))
     payload = _call("get_month_summary", {"month": "2026-06"})["data"]
     assert payload["uncategorized_spend"]["count"] == 1
     assert payload["uncategorized_spend"]["total_cents"] == 4250
@@ -112,7 +112,7 @@ def test_drill_hint_present_at_all_six_numbered_call_sites(data_dir, tmp_path):
     with db.connect() as conn:
         conn.execute(
             "INSERT INTO accounts (account_id, institution, acct_type, acct_last4, acct_hash, created_at) "
-            "VALUES (1, 'WF', 'CHECKING', '1234', 'hash-1', ?)", (db.now_iso(),))
+            "VALUES (1, 'BANK', 'CHECKING', '1234', 'hash-1', ?)", (db.now_iso(),))
         # Groceries spend so get_month_summary / get_category_breakdown / top_merchants have a row.
         conn.execute(
             "INSERT INTO transactions (account_id, fitid, posted_date, amount_cents, status, "
@@ -166,7 +166,7 @@ def test_get_month_summary_pct_column_uses_absolute_value_total(data_dir, tmp_pa
     with db.connect() as conn:
         conn.execute(
             "INSERT INTO accounts (account_id, institution, acct_type, acct_last4, acct_hash, created_at) "
-            "VALUES (1, 'WF', 'CHECKING', '1234', 'hash-1', ?)", (db.now_iso(),))
+            "VALUES (1, 'BANK', 'CHECKING', '1234', 'hash-1', ?)", (db.now_iso(),))
         conn.execute(
             "INSERT INTO transactions (account_id, fitid, posted_date, amount_cents, status, "
             "txn_type, payee, memo, merchant_norm, category, category_source, raw_ofx, imported_at) "
@@ -199,7 +199,7 @@ def test_query_transactions_min_amount_cent_boundary(data_dir, tmp_path):
         {"trntype": "DEBIT", "dtposted": "20260603", "amount": "-19.98", "fitid": "A1", "name": "WALMART"},
         {"trntype": "DEBIT", "dtposted": "20260604", "amount": "-19.99", "fitid": "A2", "name": "VOLT CAFE"},
     ]
-    importer.import_file(write_ofx(tmp_path / "wf.qfx", txns))
+    importer.import_file(write_ofx(tmp_path / "stmt.qfx", txns))
     res = _call("query_transactions", {"min_amount_dollars": 19.99})
     payload = res["data"]
     amounts = {r["amount_cents"] for r in payload["rows"]}
@@ -378,7 +378,7 @@ def test_find_anomalies_month_and_limit_scope_output_only(data_dir, tmp_path):
     with db.connect() as conn:
         conn.execute(
             "INSERT INTO accounts (account_id, institution, acct_type, acct_last4, acct_hash, created_at) "
-            "VALUES (1, 'WF', 'CHECKING', '1234', 'hash-1', ?)", (db.now_iso(),))
+            "VALUES (1, 'BANK', 'CHECKING', '1234', 'hash-1', ?)", (db.now_iso(),))
         # steady $15 charges over 2025, then two big spikes in different months
         fixtures = [(f"S{i}", f"2025-{m:02d}-05", -1500) for i, m in enumerate(range(1, 13))]
         fixtures += [("A1", "2026-05-10", -90000), ("A2", "2026-06-10", -95000)]

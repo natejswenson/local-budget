@@ -34,7 +34,7 @@ def cents_from_amount_str(raw: str | None) -> int:
     - Negative = money out (spend); positive = money in. Sign is taken from the
       string itself.
     - More than 2 decimal places RAISES (we never silently round money).
-    - Separator rules (US-correct; WF is US): if both `,` and `.` are present,
+    - Separator rules (US-correct; US-bank exports): if both `,` and `.` are present,
       `,` is a thousands separator. If only `,` is present, it is a decimal
       separator ONLY for European cents (exactly one comma + exactly 2 trailing
       digits, e.g. "19,99"); otherwise it is a thousands separator ("1,234" ->

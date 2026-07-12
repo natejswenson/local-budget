@@ -16,7 +16,7 @@ from .money import cents_from_amount_str, dollars
 
 @click.group()
 def main() -> None:
-    """Local-first Wells Fargo spending agent."""
+    """Local-first bank-statement spending agent."""
 
 
 @main.command()
@@ -29,7 +29,7 @@ def setup() -> None:
         db.set_setting("user_name", name)
         click.echo(f"  ✓ saved name: {name}")
     click.echo("\nNext:\n"
-               "  • budget import <wf-export.qfx>   – load a Wells Fargo export\n"
+               "  • budget import <statement.qfx>   – load a bank statement export\n"
                "  • budget report                   – this month's spending\n"
                "  • budget serve                    – open the local dashboard")
 
@@ -41,7 +41,7 @@ def setup() -> None:
                    "use only for incremental re-imports of recent statements, "
                    "NOT bulk/historical imports (it over-flags recurring charges)")
 def import_cmd(file: Path, detect_duplicates: bool) -> None:
-    """Import a Wells Fargo OFX/QFX (or CSV) export (rule-based categorization)."""
+    """Import a bank OFX/QFX (or CSV) statement export (rule-based categorization)."""
     db.init_schema()
     r = importer.import_file(file, detect_near_duplicates=detect_duplicates)
     line = f"  {r['inserted']} new · {r['skipped']} duplicates"
@@ -71,7 +71,7 @@ def reset(yes: bool) -> None:
 
 @main.command()
 def intake() -> None:
-    """Import new Wells Fargo exports from your inbox folder and categorize."""
+    """Import new bank statement exports from your inbox folder and categorize."""
     from . import inbox_adapter
     from . import intake as intake_mod
     db.init_schema()
@@ -83,7 +83,7 @@ def intake() -> None:
         click.echo(f"  · filed {r['disposed']} previously-imported file(s) into processed/")
     click.echo(f"  ✓ imported {r['files_imported']} file(s) · {r['new_transactions']} new · "
                f"{r['deduped']} already had")
-    # Surface possible double-counts so a real WF reformat-across-downloads is never
+    # Surface possible double-counts so a real bank reformat-across-downloads is never
     # invisible to a CLI-only user (red-team F-1). The data is already correct (both
     # rows posted + advisory near_duplicate conflict recorded); this just makes the
     # over-count visible and fixable via `budget reconcile`.
@@ -103,8 +103,8 @@ def intake() -> None:
                     f"the next intake (or were quarantined after repeated failures)",
                     fg="yellow")
     if r["files_quarantined"]:
-        click.secho(f"  ⚠ {r['files_quarantined']} file(s) skipped — not a recognized Wells Fargo "
-                    f"export ({', '.join(r['quarantine_reasons'])})", fg="yellow")
+        click.secho(f"  ⚠ {r['files_quarantined']} file(s) skipped — not a recognized bank "
+                    f"statement export ({', '.join(r['quarantine_reasons'])})", fg="yellow")
     if r["files_imported"] == 0 and r["files_quarantined"] == 0:
         click.echo(f"  (nothing new in {inbox_adapter.inbox_dir()})")
     if r["needs_review"]:
@@ -139,13 +139,13 @@ def normalize() -> None:
 @main.command(name="set-inbox")
 @click.argument("folder", required=False, type=click.Path())
 def set_inbox(folder: str | None) -> None:
-    """Show or set the folder the app watches for Wells Fargo exports."""
+    """Show or set the folder the app watches for bank statement exports."""
     from . import inbox_adapter
     db.init_schema()
     if folder:
         db.set_setting("inbox_dir", str(Path(folder).expanduser()))
     click.echo(f"  inbox folder: {inbox_adapter.inbox_dir()}")
-    click.echo("  drop Wells Fargo OFX/QFX/CSV exports here, then run `budget intake`")
+    click.echo("  drop bank OFX/QFX/CSV statement exports here, then run `budget intake`")
     # F-2 (deferred feature, made non-silent): CSV files are all treated as a
     # SINGLE account, so two different accounts both exported as CSV can cross-dedup.
     click.echo("  note: CSV files are treated as a SINGLE account — for multiple "

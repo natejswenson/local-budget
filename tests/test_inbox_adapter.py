@@ -1,4 +1,4 @@
-"""Drop-folder adapter + intake orchestration: integrity gating, WF validation,
+"""Drop-folder adapter + intake orchestration: integrity gating, format validation,
 disposal-to-processed, content-hash tracking, mutex, end-to-end run_intake."""
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ def inbox(data_dir, tmp_path, monkeypatch):
     return box
 
 
-def _wf_csv(box, name, rows):
+def _stmt_csv(box, name, rows):
     p = box / name
     p.write_text("".join(f'"{d}","{a}","*","","{desc}"\n' for d, a, desc in rows))
     return p
@@ -27,8 +27,8 @@ def _wf_csv(box, name, rows):
 
 # ── integrity gating ─────────────────────────────────────────────────────────
 def test_in_progress_download_skipped(inbox):
-    _wf_csv(inbox, "wf.csv.crdownload", [("06/03/2026", "-5.00", "X")])
-    assert inbox_adapter.is_stable(inbox / "wf.csv.crdownload") is False
+    _stmt_csv(inbox, "stmt.csv.crdownload", [("06/03/2026", "-5.00", "X")])
+    assert inbox_adapter.is_stable(inbox / "stmt.csv.crdownload") is False
 
 
 def test_zero_byte_skipped(inbox):
@@ -38,57 +38,57 @@ def test_zero_byte_skipped(inbox):
 
 def test_recently_modified_skipped(inbox, monkeypatch):
     monkeypatch.setattr(inbox_adapter, "STABILITY_SECS", 5)
-    _wf_csv(inbox, "fresh.csv", [("06/03/2026", "-5.00", "X")])
+    _stmt_csv(inbox, "fresh.csv", [("06/03/2026", "-5.00", "X")])
     assert inbox_adapter.is_stable(inbox / "fresh.csv") is False   # just written
 
 
-# ── WF-format validation (never ingest-on-guess) ─────────────────────────────
-def test_valid_wf_csv_passes(inbox):
-    ok, reason = inbox_adapter.validate_wf(_wf_csv(inbox, "wf.csv", [("06/03/2026", "-5.00", "SHELL")]))
+# ── statement-format validation (never ingest-on-guess) ─────────────────────────────
+def test_valid_stmt_csv_passes(inbox):
+    ok, reason = inbox_adapter.validate_export(_stmt_csv(inbox, "stmt.csv", [("06/03/2026", "-5.00", "SHELL")]))
     assert ok and reason is None
 
 
-def test_non_wf_csv_quarantined(inbox):
+def test_non_stmt_csv_quarantined(inbox):
     (inbox / "other.csv").write_text("name,email\nAlice,a@x.com\n")
-    ok, reason = inbox_adapter.validate_wf(inbox / "other.csv")
-    assert not ok and reason == inbox_adapter.NOT_WF
+    ok, reason = inbox_adapter.validate_export(inbox / "other.csv")
+    assert not ok and reason == inbox_adapter.NOT_STATEMENT
 
 
 def test_truncated_csv_rejected(inbox):
     # A genuinely PARTIAL final row (cut off mid-line: only 2 columns, not the
-    # WF 5) must still be rejected. (red-team S2: detect truncation by the final
+    # the required 5) must still be rejected. (red-team S2: detect truncation by the final
     # row failing shape, NOT by a missing trailing newline.)
     (inbox / "trunc.csv").write_text(
         '"06/03/2026","-5.00","*","","SHELL"\n"06/04/2026","-9.0')
-    ok, reason = inbox_adapter.validate_wf(inbox / "trunc.csv")
-    assert not ok and reason == inbox_adapter.NOT_WF
+    ok, reason = inbox_adapter.validate_export(inbox / "trunc.csv")
+    assert not ok and reason == inbox_adapter.NOT_STATEMENT
 
 
 def test_complete_csv_no_trailing_newline_validates(inbox):
-    # A COMPLETE WF export whose well-formed final row lacks a trailing newline
+    # A COMPLETE export whose well-formed final row lacks a trailing newline
     # (common) must PASS — never false-quarantined as truncated (red-team S2).
     p = inbox / "nonl.csv"
     p.write_text('"06/03/2026","-5.00","*","","SHELL"\n'
                  '"06/04/2026","-9.00","*","","WALMART"')   # no trailing \n
     assert not p.read_text().endswith("\n")
-    ok, reason = inbox_adapter.validate_wf(p)
+    ok, reason = inbox_adapter.validate_export(p)
     assert ok and reason is None
 
 
 def test_truncated_ofx_rejected(inbox):
     (inbox / "t.ofx").write_text("<OFX><STMTRS><STMTTRN><FITID>1")   # no </OFX>
-    ok, reason = inbox_adapter.validate_wf(inbox / "t.ofx")
+    ok, reason = inbox_adapter.validate_export(inbox / "t.ofx")
     assert not ok and reason == inbox_adapter.TRUNCATED
 
 
 # ── end-to-end orchestration ─────────────────────────────────────────────────
 def test_run_intake_imports_and_quarantines(inbox):
-    _wf_csv(inbox, "wf.csv", [("06/03/2026", "-5.00", "SHELL"), ("06/04/2026", "-9.00", "WALMART")])
+    _stmt_csv(inbox, "stmt.csv", [("06/03/2026", "-5.00", "SHELL"), ("06/04/2026", "-9.00", "WALMART")])
     (inbox / "junk.csv").write_text("foo,bar\n1,2\n")
     r = intake.run_intake()
     assert r["ran"] and r["files_imported"] == 1 and r["files_quarantined"] == 1
     assert r["new_transactions"] == 2
-    assert r["quarantine_reasons"] == [inbox_adapter.NOT_WF]
+    assert r["quarantine_reasons"] == [inbox_adapter.NOT_STATEMENT]
     with db.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 2
 
@@ -107,7 +107,7 @@ def test_symlink_in_inbox_not_imported(inbox, tmp_path):
 
 
 def test_already_seen_not_reprocessed(inbox):
-    _wf_csv(inbox, "wf.csv", [("06/03/2026", "-5.00", "SHELL")])
+    _stmt_csv(inbox, "stmt.csv", [("06/03/2026", "-5.00", "SHELL")])
     intake.run_intake()
     # second run: same file still present, but content-hash says already-seen
     r2 = intake.run_intake()
@@ -115,10 +115,10 @@ def test_already_seen_not_reprocessed(inbox):
 
 
 def test_disposal_to_processed_on_next_run(inbox):
-    _wf_csv(inbox, "a.csv", [("06/03/2026", "-5.00", "SHELL")])
+    _stmt_csv(inbox, "a.csv", [("06/03/2026", "-5.00", "SHELL")])
     intake.run_intake()                       # imports a.csv, leaves it in inbox
     assert (inbox / "a.csv").exists()
-    _wf_csv(inbox, "b.csv", [("06/10/2026", "-9.00", "WALMART")])
+    _stmt_csv(inbox, "b.csv", [("06/10/2026", "-9.00", "WALMART")])
     r = intake.run_intake()                   # disposes a.csv, imports b.csv
     assert r["disposed"] == 1
     assert not (inbox / "a.csv").exists()
@@ -127,17 +127,17 @@ def test_disposal_to_processed_on_next_run(inbox):
 
 def test_same_name_redownload_different_content_not_lost(inbox):
     # F8-1: dispose_imported moves by FILENAME. If the user re-downloads an export
-    # under the SAME canonical name (WF's fixed "Checking.csv") with NEW content
+    # under the SAME canonical name (a bank's fixed "Checking.csv") with NEW content
     # while the prior file's undo window is open, the stale-filename move would carry
     # the NEW export to processed/ and the next scan would find an empty inbox → the
     # new charges silently vanish. Fix: dispose only when on-disk content STILL
     # matches the recorded hash; on a mismatch leave the new file for the scan.
-    _wf_csv(inbox, "Checking.csv", [("06/03/2026", "-5.00", "SHELL")])     # content A
+    _stmt_csv(inbox, "Checking.csv", [("06/03/2026", "-5.00", "SHELL")])     # content A
     r1 = intake.run_intake()                  # imports content A, leaves it in inbox
     assert r1["files_imported"] == 1 and r1["new_transactions"] == 1
     # Re-download SAME name, DIFFERENT content (a -$99 BESTBUY charge) before the
     # next run disposes content A.
-    _wf_csv(inbox, "Checking.csv", [("06/10/2026", "-99.00", "BESTBUY")])  # content B
+    _stmt_csv(inbox, "Checking.csv", [("06/10/2026", "-99.00", "BESTBUY")])  # content B
     r2 = intake.run_intake()                  # must NOT silently dispose content B away
     # content B's BESTBUY charge IS imported (not lost), the inbox did NOT silently empty
     assert r2["files_imported"] == 1
@@ -154,9 +154,9 @@ def test_same_name_redownload_different_content_not_lost(inbox):
 
 
 def test_undo_restores_file_and_forgets(inbox):
-    _wf_csv(inbox, "a.csv", [("06/03/2026", "-5.00", "SHELL")])
+    _stmt_csv(inbox, "a.csv", [("06/03/2026", "-5.00", "SHELL")])
     intake.run_intake()
-    _wf_csv(inbox, "b.csv", [("06/10/2026", "-9.00", "WALMART")])
+    _stmt_csv(inbox, "b.csv", [("06/10/2026", "-9.00", "WALMART")])
     intake.run_intake()                       # a.csv -> processed/, b.csv imported
     r = intake.undo_last_import()             # undo b.csv
     assert r["undone"] and r["transactions_removed"] == 1
@@ -168,16 +168,16 @@ def test_undo_restores_processed_to_unique_name_not_overwrite(inbox):
     # F2 (focused): processed/a.csv exists from an import; a live a.csv (new
     # content) is in the inbox; undo of that batch must keep BOTH — live intact,
     # restored under a fresh name.
-    _wf_csv(inbox, "a.csv", [("06/03/2026", "-5.00", "SHELL")])
+    _stmt_csv(inbox, "a.csv", [("06/03/2026", "-5.00", "SHELL")])
     intake.run_intake()                       # import a.csv
-    _wf_csv(inbox, "b.csv", [("06/10/2026", "-9.00", "WALMART")])
+    _stmt_csv(inbox, "b.csv", [("06/10/2026", "-9.00", "WALMART")])
     intake.run_intake()                       # disposes a.csv -> processed/, imports b.csv
     assert (inbox / "processed" / "a.csv").exists()
     # Now drop a NEW live a.csv into the inbox before undoing the b.csv batch.
     # (b.csv batch has no a.csv, so this exercises only the live-file guard for b.)
     # To trigger the a.csv restore we undo until the a.csv batch:
     intake.undo_last_import()                 # undo b.csv batch
-    live = _wf_csv(inbox, "a.csv", [("07/01/2026", "-42.00", "TARGET")])
+    live = _stmt_csv(inbox, "a.csv", [("07/01/2026", "-42.00", "TARGET")])
     live_bytes = live.read_bytes()
     r = intake.undo_last_import()             # undo a.csv batch → restores processed/a.csv
     assert r["undone"]
@@ -194,22 +194,22 @@ def test_undo_restores_correct_file_under_processed_name_collision(inbox):
     # collides → lands at processed/Checking.1.csv, but the DB row still names it
     # "Checking.csv". undo of the week-2 batch must restore content B (the suffixed
     # file), NEVER content A — and content A must stay safe in processed/.
-    wk1 = _wf_csv(inbox, "Checking.csv", [("06/03/2026", "-5.00", "SHELL")])   # content A
+    wk1 = _stmt_csv(inbox, "Checking.csv", [("06/03/2026", "-5.00", "SHELL")])   # content A
     content_a = wk1.read_bytes()
     intake.run_intake()                       # import week-1 Checking.csv (batch 1)
     # A separate trigger file in batch 2 disposes wk1's Checking.csv -> processed/.
-    _wf_csv(inbox, "trigger1.csv", [("06/05/2026", "-2.00", "T1")])
+    _stmt_csv(inbox, "trigger1.csv", [("06/05/2026", "-2.00", "T1")])
     intake.run_intake()                       # disposes wk1 -> processed/Checking.csv
     assert (inbox / "processed" / "Checking.csv").read_bytes() == content_a
     assert not (inbox / "Checking.csv").exists()
     # week-2: SAME name, DIFFERENT content (a genuinely different export).
-    wk2 = _wf_csv(inbox, "Checking.csv", [("06/10/2026", "-9.00", "WALMART")])  # content B
+    wk2 = _stmt_csv(inbox, "Checking.csv", [("06/10/2026", "-9.00", "WALMART")])  # content B
     content_b = wk2.read_bytes()
     assert content_a != content_b
     intake.run_intake()                       # import week-2 Checking.csv (batch 3)
     # A final trigger disposes wk2's Checking.csv → collides with the existing
     # processed/Checking.csv → lands at processed/Checking.1.csv.
-    _wf_csv(inbox, "trigger2.csv", [("06/11/2026", "-1.00", "T2")])
+    _stmt_csv(inbox, "trigger2.csv", [("06/11/2026", "-1.00", "T2")])
     intake.run_intake()
     assert (inbox / "processed" / "Checking.csv").read_bytes() == content_a
     assert (inbox / "processed" / "Checking.1.csv").read_bytes() == content_b
@@ -228,8 +228,8 @@ def test_undo_restores_correct_file_under_processed_name_collision(inbox):
 def test_one_intake_one_undo_reverses_all_files(inbox):
     # S1: drop 2 files in ONE run_intake → ONE undo removes ALL rows from BOTH
     # files and restores/forgets both.
-    _wf_csv(inbox, "a.csv", [("06/03/2026", "-5.00", "SHELL")])
-    _wf_csv(inbox, "b.csv", [("06/04/2026", "-9.00", "WALMART")])
+    _stmt_csv(inbox, "a.csv", [("06/03/2026", "-5.00", "SHELL")])
+    _stmt_csv(inbox, "b.csv", [("06/04/2026", "-9.00", "WALMART")])
     r = intake.run_intake()
     assert r["files_imported"] == 2 and r["new_transactions"] == 2
     with db.connect() as conn:
@@ -257,7 +257,7 @@ def test_mutex_blocks_concurrent_intake(inbox):
 def test_undo_no_ops_while_intake_lock_held(inbox):
     # S3: undo takes the SAME single intake mutex; if held, it no-ops cleanly
     # (never races a concurrent run_intake/dispose).
-    _wf_csv(inbox, "a.csv", [("06/03/2026", "-5.00", "SHELL")])
+    _stmt_csv(inbox, "a.csv", [("06/03/2026", "-5.00", "SHELL")])
     intake.run_intake()
     with inbox_adapter.intake_lock() as got:
         assert got is True
@@ -273,8 +273,8 @@ def test_run_intake_multifile_drift_posts_both_and_reports_possible_dup(inbox):
     # (shared batch run_id) must NOT silently double-count. New contract: BOTH
     # rows post (real spend counts) AND run_intake reports >=1 possible_duplicate
     # (surfaced) — never a silent double-count with 0 conflicts.
-    _wf_csv(inbox, "a.csv", [("06/03/2026", "-42.00", "AMAZON MKTPL ABC")])
-    _wf_csv(inbox, "b.csv", [("06/03/2026", "-42.00", "AMAZON MKTPL XYZ STORE")])
+    _stmt_csv(inbox, "a.csv", [("06/03/2026", "-42.00", "AMAZON MKTPL ABC")])
+    _stmt_csv(inbox, "b.csv", [("06/03/2026", "-42.00", "AMAZON MKTPL XYZ STORE")])
     r = intake.run_intake()
     assert r["files_imported"] == 2
     assert r["new_transactions"] == 2                # both posted/counted
@@ -291,7 +291,7 @@ def test_transient_error_self_heals_on_next_run(inbox, monkeypatch):
     # S2: a ONE-SHOT transient import failure must NOT permanently strand a valid
     # file. The errored file (attempts < cap) is re-scanned and imported on the
     # next run.
-    _wf_csv(inbox, "wf.csv", [("06/03/2026", "-5.00", "SHELL")])
+    _stmt_csv(inbox, "stmt.csv", [("06/03/2026", "-5.00", "SHELL")])
     from local_budget.ingest import importer
 
     calls = {"n": 0}
@@ -322,7 +322,7 @@ def test_transient_error_self_heals_on_next_run(inbox, monkeypatch):
 def test_persistent_error_stops_after_cap_and_quarantines(inbox, monkeypatch):
     # S2: a PERSISTENTLY-erroring file must stop reprocessing after the cap and be
     # reported quarantined (not retried forever).
-    _wf_csv(inbox, "wf.csv", [("06/03/2026", "-5.00", "SHELL")])
+    _stmt_csv(inbox, "stmt.csv", [("06/03/2026", "-5.00", "SHELL")])
     from local_budget.ingest import importer
 
     def always_fail(path, **kw):
@@ -386,13 +386,13 @@ def test_fitidless_ofx_row_imports_whole_file_and_dedups(inbox):
         {"trntype": "DEBIT", "dtposted": "20260603", "amount": "-50.00", "fitid": "G1", "name": "WALMART"},
         {"trntype": "DEBIT", "dtposted": "20260604", "amount": "-9.00", "name": "SHELL"},  # no FITID
     ]
-    p = _ofx_with_optional_fitids(inbox, "wf.ofx", txns)
+    p = _ofx_with_optional_fitids(inbox, "stmt.ofx", txns)
     r = importer.import_file(p)
     assert r["inserted"] == 2                       # whole file imported, nothing lost
     with db.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM transactions WHERE status='posted'").fetchone()[0] == 2
     # Re-download the identical OFX → both dedup (real FITID + synthetic FITID).
-    p2 = _ofx_with_optional_fitids(inbox, "wf2.ofx", txns)
+    p2 = _ofx_with_optional_fitids(inbox, "stmt2.ofx", txns)
     r2 = importer.import_file(p2)
     assert r2["inserted"] == 0 and r2["skipped"] == 2
     with db.connect() as conn:
@@ -428,7 +428,7 @@ def test_malformed_ofx_row_dropped_count_surfaced_good_row_imports(inbox):
     # never silently disposed. The row-count reconcile still passes (the malformed
     # row is a parse-time drop, separate from `seen`).
     from local_budget.ingest import importer
-    p = _ofx_with_raw_txns(inbox, "wf.ofx", [
+    p = _ofx_with_raw_txns(inbox, "stmt.ofx", [
         ["<TRNTYPE>DEBIT", "<DTPOSTED>20260603", "<TRNAMT>-50.00", "<FITID>G1", "<NAME>WALMART"],
         ["<TRNTYPE>DEBIT", "<DTPOSTED>20260604", "<TRNAMT>NOTANUMBER", "<FITID>G2", "<NAME>SHELL"],
     ])
@@ -443,7 +443,7 @@ def test_malformed_ofx_row_dropped_count_surfaced_good_row_imports(inbox):
 
 def test_run_intake_surfaces_dropped_rows(inbox):
     # F1 (intake path): run_intake SUMS dropped_rows across files and reports it.
-    _ofx_with_raw_txns(inbox, "wf.ofx", [
+    _ofx_with_raw_txns(inbox, "stmt.ofx", [
         ["<TRNTYPE>DEBIT", "<DTPOSTED>20260603", "<TRNAMT>-50.00", "<FITID>G1", "<NAME>WALMART"],
         ["<TRNTYPE>DEBIT", "<DTPOSTED>20260604", "<TRNAMT>NOTANUMBER", "<FITID>G2", "<NAME>SHELL"],
     ])
@@ -454,14 +454,14 @@ def test_run_intake_surfaces_dropped_rows(inbox):
 
 
 def test_all_fitidless_ofx_validates_and_imports_on_intake_path(inbox):
-    # S1: an all-FITID-less OFX must pass validate_wf (no <FITID> gate) AND import
+    # S1: an all-FITID-less OFX must pass validate_export (no <FITID> gate) AND import
     # its transactions via run_intake (recovery reachable on the intake path).
     txns = [
         {"trntype": "DEBIT", "dtposted": "20260603", "amount": "-50.00", "name": "WALMART"},
         {"trntype": "DEBIT", "dtposted": "20260604", "amount": "-9.00", "name": "SHELL"},
     ]
-    p = _ofx_with_optional_fitids(inbox, "wf.ofx", txns)   # all rows omit <FITID>
-    ok, reason = inbox_adapter.validate_wf(p)
+    p = _ofx_with_optional_fitids(inbox, "stmt.ofx", txns)   # all rows omit <FITID>
+    ok, reason = inbox_adapter.validate_export(p)
     assert ok and reason is None
     r = intake.run_intake()
     assert r["files_imported"] == 1 and r["new_transactions"] == 2
@@ -479,7 +479,7 @@ def test_orphaned_in_progress_run_reaped_and_undoable(inbox):
     # Simulate the orphan: open a batch, commit a row tagged with it, then crash
     # (never call finish_batch_run) → row stays, run stays 'in_progress'.
     run_id = importer.begin_batch_run("intake")
-    f = _wf_csv(inbox, "orphan.csv", [("05/01/2026", "-77.00", "ORPHANED")])
+    f = _stmt_csv(inbox, "orphan.csv", [("05/01/2026", "-77.00", "ORPHANED")])
     files = intake.scan()
     importer.import_file(files[0], run_id=run_id)
     # The crash happened AFTER the row committed; the file was already consumed.
@@ -555,7 +555,7 @@ def test_direct_import_writes_no_seen_record(inbox):
     # F7-1 (d): direct `budget import` (no content_hash) writes NO inbox_files
     # seen-record — current behavior preserved, the atomic path is intake-only.
     from local_budget.ingest import importer
-    p = _wf_csv(inbox, "wf.csv", [("06/03/2026", "-5.00", "SHELL")])
+    p = _stmt_csv(inbox, "stmt.csv", [("06/03/2026", "-5.00", "SHELL")])
     r = importer.import_file(p)                       # no content_hash
     assert r["inserted"] == 1
     with db.connect() as conn:
@@ -568,7 +568,7 @@ def test_imported_seen_record_atomic_same_run_as_rows(inbox):
     # (the seen-record is written inside import_file's transaction, not a separate
     # one). undo of that batch then deletes the rows AND restores the file AND
     # forgets the hash, so a re-drop re-imports it — no decoupling.
-    p = _wf_csv(inbox, "wf.csv", [("06/03/2026", "-5.00", "SHELL")])
+    p = _stmt_csv(inbox, "stmt.csv", [("06/03/2026", "-5.00", "SHELL")])
     h = inbox_adapter.content_hash(p)
     intake.run_intake()
     with db.connect() as conn:
@@ -590,7 +590,7 @@ def test_imported_seen_record_atomic_same_run_as_rows(inbox):
             "SELECT COUNT(*) FROM inbox_files WHERE content_hash = ?", (h,)).fetchone()[0] == 0
     # The file was never disposed (single intake run → still in the inbox), so it
     # is recoverable in place; undo forgot its hash so the next run re-imports it.
-    assert (inbox / "wf.csv").exists()
+    assert (inbox / "stmt.csv").exists()
     r2 = intake.run_intake()                                   # re-drop recovers
     assert r2["files_imported"] == 1 and r2["new_transactions"] == 1
 
@@ -607,7 +607,7 @@ def test_crash_window_no_silent_spend_loss(inbox):
     #
     # FIX: on a 0-new-row re-import the seen-record binds to the OWNING batch (the
     # one already holding the matching rows), re-coupling undo. Assert recovery.
-    p = _wf_csv(inbox, "shell.csv", [("06/03/2026", "-5.00", "SHELL")])
+    p = _stmt_csv(inbox, "shell.csv", [("06/03/2026", "-5.00", "SHELL")])
     h = inbox_adapter.content_hash(p)
     intake.run_intake()
     owning_run = intake.last_import()["run_id"]

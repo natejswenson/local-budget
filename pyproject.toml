@@ -1,7 +1,7 @@
 [project]
 name = "local-budget"
 version = "0.1.0"
-description = "Local-first Wells Fargo transaction spending agent (subscription-auth, no API key)"
+description = "Local-first bank-statement spending agent (subscription-auth, no API key)"
 readme = "README.md"
 authors = [
     { name = "Nate Swenson", email = "natejswenson@users.noreply.github.com" }
