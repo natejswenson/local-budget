@@ -24,7 +24,7 @@ def seeded_db(tmp_path):
     with db.connect(path) as c:
         c.execute(
             "INSERT INTO accounts (account_id, institution, acct_last4, acct_hash) "
-            "VALUES (1, 'WF', '1234', 'hash-1')"
+            "VALUES (1, 'BANK', '1234', 'hash-1')"
         )
         c.execute(
             "INSERT INTO transactions "
