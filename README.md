@@ -4,7 +4,8 @@
 ![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-A **local-first, agent-first** Wells Fargo spending agent. Your data stays in one
+A **local-first, agent-first** personal spending agent for your bank/financial
+statements. Your data stays in one
 local `data/budget.db` on your own machine — full account numbers and every
 transaction. You don't click through an app to understand your money; you *talk*
 to it from a Claude Code session pointed at this repo, through a small MCP server
@@ -14,7 +15,7 @@ session under your own subscription auth.
 
 ## How it works
 
-1. **Import.** Drop a Wells Fargo `.qfx`/`.ofx`/`.csv` export in your inbox and
+1. **Import.** Drop a bank statement export (`.qfx`/`.ofx`/`.csv`) in your inbox and
    run `budget intake` (or `budget import <file>`). Account numbers are masked at
    import time; the raw transaction is stored once in `data/budget.db`.
 2. **The MCP server.** The committed `.mcp.json` wires up `uv run budget-mcp` — a
@@ -56,8 +57,8 @@ merchants,"* *"Give me a monthly brief."*
 ```bash
 uv sync
 
-# import a Wells Fargo export
-uv run budget import ~/Downloads/wf-export.qfx
+# import a bank statement export
+uv run budget import ~/Downloads/statement.qfx
 # …or drop exports in your inbox and run:
 uv run budget intake
 

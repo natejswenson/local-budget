@@ -762,7 +762,7 @@ changes.
    this step must EXPLICITLY FLAG that the list changed and name the
    resolved row, rather than asking a generic confirmation: e.g. "the list
    changed since you last saw it — row 3 is now different than it was
-   before; I'm treating '3' as referring to WELLS FARGO CHECK #204 →
+   before; I'm treating '3' as referring to BANK CHECK #204 →
    Groceries, from the refreshed list — confirm?" This flagged wording is
    required specifically because this reference follows an invalidating
    write (Architecture §2/§3, Error Handling); a bare "confirm?" that

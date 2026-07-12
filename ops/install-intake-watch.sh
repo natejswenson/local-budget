@@ -37,6 +37,6 @@ launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
 launchctl bootstrap "$DOMAIN" "$PLIST"
 
 echo "  ✓ installed $LABEL"
-echo "    watching: $INBOX  → drop a Wells Fargo export there; it imports automatically"
+echo "    watching: $INBOX  → drop a bank statement export there; it imports automatically"
 echo "    logs:     $REPO/logs/intake.log"
 echo "    remove:   ./ops/install-intake-watch.sh --uninstall"

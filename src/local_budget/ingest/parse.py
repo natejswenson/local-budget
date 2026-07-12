@@ -61,7 +61,7 @@ def _parse_ofx(path: Path) -> list[ParsedAccount]:
     from ofxparse import OfxParser  # imported lazily; deterministic path opens no socket
 
     # fail_fast=False so ONE bad <STMTTRN> does not drop the whole file (red-team
-    # F-3). A real WF OFX export can include FITID-less rows; ofxparse treats a
+    # F-3). A real bank OFX export can include FITID-less rows; ofxparse treats a
     # missing <FITID> as a discarded entry rather than parsing it. We import every
     # good transaction AND recover the FITID-less discards below. A discard we
     # CANNOT recover (malformed amount/date — not just a missing FITID) is COUNTED
@@ -159,7 +159,7 @@ def _ofx_date(raw: str) -> str:
 def _institution(acct) -> str | None:  # noqa: ANN001
     inst = getattr(acct, "institution", None)
     name = getattr(inst, "organization", None) if inst else None
-    return name or "Wells Fargo"
+    return name or "Bank"
 
 
 _DESC_HEADERS = ("description", "payee", "name", "merchant", "memo", "transaction", "details")
@@ -168,9 +168,9 @@ _AMOUNT_HEADERS = ("amount", "amount debit credit", "amount (usd)")
 
 
 def _parse_csv(path: Path) -> list[ParsedAccount]:
-    """CSV parser handling BOTH Wells Fargo's HEADERLESS export and headered CSVs.
+    """CSV parser handling BOTH headerless bank exports and headered CSVs.
 
-    Wells Fargo "Download Account Activity" CSV has NO header row and 5 columns:
+    Some banks' "download account activity" CSV has NO header row and 5 columns:
         Date, Amount, "*", "", Description   e.g.  06/03/2024,-52.40,*,,WALMART STORE
     so the description is the LAST column. Headered CSVs match flexible column
     names (date/amount + description/payee/name/...). A synthetic FITID is derived
@@ -198,14 +198,14 @@ def _parse_csv(path: Path) -> list[ParsedAccount]:
         data = rows[1:]
 
     # DEFERRED FEATURE — single-account CSV limitation (red-team F-2): all CSV rows
-    # share ONE synthetic "csv" account (bankid/acctid both "csv"), because a WF
-    # CSV export carries no account number. Consequence: two DIFFERENT accounts both
+    # share ONE synthetic "csv" account (bankid/acctid both "csv"), because these
+    # CSV exports carry no account number. Consequence: two DIFFERENT accounts both
     # exported as CSV can cross-dedup a coincidentally-identical (date, amount,
     # merchant) row. Per the product owner's decision this is NOT fixed here; the
     # multi-account-safe path is OFX/QFX, which carry real account numbers. The
     # limitation is surfaced to the user in `budget set-inbox`/`budget intake` and
     # the dashboard intake area rather than being silent.
-    pa = ParsedAccount(bankid="csv", acctid="csv", acct_type=None, institution="Wells Fargo")
+    pa = ParsedAccount(bankid="csv", acctid="csv", acct_type=None, institution="Bank")
     for i, row in enumerate(data):
         if len(row) <= i_amt:
             continue

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  LaunchAgent that auto-runs `budget intake` when a Wells Fargo export is dropped
+  LaunchAgent that auto-runs `budget intake` when a bank statement export is dropped
   in the inbox. @REPO@ / @INBOX@ are substituted by ops/install-intake-watch.sh
   into a host-specific .plist.rendered (gitignored). Re-run the installer after
   moving the repo (the rendered plist holds absolute paths).

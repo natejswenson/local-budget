@@ -1,12 +1,12 @@
 """Drop-folder adapter (red-team-approved intake design).
 
 Owns everything PHYSICAL about a file source: where the inbox is, which files are
-complete + recognized Wells Fargo exports, the single-intake mutex, and safe
+complete + recognized bank statement exports, the single-intake mutex, and safe
 disposal to `processed/` (never Trash, never shell-out, paths confined). The
 agnostic intake core (importer / `intake.py`) operates on what this hands it.
 
 Safety properties enforced here:
-- Never ingest an in-progress / truncated / non-WF file (integrity + WF validation).
+- Never ingest an in-progress / truncated / unrecognized file (integrity + format validation).
 - Never reprocess an already-seen file (tracked by CONTENT HASH).
 - Single intake at a time (flock; auto-released on crash).
 - Dispose only AFTER a verified import, and only this-run's files; paths are
@@ -33,7 +33,7 @@ MAX_INTAKE_ATTEMPTS = 3     # failed-import retries before a file is quarantined
 
 # Sanitized quarantine reasons — the ONLY thing about a bad file that may reach
 # the browser/logs (never the filename or raw rows; red-team S6/M3).
-NOT_WF = "not_recognized_wf"
+NOT_STATEMENT = "not_recognized_statement"
 MALFORMED = "malformed_row"
 TRUNCATED = "truncated_file"
 TOO_BIG = "file_too_large"
@@ -91,8 +91,8 @@ def is_stable(p: Path, now: float | None = None) -> bool:
     return (now - st.st_mtime) >= STABILITY_SECS
 
 
-def validate_wf(p: Path) -> tuple[bool, str | None]:
-    """Positive WF-format validation — we never ingest-on-guess (red-team F4/F5).
+def validate_export(p: Path) -> tuple[bool, str | None]:
+    """Positive statement-format validation — we never ingest-on-guess (red-team F4/F5).
     Returns (ok, sanitized_reason_or_None). Surfaces only an enum reason, never
     raw content."""
     try:
@@ -102,47 +102,47 @@ def validate_wf(p: Path) -> tuple[bool, str | None]:
             return _validate_csv(p)
         return _validate_ofx(p)
     except parse.ParseError:
-        return False, NOT_WF
+        return False, NOT_STATEMENT
     except (OSError, UnicodeDecodeError):
         return False, MALFORMED
 
 
 def _validate_csv(p: Path) -> tuple[bool, str | None]:
-    # A missing trailing newline is NOT truncation (red-team S2): a complete WF
+    # A missing trailing newline is NOT truncation (red-team S2): a complete bank
     # export commonly ends without "\n". Truncation is detected by the FINAL row
-    # failing the WF shape (the per-row loop below validates EVERY row), not by
+    # failing the statement shape (the per-row loop below validates EVERY row), not by
     # the absence of a trailing newline — which would false-quarantine a complete
     # file and silently never import it.
     import csv
     text = p.read_text(errors="strict")
     rows = [r for r in csv.reader(text.splitlines()) if any(c.strip() for c in r)]
     if not rows:
-        return False, NOT_WF
+        return False, NOT_STATEMENT
     from .money import AmountParseError, cents_from_amount_str
     from .ingest.parse import _iso_date
-    for r in rows:                        # every row must match the WF shape
+    for r in rows:                        # every row must match the statement shape
         if len(r) < 5:
-            return False, NOT_WF
+            return False, NOT_STATEMENT
         try:
             _iso_date(r[0].strip())
             cents_from_amount_str(r[1].strip().replace("$", ""))
         except (parse.ParseError, AmountParseError):
-            return False, NOT_WF
+            return False, NOT_STATEMENT
     return True, None
 
 
 def _validate_ofx(p: Path) -> tuple[bool, str | None]:
     text = p.read_text(errors="ignore").upper()
     if "<OFX>" not in text or "</OFX>" not in text:   # close tag absent → truncated
-        return False, (TRUNCATED if "<OFX>" in text else NOT_WF)
-    # A WF OFX statement is recognized by its structural tags + an intact close tag
+        return False, (TRUNCATED if "<OFX>" in text else NOT_STATEMENT)
+    # An OFX statement is recognized by its structural tags + an intact close tag
     # (not truncated). <FITID> presence MUST NOT gate acceptance (red-team S1): the
     # parser now recovers FITID-less <STMTTRN> rows with a synthetic content FITID,
     # so an all-FITID-less OFX is fully importable. Requiring <FITID> here would
     # quarantine it on the intake/drop-folder path while direct `budget import`
     # imports it fine — an inconsistency that silently loses that spend.
     if "<STMTRS>" not in text or "<STMTTRN>" not in text:
-        return False, NOT_WF
+        return False, NOT_STATEMENT
     return True, None
 
 
@@ -259,7 +259,7 @@ def dispose_imported() -> int:
             continue
         # F8-1: dispose ONLY a file whose CURRENT on-disk content still matches the
         # recorded hash. If the user re-downloaded an export under the SAME canonical
-        # name (e.g. WF's fixed "Checking.csv") with NEW content while the undo
+        # name (e.g. a bank's fixed "Checking.csv") with NEW content while the undo
         # window was open, moving it by stale filename would carry the NEW export to
         # processed/ and the subsequent scan would find an empty inbox → the new
         # charges silently vanish. On a content MISMATCH we DON'T move it: we mark the
@@ -307,7 +307,7 @@ def _unique_dest(d: Path, name: str) -> Path:
 # ── dashboard upload (write a received export into the inbox) ─────────────────
 def stage_upload(name: str, data: bytes) -> Path:
     """Write a dashboard-uploaded export into the inbox as a complete, ready-to-
-    import file, then hand it to the normal intake pipeline (validate_wf + import).
+    import file, then hand it to the normal intake pipeline (validate_export + import).
 
     Safety: only a BASENAME of `name` is honored (never a path/traversal — the
     client cannot choose a destination); the type must be a supported export and

@@ -1,6 +1,6 @@
 # ops/ — automated intake (macOS launchd)
 
-Auto-runs `budget intake` on the **host** whenever a Wells Fargo export lands in
+Auto-runs `budget intake` on the **host** whenever a bank statement export lands in
 your inbox folder. Raw bank files (full account numbers) stay entirely on the
 host — they never enter the container.
 
