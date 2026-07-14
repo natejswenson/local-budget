@@ -33,6 +33,18 @@ def test_spend_total_is_sum_of_spend_categories(data_dir, tmp_path):
     assert "Income" not in s["spend_by_category"]
 
 
+def test_floor_marked_spend_category_reports_as_savings(data_dir, tmp_path):
+    # Investments (floor-marked) moves out of spend_by_category/spend_total_cents
+    # and into savings_by_category/savings_total_cents — money relocated, not spent.
+    _import(tmp_path, JUNE)
+    categories.mark_floor_category("Investments")
+    s = reports.month_summary("2026-06")
+    assert "Investments" not in s["spend_by_category"]
+    assert s["spend_total_cents"] == 8000          # Walmart 50 + Volt 30, Investments excluded
+    assert s["savings_by_category"]["Investments"] == 10000
+    assert s["savings_total_cents"] == 10000
+
+
 def test_transfer_and_income_accounted_separately(data_dir, tmp_path):
     _import(tmp_path, JUNE)
     s = reports.month_summary("2026-06")

@@ -6,8 +6,12 @@ Every total that excludes conflict rows is accompanied by the excluded-conflict
 count/sum so the headline number is NEVER silently understated (I11b).
 
 Spend total = sum of the spend-category totals only; `Transfer` and `Income`
-are accounted separately (M5). `Investments` counts as spend even on TRNTYPE=XFER
-(handled by `categories.is_spend`, where Investments is a spend category).
+are accounted separately (M5). A spend category that's also floor-marked
+(e.g. `Investments` — see `categories.mark_floor_category`) is reported as
+SAVINGS instead of spend: `categories.is_savings` excludes it from
+`spend_total_cents`/`spend_by_category` and sums it into
+`savings_total_cents`/`savings_by_category`, mirroring how `Transfer` is a
+sibling bucket to spend rather than part of it.
 """
 from __future__ import annotations
 
@@ -184,16 +188,23 @@ def uncategorized_spend(conn: sqlite3.Connection, month: str) -> dict:
 
 
 def monthly_trend(conn: sqlite3.Connection, limit: int = 24) -> list[dict]:
-    """Spend AND income per month (most recent `limit` months), oldest-first."""
+    """Spend AND income per month (most recent `limit` months), oldest-first.
+
+    "Spend" excludes the structural categories AND floor-marked savings
+    categories (e.g. Investments) — same definition as `_month_summary`'s
+    `spend_total_cents`, kept in sync via `categories.NON_SPEND_CATEGORIES`/
+    `floor_categories()` rather than a second hardcoded name list."""
+    exclude = categories.NON_SPEND_CATEGORIES | categories.floor_categories(conn=conn)
+    placeholders = ",".join("?" for _ in exclude)
     rows = conn.execute(
-        "SELECT substr(posted_date,1,7) AS month, "
-        "SUM(CASE WHEN amount_cents < 0 "
-        "    AND category NOT IN ('Income','Transfer','Uncategorized') "
-        "    THEN -amount_cents ELSE 0 END) AS spent, "
-        "SUM(CASE WHEN category = 'Income' THEN amount_cents ELSE 0 END) AS income "
-        "FROM transactions WHERE status = 'posted' "
-        "GROUP BY month ORDER BY month DESC LIMIT ?",
-        (limit,),
+        f"SELECT substr(posted_date,1,7) AS month, "
+        f"SUM(CASE WHEN amount_cents < 0 "
+        f"    AND category NOT IN ({placeholders}) "
+        f"    THEN -amount_cents ELSE 0 END) AS spent, "
+        f"SUM(CASE WHEN category = ? THEN amount_cents ELSE 0 END) AS income "
+        f"FROM transactions WHERE status = 'posted' "
+        f"GROUP BY month ORDER BY month DESC LIMIT ?",
+        (*exclude, categories.INCOME, limit),
     ).fetchall()
     return [{"month": r["month"], "spend_cents": int(r["spent"] or 0),
              "income_cents": int(r["income"] or 0)} for r in reversed(rows)]
@@ -211,13 +222,20 @@ def month_summary(month: str | None = None, conn: sqlite3.Connection | None = No
 
 def _month_summary(conn: sqlite3.Connection, month: str) -> dict:
     by_cat = _posted_by_category(conn, month)
+    floor_set = categories.floor_categories(conn=conn)
 
     spend_by_category = {
         cat: -total  # outflow magnitude as positive dollars
         for cat, total in by_cat.items()
-        if categories.is_spend(cat)
+        if categories.is_spend(cat) and not categories.is_floor(cat, floor_set=floor_set)
+    }
+    savings_by_category = {
+        cat: -total
+        for cat, total in by_cat.items()
+        if categories.is_savings(cat, floor_set=floor_set)
     }
     spend_total = sum(spend_by_category.values())
+    savings_total = sum(savings_by_category.values())
     income_cents = by_cat.get(categories.INCOME, 0)
     transfer_cents = by_cat.get(categories.TRANSFER, 0)
 
@@ -227,7 +245,8 @@ def _month_summary(conn: sqlite3.Connection, month: str) -> dict:
     else:
         prev = prev_month(month)
         prev_spend = sum(
-            -t for c, t in _posted_by_category(conn, prev).items() if categories.is_spend(c)
+            -t for c, t in _posted_by_category(conn, prev).items()
+            if categories.is_spend(c) and not categories.is_floor(c, floor_set=floor_set)
         )
 
     return {
@@ -235,6 +254,9 @@ def _month_summary(conn: sqlite3.Connection, month: str) -> dict:
         "spend_total_cents": spend_total,
         "spend_by_category": dict(sorted(spend_by_category.items(),
                                          key=lambda kv: kv[1], reverse=True)),
+        "savings_total_cents": savings_total,
+        "savings_by_category": dict(sorted(savings_by_category.items(),
+                                           key=lambda kv: kv[1], reverse=True)),
         "income_cents": income_cents,
         "transfer_cents": transfer_cents,
         "prev_month": prev,
