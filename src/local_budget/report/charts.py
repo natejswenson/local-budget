@@ -26,15 +26,22 @@ def _esc(s: object) -> str:
 
 # ── recipe 1: stat row ────────────────────────────────────────────────────────
 def stat_row(summary: dict) -> str:
-    """Spent / Income / Net tiles from reports.month_summary data. Net has no
-    dedicated field, so it's computed here from the same integer cents the old
-    recipe extracted — formatting still goes through money()."""
+    """Spent / [Savings] / Income / Net tiles from reports.month_summary data.
+    Net has no dedicated field, so it's computed here from the same integer
+    cents the old recipe extracted — formatting still goes through money().
+    Savings (floor-marked categories like Investments — money relocated, not
+    spent) is its own tile, shown only when present, and is NOT subtracted
+    from Net: Net = income - spent answers "did ordinary spending stay under
+    income," independent of how much also went to savings that month."""
     spent = int(summary["spend_total_cents"])
     income = int(summary["income_cents"])
+    savings = int(summary.get("savings_total_cents") or 0)
     net = income - spent
     net_color = _CRITICAL if net < 0 else _GOOD
-    tiles = [
-        ("Spent", money(spent), "inherit"),
+    tiles = [("Spent", money(spent), "inherit")]
+    if savings:
+        tiles.append(("Savings", money(savings), "inherit"))
+    tiles += [
         ("Income", money(income), "inherit"),
         ("Net", money(net), net_color),
     ]
