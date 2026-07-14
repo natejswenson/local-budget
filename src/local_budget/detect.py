@@ -29,6 +29,13 @@ def _month_index(iso: str) -> int:
     return y * 12 + (m - 1)
 
 
+def _merchant_key(r: dict) -> str:
+    """The grouping key for recurring/anomaly detection: the canonical brand
+    name when known (collapses bank-descriptor drift, e.g. "HLU HULU.COM
+    BILL"/"HULU"/"HULU SANTA MONICA" -> "Hulu"), else the raw merchant_norm."""
+    return r.get("canonical_merchant") or r["merchant_norm"]
+
+
 def find_recurring(rows: list[dict]) -> list[dict]:
     """Recurring bills/subscriptions: a merchant that recurs across most months of
     its active span at a roughly-periodic cadence.
@@ -40,7 +47,7 @@ def find_recurring(rows: list[dict]) -> list[dict]:
     """
     by_merchant: dict[str, list[dict]] = {}
     for r in _spend_rows(rows):
-        by_merchant.setdefault(r["merchant_norm"], []).append(r)
+        by_merchant.setdefault(_merchant_key(r), []).append(r)
 
     out: list[dict] = []
     for merchant, items in by_merchant.items():
@@ -80,7 +87,7 @@ def find_anomalies(rows: list[dict], sd_threshold: float = ANOMALY_DEFAULT_SD) -
     """
     by_merchant: dict[str, list[dict]] = {}
     for r in _spend_rows(rows):
-        by_merchant.setdefault(r["merchant_norm"], []).append(r)
+        by_merchant.setdefault(_merchant_key(r), []).append(r)
 
     out: list[dict] = []
     for merchant, items in by_merchant.items():
@@ -106,7 +113,7 @@ def find_anomalies(rows: list[dict], sd_threshold: float = ANOMALY_DEFAULT_SD) -
 def posted_rows() -> list[dict]:
     with db.connect() as conn:
         rows = conn.execute(
-            "SELECT posted_date, amount_cents, merchant_norm, category "
+            "SELECT posted_date, amount_cents, merchant_norm, canonical_merchant, category "
             "FROM transactions WHERE status = 'posted'"
         ).fetchall()
     return [dict(r) for r in rows]
