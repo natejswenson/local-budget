@@ -49,9 +49,13 @@ def month_anomalies(anomalies: list[dict], month: str,
     ]
 
 
-def _matches(merchant_norm: str, recurring_key: str) -> bool:
+def _matches(txn: dict, recurring_key: str) -> bool:
+    merchant_norm = txn.get("merchant_norm") or ""
     if merchant_norm == UNKNOWN_MERCHANT:
         return False
+    canonical = txn.get("canonical_merchant")
+    if canonical and canonical == recurring_key:
+        return True
     return (merchant_norm == recurring_key
             or merchant_norm in MERCHANT_ALIASES.get(recurring_key, frozenset()))
 
@@ -74,7 +78,7 @@ def month_recurring(recurring: list[dict], txns: list[dict],
     for rec in recurring:
         matches = [
             t for t in txns
-            if _matches(t.get("merchant_norm") or "", rec["merchant"])
+            if _matches(t, rec["merchant"])
             and str(t.get("posted_date", "")).startswith(f"{month}-")
             and int(t.get("amount_cents") or 0) < 0
             and t.get("category") in BILL_LIKE_CATEGORIES
