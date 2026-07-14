@@ -159,17 +159,25 @@ async def get_month_summary(args: dict, conn) -> dict:
     conflicts = _conflicts_for(conn, month)
     uncategorized = _uncategorized_for(conn, month)
     by_cat = {r["category"] or "Uncategorized": int(r["total"] or 0) for r in rows}
-    spend = {c: -t for c, t in by_cat.items() if categories.is_spend(c)}
+    floor_set = categories.floor_categories(conn=conn)
+    spend = {c: -t for c, t in by_cat.items()
+             if categories.is_spend(c) and not categories.is_floor(c, floor_set=floor_set)}
+    savings = {c: -t for c, t in by_cat.items() if categories.is_savings(c, floor_set=floor_set)}
     spend_total = sum(spend.values())
+    savings_total = sum(savings.values())
     income = by_cat.get(categories.INCOME, 0)
     data = {
         "month": month, "spend_total_cents": spend_total,
         "spend_by_category": dict(sorted(spend.items(), key=lambda kv: kv[1], reverse=True)),
+        "savings_total_cents": savings_total,
+        "savings_by_category": dict(sorted(savings.items(), key=lambda kv: kv[1], reverse=True)),
         "income_cents": income, "transfer_cents": by_cat.get(categories.TRANSFER, 0),
         "unresolved_conflicts": conflicts, "uncategorized_spend": uncategorized,
     }
     lines = [f"## {month}",
-             f"Spent **{render.money(spend_total)}** · Income **{render.money(income)}** · "
+             f"Spent **{render.money(spend_total)}**"
+             + (f" · Savings **{render.money(savings_total)}**" if savings_total else "")
+             + f" · Income **{render.money(income)}** · "
              f"Net **{render.money(income - spend_total)}**", ""]
     if spend:
         pct_total = sum(abs(v) for v in spend.values()) or 1
@@ -180,6 +188,11 @@ async def get_month_summary(args: dict, conn) -> dict:
                   render.table(cat_rows, [("Category", "Category"), ("Spent", "Spent"), ("%", "%")],
                                numbered=True,
                                drill_hint="Reply with a row number to see that category's transactions.")]
+    if savings:
+        sav_rows = [{"Category": cat, "Amount": render.money(cents)}
+                    for cat, cents in sorted(savings.items(), key=lambda kv: kv[1], reverse=True)]
+        lines += ["", "**Savings**",
+                  render.table(sav_rows, [("Category", "Category"), ("Amount", "Amount")])]
     lines += _flag_lines(conflicts, uncategorized)
     lines += _empty_db_hint(conn)
     return {"data": data, "rendered": "\n".join(lines)}
@@ -192,15 +205,25 @@ async def get_category_breakdown(args: dict, conn) -> dict:
                        "FROM transactions WHERE status = 'posted' AND posted_date LIKE ? "
                        "GROUP BY category ORDER BY spent DESC", (f"{month}-%",))
     conflicts = _conflicts_for(conn, month)
-    breakdown = [r for r in rows if categories.is_spend(r["category"])]
+    floor_set = categories.floor_categories(conn=conn)
+    breakdown = [r for r in rows if categories.is_spend(r["category"])
+                 and not categories.is_floor(r["category"], floor_set=floor_set)]
+    savings = [r for r in rows if categories.is_savings(r["category"], floor_set=floor_set)]
     disp = [{"Category": r["category"], "Spent": render.money(int(r["spent"])), "#": r["n"]}
             for r in breakdown]
-    rendered = "\n".join([f"## {month} — by category",
-                          render.table(disp, [("Category", "Category"), ("Spent", "Spent"), ("#", "#")],
-                                       numbered=True,
-                                       drill_hint="Reply with a row number to drill into that category's transaction list."),
-                          *_flag_lines(conflicts)])
-    return {"data": {"month": month, "breakdown": breakdown, "unresolved_conflicts": conflicts},
+    sections = [f"## {month} — by category",
+               render.table(disp, [("Category", "Category"), ("Spent", "Spent"), ("#", "#")],
+                             numbered=True,
+                             drill_hint="Reply with a row number to drill into that category's transaction list.")]
+    if savings:
+        sav_disp = [{"Category": r["category"], "Amount": render.money(int(r["spent"])), "#": r["n"]}
+                    for r in savings]
+        sections += ["", "**Savings**",
+                    render.table(sav_disp, [("Category", "Category"), ("Amount", "Amount"), ("#", "#")])]
+    sections += _flag_lines(conflicts)
+    rendered = "\n".join(sections)
+    return {"data": {"month": month, "breakdown": breakdown, "savings": savings,
+                     "unresolved_conflicts": conflicts},
             "rendered": rendered}
 
 
@@ -303,7 +326,7 @@ async def compare_periods(args: dict, conn) -> dict:
 
 @_with_ro_conn
 async def recurring_charges(_args: dict, conn) -> dict:
-    rows = _rows(conn, "SELECT posted_date, amount_cents, merchant_norm, category "
+    rows = _rows(conn, "SELECT posted_date, amount_cents, merchant_norm, canonical_merchant, category "
                        "FROM transactions WHERE status = 'posted'")
     found = detect.find_recurring(rows)
     disp = [{"Merchant": r.get("merchant") or "—", "Amount": render.money(int(r["avg_amount_cents"])),
@@ -318,7 +341,7 @@ async def recurring_charges(_args: dict, conn) -> dict:
 @_with_ro_conn
 async def find_anomalies(args: dict, conn) -> dict:
     sd = float(args.get("sd_threshold") or detect.ANOMALY_DEFAULT_SD)
-    rows = _rows(conn, "SELECT posted_date, amount_cents, merchant_norm, category "
+    rows = _rows(conn, "SELECT posted_date, amount_cents, merchant_norm, canonical_merchant, category "
                        "FROM transactions WHERE status = 'posted'")
     # Detection always runs over FULL history (per-merchant baselines need it);
     # month/limit only scope which flagged rows are returned — without them the

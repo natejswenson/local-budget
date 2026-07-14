@@ -24,7 +24,7 @@ def _month_txns(month: str) -> list[dict]:
     projection only (merchant_norm, cents, date, category)."""
     with db.connect() as conn:
         rows = conn.execute(
-            "SELECT merchant_norm, amount_cents, posted_date, category "
+            "SELECT merchant_norm, canonical_merchant, amount_cents, posted_date, category "
             "FROM transactions WHERE status='posted' AND posted_date LIKE ?",
             (f"{month}-%",)).fetchall()
     return [dict(r) for r in rows]
