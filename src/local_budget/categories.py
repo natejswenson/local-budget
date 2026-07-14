@@ -208,6 +208,14 @@ def is_off_track(category: str, actual_cents: int, limit_cents: int, conn=None,
     return off_track_delta(category, actual_cents, limit_cents, conn=conn, floor_set=floor_set) > 0
 
 
+def is_savings(category: str | None, conn=None, floor_set: frozenset[str] | None = None) -> bool:
+    """True if `category` should be reported as savings rather than spend: a
+    spend category that's also floor-marked (e.g. Investments) — money that
+    left checking but is still the user's, just relocated. Excluded from
+    spend totals the same way `Transfer` is; see `reports.py::_month_summary`."""
+    return is_spend(category) and is_floor(category, conn=conn, floor_set=floor_set)
+
+
 def off_track_label(category: str, *, conn=None, floor_set: frozenset[str] | None = None,
                     under: str = "UNDER", over: str = "OVER") -> str:
     """Direction-aware label for a category currently flagged off-track:

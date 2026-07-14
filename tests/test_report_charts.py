@@ -55,6 +55,18 @@ def test_stat_row_golden_and_net_color():
     _check_golden("stat_row.html", out)
 
 
+def test_stat_row_savings_tile_shown_and_not_subtracted_from_net():
+    # No savings_total_cents key (or zero) -> no Savings tile, byte-identical
+    # to the no-floor-categories case (golden fixture above has neither key).
+    assert "Savings" not in charts.stat_row(_SUMMARY)
+    out = charts.stat_row({"spend_total_cents": 262723, "savings_total_cents": 1300000,
+                           "income_cents": 645727})
+    assert "Savings" in out and "$13,000.00" in out
+    # Net = income - spent only; savings is NOT subtracted (Spent 2627.23,
+    # Income 6457.27 -> Net 3830.04, positive despite the $13k also moved).
+    assert "$3,830.04" in out and "var(--report-good)" in out
+
+
 def test_spend_vs_budget_golden_and_rules():
     out = charts.spend_vs_budget(_OVERVIEW)
     # row set: Housing (zero-spend ceiling) and Refunds (negative) are out;
