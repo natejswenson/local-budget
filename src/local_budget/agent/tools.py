@@ -303,7 +303,7 @@ async def compare_periods(args: dict, conn) -> dict:
 
 @_with_ro_conn
 async def recurring_charges(_args: dict, conn) -> dict:
-    rows = _rows(conn, "SELECT posted_date, amount_cents, merchant_norm, category "
+    rows = _rows(conn, "SELECT posted_date, amount_cents, merchant_norm, canonical_merchant, category "
                        "FROM transactions WHERE status = 'posted'")
     found = detect.find_recurring(rows)
     disp = [{"Merchant": r.get("merchant") or "—", "Amount": render.money(int(r["avg_amount_cents"])),
@@ -318,7 +318,7 @@ async def recurring_charges(_args: dict, conn) -> dict:
 @_with_ro_conn
 async def find_anomalies(args: dict, conn) -> dict:
     sd = float(args.get("sd_threshold") or detect.ANOMALY_DEFAULT_SD)
-    rows = _rows(conn, "SELECT posted_date, amount_cents, merchant_norm, category "
+    rows = _rows(conn, "SELECT posted_date, amount_cents, merchant_norm, canonical_merchant, category "
                        "FROM transactions WHERE status = 'posted'")
     # Detection always runs over FULL history (per-merchant baselines need it);
     # month/limit only scope which flagged rows are returned — without them the
