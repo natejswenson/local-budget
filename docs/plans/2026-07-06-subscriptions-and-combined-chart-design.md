@@ -35,7 +35,7 @@ issues surfaced:
    list of 18 legitimate spend categories — it's a 3-item *blocklist*
    (Income, Transfer, Uncategorized) that returns True for every other
    category, including every custom category the user has ever created
-   (Kid Activities, Large Purchases, Lawyer, Sports, Home Improvement,
+   (Kid Activities, Large Purchases, Legal, Sports, Home Improvement,
    Sewer/Water/Trash, State529, etc.). That miscounted mental model of the old
    guard — treating it as a fixed set of legitimate spend categories rather
    than "everything that isn't structural" — is exactly why
