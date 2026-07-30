@@ -153,7 +153,7 @@ def _txn_table(rows: list[dict]) -> str:
 @_with_ro_conn
 async def get_month_summary(args: dict, conn) -> dict:
     month = _month_or_current(args.get("month"))
-    rows = _rows(conn, "SELECT category, SUM(amount_cents) AS total FROM transactions "
+    rows = _rows(conn, "SELECT category, SUM(amount_cents) AS total FROM effective_txns "
                        "WHERE status = 'posted' AND posted_date LIKE ? GROUP BY category",
                  (f"{month}-%",))
     conflicts = _conflicts_for(conn, month)
@@ -201,8 +201,8 @@ async def get_month_summary(args: dict, conn) -> dict:
 @_with_ro_conn
 async def get_category_breakdown(args: dict, conn) -> dict:
     month = _month_or_current(args.get("month"))
-    rows = _rows(conn, "SELECT category, SUM(-amount_cents) AS spent, COUNT(*) AS n "
-                       "FROM transactions WHERE status = 'posted' AND posted_date LIKE ? "
+    rows = _rows(conn, "SELECT category, SUM(-amount_cents) AS spent, COUNT(DISTINCT txn_id) AS n "
+                       "FROM effective_txns WHERE status = 'posted' AND posted_date LIKE ? "
                        "GROUP BY category ORDER BY spent DESC", (f"{month}-%",))
     conflicts = _conflicts_for(conn, month)
     floor_set = categories.floor_categories(conn=conn)
@@ -297,7 +297,7 @@ async def compare_periods(args: dict, conn) -> dict:
     a, b = args["month_a"], args["month_b"]
 
     def by_cat(month: str) -> dict[str, int]:
-        rows = _rows(conn, "SELECT category, SUM(-amount_cents) AS s FROM transactions "
+        rows = _rows(conn, "SELECT category, SUM(-amount_cents) AS s FROM effective_txns "
                            "WHERE status = 'posted' AND posted_date LIKE ? AND amount_cents < 0 "
                            "GROUP BY category", (f"{month}-%",))
         return {r["category"]: int(r["s"]) for r in rows if categories.is_spend(r["category"])}
@@ -594,6 +594,53 @@ async def amazon_coverage(args: dict, conn) -> dict:
     return {"data": cov, "rendered": rendered}
 
 
+@_with_ro_conn
+async def propose_split(args: dict, conn) -> dict:
+    """Item lines behind a charge, scaled to what was actually charged.
+
+    Read-only and category-free ON PURPOSE. There is no product category in the
+    source — only titles, ASINs and sellers — so assigning one is the agent's
+    judgment, stated as such and confirmed by the user before `apply_split`
+    writes anything.
+    """
+    from ..connectors.amazon import split as az_split
+    try:
+        p = az_split.propose(conn, int(args["txn_id"]))
+    except Exception as e:
+        return _err(str(e))
+    rows = [{"ASIN": i["asin"] or "—", "Amount": render.money(i["suggested_cents"]),
+             "Qty": i["quantity"], "Item": (i["title"] or "—")[:52]} for i in p["items"]]
+    note = ("\n\n_Amounts are each item's share of the charge, scaled from a list "
+            f"total of {render.money(p['item_total_cents'])}; they will not equal "
+            "the sticker price._" if p["scaled"] else "")
+    rendered = (f"## Proposed split — {render.money(p['charge_cents'])} "
+                f"{p['txn']['merchant_norm']}\n"
+                + render.table(rows, [("ASIN", "ASIN"), ("Amount", "Amount"),
+                                      ("Qty", "Qty"), ("Item", "Item")]) + note)
+    return {"data": p, "rendered": rendered}
+
+
+@_with_rw_conn
+async def apply_split(args: dict, conn) -> dict:
+    """Write a confirmed split. Lines must sum to the charge exactly.
+
+    The sum check is in `splits.apply`, not here — a split set that does not
+    sum to its parent invents or destroys money in every total downstream, so
+    it is refused at the one place every writer goes through.
+    """
+    from .. import splits as splits_mod
+    txn_id = int(args["txn_id"])
+    lines = [{"amount_cents": int(ln["amount_cents"]), "category": ln["category"],
+              "subcategory": ln.get("subcategory"), "item_ref": ln.get("item_ref"),
+              "note": ln.get("note")} for ln in args["lines"]]
+    n = splits_mod.apply(conn, txn_id, lines, source=args.get("source") or "manual")
+    parts = "\n".join(f"- {render.money(ln['amount_cents'])} → **{ln['category']}**"
+                      for ln in lines)
+    return {"data": {"txn_id": txn_id, "lines": n},
+            "rendered": f"## Split applied — transaction {txn_id}\n\n{parts}\n\n"
+                        f"Category totals move; the month's total spend does not."}
+
+
 async def income_by_source(args: dict) -> dict:
     data = reports.income_by_source(args.get("month"))
     rows = [{"Source": r["source"], "Amount": render.money(r["total_cents"]), "#": r["count"]} for r in data]
@@ -794,6 +841,16 @@ TOOL_SPECS: list[ToolSpec] = [
              "Check this before trusting an Amazon breakdown — a low number means most of the "
              "spend is still unexplained.",
              _obj({"month": {"type": "string"}}), amazon_coverage),
+    ToolSpec("propose_split", "Item lines behind an Amazon charge, each scaled to its "
+             "share of what was actually charged. Read-only. Assign a category to every "
+             "line yourself, show the user, and only then call apply_split.",
+             _obj({"txn_id": {"type": "integer"}}, ["txn_id"]), propose_split),
+    ToolSpec("apply_split", "Split one charge across categories. Lines MUST sum to the "
+             "charge exactly or the write is refused. Confirm with the user first — a "
+             "wrong allocation silently misstates a budget.",
+             _obj({"txn_id": {"type": "integer"},
+                   "lines": {"type": "array", "items": {"type": "object"}},
+                   "source": {"type": "string"}}, ["txn_id", "lines"]), apply_split),
     ToolSpec("add_custom_category", "Add a user-defined spend category.",
              _obj({"name": {"type": "string"}}, ["name"]), add_custom_category),
     ToolSpec("remove_category", "Remove a spend category by MERGING it into another (re-points its "
