@@ -1,0 +1,26 @@
+{
+  "workflowPattern": "dev-main-promotion",
+  "branches": { "main": "main", "dev": "dev" },
+  "featureBranchPrefix": "feature/",
+  "requiredChecks": ["validate"],
+  "mergeMethod": {
+    "featureToDevMethod": "squash",
+    "devToMainMethod": "merge"
+  },
+  "protectionOwner": "shipflow",
+  "release": {
+    "enabled": true,
+    "mode": "manual-gate",
+    "tool": "release-please",
+    "layout": "manifest",
+    "releaseCredential": "SHIPFLOW_TOKEN"
+  },
+  "branchCleanup": {
+    "deleteOnMerge": true,
+    "protectedBranches": ["dev", "main"]
+  },
+  "enforceAdmins": false,
+  "renderedTemplateHashes": {
+    ".github/workflows/dev-to-main-automerge.yml": "b13790068ba0b61f39970a7770fdf89945f12915d7a09421c134d707caec036a"
+  }
+}
