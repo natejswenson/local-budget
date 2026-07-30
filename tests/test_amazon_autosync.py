@@ -116,6 +116,46 @@ def test_even_a_failure_inside_the_db_is_swallowed(env, monkeypatch):
     assert autosync.maybe_sync("2026-07")["status"] == "failed"
 
 
+# ── sync orchestration (fetch mocked; no network) ────────────────────────────
+def test_a_failed_sync_still_leaves_evidence_in_the_run_ledger(env, monkeypatch):
+    """db.connect() rolls back on exception, which would take the failure
+    record with it — so the failed run is written in a SECOND, independent
+    transaction. Reasoned about when written; asserted here, because a run
+    ledger that silently loses every failure is worse than none."""
+    from local_budget.connectors.amazon import sync
+
+    monkeypatch.setattr(sync.fetch, "fetch_orders", lambda **k: [object()])
+    monkeypatch.setattr(sync.fetch, "fetch_transactions", lambda **k: [])
+    monkeypatch.setattr(sync.store, "store_orders",
+                        lambda *a: (_ for _ in ()).throw(RuntimeError("boom mid-write")))
+
+    with pytest.raises(RuntimeError, match="boom mid-write"):
+        sync.run_sync(days=30)
+
+    with db.connect() as conn:
+        row = conn.execute("SELECT status, error_message FROM amazon_sync_runs "
+                           "ORDER BY sync_run_id DESC LIMIT 1").fetchone()
+    assert row is not None, "the failure was rolled back with the transaction"
+    assert row["status"] == "failed" and "boom mid-write" in row["error_message"]
+
+
+def test_an_aborted_vacuous_sync_writes_nothing_at_all(env, monkeypatch):
+    """A broken parser must leave NO trace — not even a run row. There is
+    nothing to unwind because nothing began, and a 'failed' row here would be
+    noise on every render for an account that simply has no orders."""
+    from local_budget.connectors.amazon import store, sync
+
+    monkeypatch.setattr(sync.fetch, "fetch_orders", lambda **k: [])
+    monkeypatch.setattr(sync.fetch, "fetch_transactions", lambda **k: [])
+    monkeypatch.setattr(sync, "_ledger_has_amazon_charges", lambda *a: True)
+
+    with pytest.raises(store.SyncAborted):
+        sync.run_sync(days=30)
+
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) c FROM amazon_sync_runs").fetchone()["c"] == 0
+
+
 def test_a_failed_prior_run_does_not_count_as_fresh(env, monkeypatch):
     """Only a SUCCESSFUL run suppresses a retry — otherwise one broken sync
     would suppress every retry for 12 hours and hide the breakage."""
