@@ -98,6 +98,52 @@ def test_spend_vs_budget_golden_and_rules():
     _check_golden("spend_vs_budget.html", out)
 
 
+def test_floor_rows_do_not_set_the_scale_and_clamp_with_a_clip_mark():
+    """A savings transfer is money relocated, not spent, and dwarfs every real
+    spending row. Letting one set the shared scale crushed the whole chart to
+    stubs (a real $13,000 Investments row against $1,488 of Shopping)."""
+    out = charts.spend_vs_budget({"month": "2026-07", "categories": [
+        _cat("Investments", 1000000, 300000, floor=True, pct=433),
+        _cat("Shopping", 120000, 80000, over=True, pct=186),
+        _cat("Groceries", 63430, 103400, pct=61),
+    ]})
+    # scale is set by the ceiling rows: max(120000, 63430, 80000, 103400)
+    shopping = out.split("Shopping")[1].split("sb-row")[0]
+    assert 'style="width:100.0%"' in shopping        # the largest ceiling row
+    groceries = out.split("Groceries")[1].split("sb-row")[0]
+    g_fill = float(groceries.split('class="sb-fill" style="width:')[1].split("%")[0])
+    assert 40.0 < g_fill < 50.0                      # legible, not a stub
+    # the floor row clamps and says so
+    inv = out.split("Investments")[1].split("sb-row")[0]
+    assert 'style="width:100.0%"' in inv and 'class="clip"' in inv
+    assert "$10,000.00 of $3,000.00 · 433%" in inv   # the truth is in the text
+    assert out.count('class="clip"') == 1            # only the clamped row
+
+
+def test_scale_falls_back_when_every_row_is_a_floor_row():
+    """A savings-only month must still draw bars rather than divide by `or 1`
+    and render every row at a meaningless 100%."""
+    out = charts.spend_vs_budget({"month": "2026-07", "categories": [
+        _cat("Investments", 1000000, 300000, floor=True, pct=433),
+        _cat("State529", 10000, 10000, floor=True, pct=100),
+    ]})
+    ny529 = out.split("State529")[1].split("sb-row")[0]
+    ny_fill = float(ny529.split('class="sb-fill" style="width:')[1].split("%")[0])
+    assert ny_fill < 5.0                             # scaled against the $13k
+    assert 'class="clip"' not in out                 # nothing exceeds the scale
+
+
+def test_negative_spend_floor_row_keeps_its_sign_in_the_text():
+    """The bar floors at zero; the figure must not. A refund-heavy floor row
+    still short of target renders a $0-width bar and a negative amount."""
+    out = charts.spend_vs_budget({"month": "2026-07", "categories": [
+        _cat("Investments", -500, 300000, over=True, floor=True, pct=0),
+        _cat("Shopping", 120000, 80000, pct=186),
+    ]})
+    inv = out.split("Investments")[1].split("sb-row")[0]
+    assert 'style="width:0.0%"' in inv and "-$5.00" in inv
+
+
 def test_spend_vs_budget_empty():
     out = charts.spend_vs_budget({"month": "2026-06", "categories": [
         _cat("Housing", 0, 120000)]})
