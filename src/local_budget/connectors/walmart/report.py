@@ -13,9 +13,10 @@ the source is different rather than because the design is:
   history and one merchant on the statement family. They are different spending
   behaviours with different explanations, and a single bar hides that.
 
-* *A derived-charge disclosure.* Some charges here are inferred from an order
-  total rather than read from a payment line. The items are real either way; the
-  date is ours. The footer says how much of the page rests on that.
+* *A split-settlement note.* A Walmart order routinely settles as several
+  partial bank charges — one real order became five — so "orders" and
+  "charges" on this page do not correspond, and a reader comparing the two
+  counts needs to be told that rather than left to infer it.
 
 **On the "kind" grouping.** Walmart sometimes publishes its own product category
 and often does not. Where it does, this reports it; where it does not, it falls
@@ -34,7 +35,7 @@ from pathlib import Path
 from ...agent.render import money
 from ...report import brand
 from ..kinds import classify
-from .match import MERCHANT_LIKE, coverage, horizon
+from .match import MERCHANT_LIKE, horizon, split_settlements
 
 
 def gather(conn: sqlite3.Connection, since: str | None = None,
@@ -53,19 +54,18 @@ def gather(conn: sqlite3.Connection, since: str | None = None,
     # shipment — a silent double-count that inflates every total downstream.
     rows = [dict(r) for r in conn.execute(
         f"""WITH matched_orders AS (
-                SELECT c.order_number,
+                SELECT m.order_number,
                        MIN(t.posted_date) AS posted_date,
                        MIN(t.txn_id)      AS txn_id
                   FROM walmart_matches m
-                  JOIN walmart_charges c ON c.walmart_charge_id = m.walmart_charge_id
-                  JOIN transactions t    ON t.txn_id = m.txn_id
-                 WHERE c.order_number IS NOT NULL{where}
-              GROUP BY c.order_number)
+                  JOIN transactions t ON t.txn_id = m.txn_id
+                 WHERE 1=1{where}
+              GROUP BY m.order_number)
             SELECT mo.posted_date, mo.txn_id, mo.order_number,
                    o.channel, i.product_id, i.title, i.seller,
                    i.category AS source_category,
                    COALESCE(i.quantity,1) AS qty,
-                   i.unit_price_cents * COALESCE(i.quantity,1) AS line_cents
+                   i.line_price_cents AS line_cents
               FROM matched_orders mo
               JOIN walmart_orders o ON o.order_number = mo.order_number
               JOIN walmart_items i  ON i.order_number = mo.order_number""", params)]
@@ -132,7 +132,7 @@ def gather(conn: sqlite3.Connection, since: str | None = None,
         "scoped_total_cents": int(scoped["c"]), "scoped_charges": int(scoped["n"]),
         "scoped_pct": (round(int(charges["c"]) / int(scoped["c"]) * 100, 1)
                        if scoped["c"] else 0.0),
-        "derived": coverage(conn)["derived"],
+        "settlements": split_settlements(conn),
         "horizon": horizon(conn), "is_scoped": bool(since or until),
     }
 
@@ -211,7 +211,7 @@ def kind_caption(d: dict) -> str:
 
 def build_html(d: dict, theme: dict) -> str:
     lo, hi = d["span"]
-    hz, dv = d["horizon"], d["derived"]
+    hz, st = d["horizon"], d["settlements"]
     ident = theme["identity"]
 
     stats = "".join(
@@ -238,15 +238,14 @@ def build_html(d: dict, theme: dict) -> str:
                 f'pushes the other way — the two are different figures, not an '
                 f'error.</p>')
 
-    # A derived charge is an inference about WHEN the card was hit. Saying so is
-    # the difference between reporting a measurement and reporting a guess with
-    # the same typeface.
-    derived_note = ""
-    if dv["derived"]:
-        derived_note = (
-            f' · {dv["derived"]} of {dv["matched"]} matched charges '
-            f'({money(dv["derived_cents"])}) were dated from the order rather '
-            f'than from a payment line')
+    # Orders and charges do not correspond here, and the two counts sit a few
+    # lines apart on this page. Left unsaid, a reader reconciles them and
+    # concludes the report is wrong.
+    settle_note = ""
+    if st["split_orders"]:
+        settle_note = (
+            f' · {st["split_orders"]} of {st["orders"]} orders settled as more '
+            f'than one charge (up to {st["max_parts"]})')
 
     return (
         '<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
@@ -290,7 +289,7 @@ def build_html(d: dict, theme: dict) -> str:
         f'{d["charge_count"]} of {d["scoped_charges"]} Walmart charges in this '
         f'period reconciled · {d["scoped_pct"]}% of the '
         f'{money(d["scoped_total_cents"])} charged has item detail'
-        f'{derived_note}'
+        f'{settle_note}'
         # The horizon is a property of the whole dataset, so it only belongs on
         # an all-history report — on a scoped one it describes something else.
         + ((f' · item detail reaches back to {_esc(hz["earliest"])}'

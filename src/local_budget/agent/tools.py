@@ -616,7 +616,8 @@ async def walmart_breakdown(args: dict, conn) -> dict:
         return {"data": {"month": month, "items": [], "coverage": cov},
                 "rendered": f"## Walmart items — {month}\n\nNo matched Walmart items. "
                             "Run `budget walmart sync` to pull order detail."}
-    lines = [(i, (i["unit_price_cents"] or 0) * (i["quantity"] or 1)) for i in items]
+    # Walmart publishes a LINE total, quantity already included — no multiply.
+    lines = [(i, i["line_price_cents"] or 0) for i in items]
     orders = {i["order_number"] for i in items}
     rows = [{"Date": i["posted_date"],
              "Amount": render.money(line),
@@ -666,12 +667,14 @@ async def walmart_coverage(args: dict, conn) -> dict:
             rendered += (f"\n- {name}: **{c['coverage_pct']}%** "
                          f"({render.money(c['matched_cents'])} of "
                          f"{render.money(c['total_cents'])})")
-    dv = cov["derived"]
-    if dv["derived"]:
-        rendered += (f"\n- {dv['derived']} of {dv['matched']} matched charges "
-                     f"({render.money(dv['derived_cents'])}) were dated from the "
-                     f"order rather than from a payment line — the items are "
-                     f"real, the settle date is inferred")
+    st = cov["split_settlements"]
+    if st["split_orders"]:
+        # Orders and charges do not correspond here. An agent quoting both
+        # without this reads as though it has miscounted one of them.
+        rendered += (f"\n- {st['split_orders']} of {st['orders']} matched orders "
+                     f"settled as MORE THAN ONE bank charge (up to "
+                     f"{st['max_parts']}) — order count and charge count are "
+                     f"different things here, not a discrepancy")
     if hz["has_backlog"]:
         # Report the window, not just the number. A low percentage reads as bad
         # data unless it says the older charges have nothing to match against.

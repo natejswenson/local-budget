@@ -7,9 +7,9 @@
  * Its own file rather than a shared one with the Amazon report, deliberately.
  * A template that exists to be edited per-document should be editable per
  * document: the two reports answer different questions (this one carries a
- * channel split and a derived-charge disclosure that Amazon has no equivalent
- * of) and will drift apart on purpose. Shared LOGIC lives in shared modules;
- * this is not logic.
+ * channel split and a split-settlement note that Amazon has no equivalent of)
+ * and will drift apart on purpose. Shared LOGIC lives in shared modules; this
+ * is not logic.
  *
  * It deliberately holds NO colour values. Colour belongs to the PRESS brand in
  * report/brand.py (paper / ink / dim / accent / ink-mid), which is itself

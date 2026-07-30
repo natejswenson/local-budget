@@ -6,9 +6,10 @@ are imported facts on the same footing as bank transactions, so the agent can
 read them and can never write them — the authorizer denies writes to any table
 not in `_AGENT_WRITE_TABLES`, and none of the `walmart_*` tables are listed.
 
-Simpler than the Amazon equivalent in one way: there is only one thing to
-fetch. Amazon pulls orders and a separate transaction list; Walmart's charges
-come out of the orders themselves (see `store._store_charges`).
+Simpler than the Amazon equivalent in one way: there is only one thing to fetch.
+Amazon pulls orders and a separate transaction list; Walmart publishes no charge
+list at all, so `match.py` recovers each order's settlement by summing bank rows
+against the order total.
 """
 from __future__ import annotations
 
@@ -69,12 +70,12 @@ def store_and_match(orders: list, *, scope: str, since: str) -> dict:
         result = match.run(conn)
         store.finish_run(conn, run_id, status="success",
                          orders_seen=len(orders), orders_upserted=n["orders"],
-                         charges_seen=n["charges"], charges_upserted=n["charges"])
+                         items_seen=n["items"], items_upserted=n["items"])
         return {
             "sync_run_id": run_id, "scope": scope,
-            "orders": n["orders"], "charges": n["charges"],
+            "orders": n["orders"], "items": n["items"],
             "matched": result["matched"], "exact": result["exact"],
-            "windowed": result["windowed"],
+            "split": result["split"],
             "ambiguous": len(result["ambiguous"]),
             "coverage": match.coverage(conn),
             "horizon": match.horizon(conn),

@@ -919,9 +919,9 @@ def walmart_sync(days: int, headed: bool) -> None:
     except Exception as e:
         raise click.ClickException(str(e)) from e
     cov = r["coverage"]
-    click.echo(f"  ✓ {r['orders']} orders · {r['charges']} charges")
+    click.echo(f"  ✓ {r['orders']} orders · {r['items']} item lines")
     click.echo(f"    matched {r['matched']} "
-               f"({r['exact']} exact, {r['windowed']} windowed)"
+               f"({r['exact']} single-charge, {r['split']} split settlement)"
                + (f" · {r['ambiguous']} need confirming" if r["ambiguous"] else ""))
     click.echo(f"    coverage {cov['coverage_pct']}% of Walmart spend "
                f"({dollars(cov['matched_cents'])} of {dollars(cov['total_cents'])})")
@@ -998,11 +998,10 @@ def walmart_status(month: str | None) -> None:
         if c["total_cents"]:
             click.echo(f"    {name:<9} {c['coverage_pct']:>5}%  "
                        f"({dollars(c['matched_cents'])} of {dollars(c['total_cents'])})")
-    dv = cov["derived"]
-    if dv["derived"]:
-        click.echo(f"  {dv['derived']} of {dv['matched']} matched charges "
-                   f"({dollars(dv['derived_cents'])}) were dated from the order, "
-                   f"not from a payment line")
+    st = cov["split_settlements"]
+    if st["split_orders"]:
+        click.echo(f"  {st['split_orders']} of {st['orders']} matched orders "
+                   f"settled as more than one charge (up to {st['max_parts']})")
     # Without this line a low percentage is unreadable — it looks like a data
     # quality problem when it is a window problem.
     if hz["has_backlog"]:
@@ -1068,10 +1067,10 @@ def walmart_items(month: str | None) -> None:
     click.echo(f"Walmart items — {month or 'all time'}")
     click.echo(f"  {'DATE':<11} {'AMOUNT':>10}  ITEM")
     for r in rows:
-        line = (r["unit_price_cents"] or 0) * (r["quantity"] or 1)
         qty = f" x{r['quantity']}" if (r["quantity"] or 1) > 1 else ""
         title = (r["title"] or "—")[:58]
-        click.echo(f"  {r['posted_date']:<11} {dollars(line):>10}  {title}{qty}")
+        click.echo(f"  {r['posted_date']:<11} "
+                   f"{dollars(r['line_price_cents'] or 0):>10}  {title}{qty}")
     if cov["coverage_pct"] < 100:
         click.echo(f"\n  ! {100 - cov['coverage_pct']:.1f}% of Walmart spend is still "
                    f"unexplained — `budget walmart status`")

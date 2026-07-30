@@ -34,7 +34,7 @@ def _call(name, args=None):
     return asyncio.run(tools.SPEC_BY_NAME[name].handler(args or {}))
 
 
-def _seed(*, channel="online", charges=None, items=None, bank=None):
+def _seed(*, channel="online", items=None, bank=None):
     db.init_schema()
     with db.connect() as conn:
         conn.execute("INSERT INTO accounts (account_id, acct_last4, acct_hash, "
@@ -50,14 +50,14 @@ def _seed(*, channel="online", charges=None, items=None, bank=None):
             store.store_orders(conn, [{
                 "order_number": "O1", "order_placed_date": "2026-06-03",
                 "grand_total": "80.00", "channel": channel, "detail_fetched": True,
-                "items": items, "charges": charges or []}],
+                "items": items}],
                 store.start_run(conn, "t"))
         from local_budget.connectors.walmart import match
         match.run(conn)
 
 
 def _item(title, price, **kw):
-    return {"title": title, "unit_price": price, "quantity": 1,
+    return {"title": title, "line_price": price, "quantity": 1,
             "product_id": "p1", "seller": "Walmart.com", **kw}
 
 
@@ -120,19 +120,21 @@ def test_coverage_never_renders_spend_as_a_refund():
     assert "-$" not in r["rendered"]
 
 
-def test_coverage_discloses_an_inferred_settle_date():
+def test_coverage_says_orders_and_charges_are_different_counts():
+    """An order settling as two bank rows makes "1 order / 2 charges" look like
+    an arithmetic error unless the tool says otherwise."""
+    _seed(bank=[("2026-06-03", -5000, "WALMART.COM"),
+                ("2026-06-04", -3000, "WALMART.COM")],
+          items=[_item("Bookcase", "80.00")])
+    r = _call("walmart_coverage", {"month": "2026-06"})
+    assert "settled as MORE THAN ONE bank charge" in r["rendered"]
+
+
+def test_no_such_note_when_every_order_settled_in_one_charge():
     _seed(bank=[("2026-06-03", -8000, "WALMART.COM")],
           items=[_item("Bookcase", "80.00")])
     r = _call("walmart_coverage", {"month": "2026-06"})
-    assert "the settle date is inferred" in r["rendered"]
-
-
-def test_no_inference_disclosure_when_the_charge_was_observed():
-    _seed(bank=[("2026-06-03", -8000, "WALMART.COM")],
-          items=[_item("Bookcase", "80.00")],
-          charges=[{"charged_date": "2026-06-03", "amount": "-80.00"}])
-    r = _call("walmart_coverage", {"month": "2026-06"})
-    assert "inferred" not in r["rendered"]
+    assert "MORE THAN ONE" not in r["rendered"]
 
 
 # ── propose_split across two connectors ──────────────────────────────────────

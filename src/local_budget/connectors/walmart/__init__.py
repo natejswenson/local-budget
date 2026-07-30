@@ -9,7 +9,7 @@ Layered the same way, so exactly one module touches the network:
     fetch.py    the ONLY network boundary
     parse.py    raw page payloads -> plain entity dicts
     store.py    entities -> integer-cent rows
-    match.py    reconcile against the bank ledger
+    match.py    reconcile orders against SETS of bank rows
     sync.py     orchestration
 
 **Two differences from the Amazon connector, both structural.**
@@ -19,13 +19,13 @@ Layered the same way, so exactly one module touches the network:
    `parse.py` is a layer the Amazon package does not need. Upstream fixes are
    not the maintenance story here — we are.
 
-2. *There is no charge list.* Amazon publishes its own list of card charges, at
-   exactly the granularity the bank posts them. Walmart publishes orders. An
-   order still settles as one **or several** charges, so `walmart_charges`
-   exists as the reconciliation key either way: filled from the order's payment
-   lines when they are available, and otherwise synthesized from the order total
-   and flagged `derived = 1` so no report can mistake an inference for an
-   observation.
+2. *An order is not a charge.* Amazon publishes its own list of card charges at
+   exactly the granularity the bank posts them. Walmart publishes orders — and
+   an order routinely settles as SEVERAL partial charges it never enumerates.
+   One real order became five bank rows. So `match.py` recovers the
+   settlement by subset-sum: the set of unmatched Walmart bank rows near the
+   order date that sums to its total exactly, accepted only when that set is
+   unique.
 
 See `session.py` for the standing trade-offs, which are properties of the
 approach rather than defects in it.

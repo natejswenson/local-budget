@@ -28,10 +28,11 @@ def propose(conn: sqlite3.Connection, txn_id: int) -> dict:
     tax pushes the other way — and quoting the wrong one contradicts the report
     on the same page.
 
-    A split-shipment order is a real complication here: the items belong to the
-    ORDER, and this charge may be only part of it. Scaling to the charge is what
-    keeps every cent attributed to a real item either way, and the caller is
-    told via `scaled` that the two figures are not the same number.
+    A split settlement is the normal case here, not an edge: the items belong to
+    the ORDER, and this charge is frequently only one part of what paid for it —
+    an order settling as five bank rows will propose the same item list against
+    each. Scaling to the charge keeps every cent attributed to a real item, and
+    `scaled` tells the caller the two figures are not the same number.
     """
     txn = conn.execute(
         "SELECT txn_id, posted_date, merchant_norm, amount_cents, category "
@@ -40,14 +41,13 @@ def propose(conn: sqlite3.Connection, txn_id: int) -> dict:
         raise NoOrderBehind(f"no transaction {txn_id}")
 
     rows = conn.execute(
-        """SELECT i.product_id, i.title, i.quantity, i.unit_price_cents,
+        """SELECT i.product_id, i.title, i.quantity, i.line_price_cents,
                   i.category AS source_category, o.order_number
              FROM walmart_matches m
-             JOIN walmart_charges c ON c.walmart_charge_id = m.walmart_charge_id
-             JOIN walmart_orders o  ON o.order_number = c.order_number
-             JOIN walmart_items i   ON i.order_number = o.order_number
+             JOIN walmart_orders o ON o.order_number = m.order_number
+             JOIN walmart_items i  ON i.order_number = o.order_number
             WHERE m.txn_id = ?
-         ORDER BY (i.unit_price_cents * COALESCE(i.quantity,1)) DESC""",
+         ORDER BY i.line_price_cents DESC""",
         (txn_id,)).fetchall()
     if not rows:
         raise NoOrderBehind(
@@ -57,8 +57,7 @@ def propose(conn: sqlite3.Connection, txn_id: int) -> dict:
 
     # Item prices are positive magnitudes; the charge is negative. Carry the
     # ledger's sign so the scaled lines land the right way round.
-    line_cents = [-(int(r["unit_price_cents"] or 0) * int(r["quantity"] or 1))
-                  for r in rows]
+    line_cents = [-int(r["line_price_cents"] or 0) for r in rows]
     charge = int(txn["amount_cents"])
     scaled = splits.allocate(charge, line_cents)
 

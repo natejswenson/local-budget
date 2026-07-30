@@ -5,10 +5,9 @@ dicts, so every layer below it is exercised with literals — which is the whole
 reason `fetch.py` is the only module allowed to make a request.
 
 The entity dicts below ARE the contract between `parse` and `store`. Money
-fields are plain decimal strings exactly as a page displays them; order and item
-amounts are POSITIVE magnitudes; charge amounts are LEDGER-SIGNED. The same
-convention split as the Amazon connector, and for the same reason: prices are
-not postings.
+fields are plain decimal strings exactly as a page displays them, and they are
+POSITIVE magnitudes: Walmart publishes prices, never postings. `line_price` is
+the LINE total with quantity already included, which is what the source gives.
 """
 from __future__ import annotations
 
@@ -19,17 +18,17 @@ from local_budget.connectors.walmart import match, store, sync
 
 
 def order(number="200012345678901", placed="2026-07-20", total="149.50",
-          *, items=None, charges=None, channel="online", detail=True, **kw):
+          *, items=None, channel="online", detail=True, **kw):
     o = {"order_number": number, "order_placed_date": placed,
          "grand_total": total, "channel": channel, "detail_fetched": detail,
          "payment_method": "Visa ending in 1234",
-         "items": items if items is not None else [], "charges": charges or []}
+         "items": items if items is not None else []}
     o.update(kw)
     return o
 
 
-def item(title, unit_price, qty=1, **kw):
-    it = {"title": title, "unit_price": unit_price, "quantity": qty,
+def item(title, line_price, qty=1, **kw):
+    it = {"title": title, "line_price": line_price, "quantity": qty,
           "product_id": "123456789", "seller": "Walmart.com"}
     it.update(kw)
     return it
@@ -86,8 +85,18 @@ def test_store_orders_writes_items_and_is_idempotent(conn):
     assert conn.execute("SELECT COUNT(*) c FROM walmart_orders").fetchone()["c"] == 1
     items = conn.execute("SELECT * FROM walmart_items ORDER BY line_no").fetchall()
     assert len(items) == 2, "re-sync must replace items, not duplicate them"
-    assert items[0]["unit_price_cents"] == 348      # a price, positive
+    assert items[0]["line_price_cents"] == 348      # a price, positive
     assert items[1]["quantity"] == 2
+
+
+def test_a_line_price_is_stored_as_given_not_divided_by_quantity(conn):
+    """Walmart publishes a LINE total: two bags of peanuts is one line reading
+    $14.50. Treating that as a unit price and multiplying, as the Amazon
+    connector legitimately does with its own source, doubles the line."""
+    store.store_orders(conn, [order(items=[item("Peanuts 5lb", "14.50", qty=2)])],
+                       store.start_run(conn, "t"))
+    row = conn.execute("SELECT line_price_cents, quantity FROM walmart_items").fetchone()
+    assert (row["line_price_cents"], row["quantity"]) == (1450, 2)
 
 
 def test_store_orders_skips_a_row_with_no_order_number(conn):
@@ -116,172 +125,142 @@ def test_detail_fetched_is_raised_but_never_lowered(conn):
         "SELECT detail_fetched d FROM walmart_orders").fetchone()["d"] == 1
 
 
-# ── charges: the reconciliation key Walmart does not publish ─────────────────
-def test_a_charge_is_synthesized_from_the_order_total_and_flagged_derived(conn):
-    """Walmart publishes orders, not charges. Without this the order is
-    invisible to the matcher entirely."""
-    store.store_orders(conn, [order(total="149.50")], store.start_run(conn, "t"))
-    c = conn.execute("SELECT * FROM walmart_charges").fetchone()
-    assert c["amount_cents"] == -14950, "a charge is ledger-signed: outflow negative"
-    assert c["derived"] == 1
-    assert c["charged_date"] == "2026-07-20"
-
-
-def test_an_observed_charge_supersedes_the_derived_one(conn):
-    """Otherwise the same order is counted twice — the derived row collides with
-    none of the real ones on the natural key, so it simply survives alongside."""
-    run = store.start_run(conn, "t")
-    store.store_orders(conn, [order()], run)
-    store.store_orders(conn, [order(charges=[
-        {"charged_date": "2026-07-21", "amount": "-100.00"},
-        {"charged_date": "2026-07-23", "amount": "-49.50"},
-    ])], run)
-    rows = conn.execute(
-        "SELECT amount_cents, derived FROM walmart_charges "
-        "ORDER BY charged_date").fetchall()
-    assert [r["amount_cents"] for r in rows] == [-10000, -4950]
-    assert all(r["derived"] == 0 for r in rows)
-
-
-def test_superseding_a_derived_charge_drops_its_match(conn):
-    """The match was made against an inferred date. Leaving it behind would
-    orphan a row pointing at a charge that no longer exists."""
-    _bank(conn, 1, "2026-07-20", -14950)
-    run = store.start_run(conn, "t")
-    store.store_orders(conn, [order()], run)
-    match.run(conn)
-    assert conn.execute("SELECT COUNT(*) c FROM walmart_matches").fetchone()["c"] == 1
-    store.store_orders(conn, [order(charges=[
-        {"charged_date": "2026-07-20", "amount": "-149.50"}])], run)
-    assert conn.execute(
-        "SELECT COUNT(*) c FROM walmart_matches WHERE walmart_charge_id NOT IN "
-        "(SELECT walmart_charge_id FROM walmart_charges)").fetchone()["c"] == 0
-
-
-def test_a_cancelled_order_gets_no_synthesized_charge(conn):
-    store.store_orders(conn, [order(cancelled=True)], store.start_run(conn, "t"))
-    assert conn.execute("SELECT COUNT(*) c FROM walmart_charges").fetchone()["c"] == 0
-
-
-def test_a_refund_is_never_synthesized(conn):
-    """An order's refund total says a refund happened, not when it settled. A
-    charge invented on the wrong date matches the wrong bank row or sits
-    unmatched forever looking like a parser bug."""
-    store.store_orders(conn, [order(refund_total="20.00")],
-                       store.start_run(conn, "t"))
-    assert conn.execute(
-        "SELECT COUNT(*) c FROM walmart_charges WHERE is_refund=1").fetchone()["c"] == 0
-
-
-def test_an_observed_refund_is_stored_positive(conn):
-    store.store_orders(conn, [order(charges=[
-        {"charged_date": "2026-07-25", "amount": "20.00", "is_refund": True}])],
-        store.start_run(conn, "t"))
-    c = conn.execute("SELECT * FROM walmart_charges WHERE is_refund=1").fetchone()
-    assert c["amount_cents"] == 2000
-
-
-# ── matching ─────────────────────────────────────────────────────────────────
-def test_exact_same_day_match(conn):
+# ── matching: an order settles as a SET of bank rows ─────────────────────────
+def test_a_single_bank_row_matching_the_order_total(conn):
     _bank(conn, 1, "2026-07-20", -14950)
     store.store_orders(conn, [order()], store.start_run(conn, "t"))
     r = match.run(conn)
-    assert (r["exact"], r["windowed"]) == (1, 0)
+    assert (r["exact"], r["split"]) == (1, 0)
 
 
-def test_windowed_match_within_three_days(conn):
-    _bank(conn, 1, "2026-07-22", -14950)
-    store.store_orders(conn, [order()], store.start_run(conn, "t"))
-    assert match.run(conn)["windowed"] == 1
-
-
-def test_a_charge_outside_the_window_is_left_alone(conn):
-    _bank(conn, 1, "2026-07-30", -14950)
-    store.store_orders(conn, [order()], store.start_run(conn, "t"))
-    assert match.run(conn)["matched"] == 0
-
-
-def test_same_day_claims_its_row_before_a_windowed_match_can_take_it(conn):
-    """The ordering invariant. One combined pass lets the ±3-day charge steal
-    the row the same-day charge needed, leaving BOTH wrong."""
-    _bank(conn, 1, "2026-07-20", -5000)
-    _bank(conn, 2, "2026-07-23", -5000)
-    run = store.start_run(conn, "t")
-    store.store_orders(conn, [
-        order(number="A", placed="2026-07-23", total="50.00"),
-        order(number="B", placed="2026-07-20", total="50.00"),
-    ], run)
-    match.run(conn)
-    pairs = {r["order_number"]: r["txn_id"] for r in conn.execute(
-        "SELECT c.order_number, m.txn_id FROM walmart_matches m "
-        "JOIN walmart_charges c USING (walmart_charge_id)")}
-    assert pairs == {"A": 2, "B": 1}
-
-
-def test_ambiguity_is_reported_not_guessed(conn):
-    """Two identical Walmart charges days apart is routine. A wrong match
-    attributes the wrong basket of items and quietly misleads everything after."""
-    _bank(conn, 1, "2026-07-21", -5000)
-    _bank(conn, 2, "2026-07-22", -5000)
-    store.store_orders(conn, [order(number="A", total="50.00")],
+def test_an_order_that_settled_as_five_charges(conn):
+    """The pattern this exists for: a $203.60 order posted as five partial charges.
+    A one-charge-per-order model leaves this — the larger, more interesting
+    order — permanently unexplained."""
+    parts = [2410, 145, 830, 5275, 11700]
+    for i, cents in enumerate(parts, start=1):
+        _bank(conn, i, "2026-07-20", -cents)
+    store.store_orders(conn, [order(placed="2026-07-17", total="203.60")],
                        store.start_run(conn, "t"))
+    r = match.run(conn)
+    assert r["split"] == 1
+    assert conn.execute(
+        "SELECT COUNT(*) c FROM walmart_matches").fetchone()["c"] == len(parts)
+
+
+def test_an_order_that_settled_as_two_charges(conn):
+    _bank(conn, 1, "2026-07-03", -1865)
+    _bank(conn, 2, "2026-07-03", -14555)
+    store.store_orders(conn, [order(placed="2026-07-01", total="164.20")],
+                       store.start_run(conn, "t"))
+    assert match.run(conn)["split"] == 1
+
+
+def test_a_single_row_is_claimed_before_any_combination_can_take_it(conn):
+    """The pass ordering. Run as one pass, a two-row sum could consume the exact
+    row another order needed, leaving both wrong."""
+    _bank(conn, 1, "2026-07-20", -5000)      # exactly order B
+    _bank(conn, 2, "2026-07-20", -3000)
+    _bank(conn, 3, "2026-07-20", -2000)      # 3000 + 2000 also makes 5000
+    run = store.start_run(conn, "t")
+    store.store_orders(conn, [order(number="A", total="50.00"),
+                              order(number="B", total="50.00")], run)
+    match.run(conn)
+    by_order: dict[str, set] = {}
+    for r in conn.execute("SELECT order_number, txn_id FROM walmart_matches"):
+        by_order.setdefault(r["order_number"], set()).add(r["txn_id"])
+    # One order took the single row; the other took the pair; every row used once.
+    assert sorted(len(v) for v in by_order.values()) == [1, 2]
+    assert set().union(*by_order.values()) == {1, 2, 3}
+
+
+def test_two_ways_to_reach_the_total_is_reported_not_picked(conn):
+    """Subset-sum finds AN answer far more readily than exact pairing does. When
+    several sets hit the total, which was the order is not knowable — and a
+    wrong basket of items attributed to a charge is worse than an unexplained
+    charge."""
+    _bank(conn, 1, "2026-07-20", -3000)
+    _bank(conn, 2, "2026-07-20", -2000)
+    _bank(conn, 3, "2026-07-20", -1000)
+    _bank(conn, 4, "2026-07-20", -4000)      # 1000+4000 == 3000+2000
+    store.store_orders(conn, [order(total="50.00")], store.start_run(conn, "t"))
     r = match.run(conn)
     assert r["matched"] == 0
     assert len(r["ambiguous"]) == 1
-    assert {c["txn_id"] for c in r["ambiguous"][0]["candidates"]} == {1, 2}
+    assert len(r["ambiguous"][0]["solutions"]) > 1
+    assert conn.execute("SELECT COUNT(*) c FROM walmart_matches").fetchone()["c"] == 0
 
 
-def test_confirm_records_a_human_chosen_match(conn):
-    _bank(conn, 1, "2026-07-21", -5000)
-    _bank(conn, 2, "2026-07-22", -5000)
-    store.store_orders(conn, [order(total="50.00")], store.start_run(conn, "t"))
-    cid = conn.execute("SELECT walmart_charge_id i FROM walmart_charges").fetchone()["i"]
-    match.confirm(conn, cid, 2)
-    row = conn.execute("SELECT * FROM walmart_matches").fetchone()
-    assert (row["txn_id"], row["confidence"]) == (2, "manual")
+def test_a_bank_row_can_only_ever_explain_one_order(conn):
+    _bank(conn, 1, "2026-07-20", -5000)
+    run = store.start_run(conn, "t")
+    store.store_orders(conn, [order(number="A", total="50.00"),
+                              order(number="B", total="50.00")], run)
+    match.run(conn)
+    assert conn.execute("SELECT COUNT(*) c FROM walmart_matches").fetchone()["c"] == 1
 
 
-# ── channel: the rule the Amazon matcher has no need for ─────────────────────
-def test_an_online_order_never_matches_an_in_store_charge(conn):
-    """Same amount, same day, different place. Amount+date alone would attach a
-    grocery pickup's item list to a Supercenter run and look right doing it."""
-    _bank(conn, 1, "2026-07-20", -14950, merchant="WM SUPERCENTER FARGO")
-    store.store_orders(conn, [order(channel="online")], store.start_run(conn, "t"))
+def test_partial_sums_are_never_accepted(conn):
+    """Four of the five charges summing to less than the total is not the order."""
+    for i, cents in enumerate([2410, 145, 830], start=1):
+        _bank(conn, i, "2026-07-20", -cents)
+    store.store_orders(conn, [order(placed="2026-07-17", total="203.60")],
+                       store.start_run(conn, "t"))
     assert match.run(conn)["matched"] == 0
 
 
-def test_an_in_store_order_matches_an_in_store_charge(conn):
-    _bank(conn, 1, "2026-07-20", -14950, merchant="WAL MART SUPER")
-    store.store_orders(conn, [order(channel="in-store")], store.start_run(conn, "t"))
+def test_a_charge_before_the_order_is_not_a_settlement_of_it(conn):
+    _bank(conn, 1, "2026-07-10", -14950)
+    store.store_orders(conn, [order(placed="2026-07-20")], store.start_run(conn, "t"))
+    assert match.run(conn)["matched"] == 0
+
+
+def test_settlement_can_trail_the_order_by_days(conn):
+    _bank(conn, 1, "2026-07-27", -14950)
+    store.store_orders(conn, [order(placed="2026-07-20")], store.start_run(conn, "t"))
     assert match.run(conn)["matched"] == 1
 
 
-def test_an_unknown_channel_falls_back_to_every_walmart_pattern(conn):
-    """Refusing to match what we cannot classify would drop real
-    reconciliations; this is still amount-exact and date-bounded."""
-    _bank(conn, 1, "2026-07-20", -14950, merchant="WM SUPERCENTER FARGO")
-    store.store_orders(conn, [order(channel=None)], store.start_run(conn, "t"))
-    assert match.run(conn)["matched"] == 1
+def test_a_cancelled_order_never_competes_for_bank_rows(conn):
+    """Nothing settled, so there is nothing to find — and letting it into the
+    search only adds a target that can steal rows from an order really charged."""
+    _bank(conn, 1, "2026-07-20", -14950)
+    run = store.start_run(conn, "t")
+    store.store_orders(conn, [order(number="X", cancelled=True),
+                              order(number="Y")], run)
+    match.run(conn)
+    got = conn.execute("SELECT order_number FROM walmart_matches").fetchall()
+    assert [r["order_number"] for r in got] == ["Y"]
 
 
-@pytest.mark.parametrize("merchant", [
-    "WALMART.COM", "WALMART.C 702 SW", "WAL MART SUPER", "WM SUPERC WAL",
-    "WM SUPERCENTER DETROIT", "WAL MART FARGO",
-])
-def test_every_real_walmart_merchant_string_is_covered(conn, merchant):
-    """These are the actual merchant_norm values in the ledger. A pattern that
-    silently stops covering one of them shows up as a coverage drop nobody can
-    explain."""
-    _bank(conn, 1, "2026-07-20", -1000, merchant=merchant)
-    assert match.coverage(conn)["total_cents"] == 1000
+def test_a_haystack_window_is_left_unmatched_rather_than_guessed(conn):
+    """Past a certain candidate count the subsets stop being evidence: the
+    number of them explodes, and so does the chance two coincide."""
+    for i in range(1, match.MAX_CANDIDATES + 3):
+        _bank(conn, i, "2026-07-20", -(100 + i))
+    store.store_orders(conn, [order(total="1.01")], store.start_run(conn, "t"))
+    # k=1 still works (pass 1 is a direct amount test, not a search)...
+    assert match.run(conn)["exact"] == 1
 
 
-def test_sams_club_is_not_counted_as_walmart(conn):
-    """It is a separate site with a separate login, so walmart.com order history
-    structurally cannot explain it. Counting it would report ~9% of "Walmart"
-    spend as unexplained forever."""
-    _bank(conn, 1, "2026-07-20", -5000, merchant="SAMS CLUB SAM'S")
-    assert match.coverage(conn)["total_cents"] == 0
+def test_confirm_records_a_human_chosen_settlement(conn):
+    _bank(conn, 1, "2026-07-20", -3000)
+    _bank(conn, 2, "2026-07-20", -2000)
+    store.store_orders(conn, [order(total="50.00")], store.start_run(conn, "t"))
+    match.confirm(conn, "200012345678901", [1, 2])
+    rows = conn.execute("SELECT * FROM walmart_matches ORDER BY txn_id").fetchall()
+    assert [r["txn_id"] for r in rows] == [1, 2]
+    assert all(r["confidence"] == "manual" for r in rows)
+
+
+def test_split_settlements_are_counted_and_reported(conn):
+    _bank(conn, 1, "2026-07-03", -1865)
+    _bank(conn, 2, "2026-07-03", -14555)
+    store.store_orders(conn, [order(placed="2026-07-01", total="164.20")],
+                       store.start_run(conn, "t"))
+    match.run(conn)
+    st = match.split_settlements(conn)
+    assert (st["orders"], st["split_orders"], st["max_parts"]) == (1, 1, 2)
 
 
 # ── coverage, derivation, horizon ────────────────────────────────────────────
@@ -300,22 +279,19 @@ def test_coverage_is_measured_in_dollars_and_split_by_channel(conn):
     assert cov["channels"]["in-store"]["coverage_pct"] == 0.0
 
 
-def test_derived_share_reports_how_much_rests_on_an_inference(conn):
-    """Quoting coverage without this presents an inference with the same
-    confidence as an observation."""
-    _bank(conn, 1, "2026-07-20", -10000)
-    _bank(conn, 2, "2026-07-21", -5000)
-    run = store.start_run(conn, "t")
-    store.store_orders(conn, [
-        order(number="A", total="100.00"),                       # derived
-        order(number="B", placed="2026-07-21", total="50.00",
-              charges=[{"charged_date": "2026-07-21", "amount": "-50.00"}]),
-    ], run)
+def test_coverage_counts_every_row_of_a_split_settlement(conn):
+    """The dollars matched are the BANK's, not the order's. An order settling as
+    five rows explains all five, and counting only one would understate coverage
+    exactly where the connector does its most useful work."""
+    _bank(conn, 1, "2026-07-03", -1865)
+    _bank(conn, 2, "2026-07-03", -14555)
+    store.store_orders(conn, [order(placed="2026-07-01", total="164.20")],
+                       store.start_run(conn, "t"))
     match.run(conn)
-    d = match.coverage(conn)["derived"]
-    assert (d["matched"], d["derived"]) == (2, 1)
-    assert d["derived_pct"] == 50.0
-    assert d["derived_cents"] == 10000
+    cov = match.coverage(conn)
+    assert cov["matched_cents"] == 16420
+    assert cov["matched_txns"] == 2
+    assert cov["coverage_pct"] == 100.0
 
 
 def test_horizon_names_the_charges_that_predate_any_record(conn):
@@ -387,5 +363,5 @@ def test_store_and_match_reports_what_it_did(conn, tmp_path, monkeypatch):
     conn.commit()
     r = sync.store_and_match([order(items=[item("Dog food", "42.99")])],
                             scope="days=30", since="2026-07-01")
-    assert (r["orders"], r["charges"], r["matched"]) == (1, 1, 1)
+    assert (r["orders"], r["items"], r["matched"]) == (1, 1, 1)
     assert r["coverage"]["coverage_pct"] == 100.0

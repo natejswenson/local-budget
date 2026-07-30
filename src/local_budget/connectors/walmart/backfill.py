@@ -14,9 +14,9 @@ orders that still lack it.
 backfill resumes on `amazon_sync_runs.scope` recording a finished year. This
 resumes on `walmart_orders.detail_fetched`, which is simply true or false for
 each order. A backfill that dies at 80% keeps everything it stored and the next
-run picks up the remaining 20% — and because the list pass runs first, the
-derived charges are already in place, so even an interrupted backfill improves
-coverage rather than leaving nothing behind.
+run picks up the remaining 20% — and because the list pass runs first, every
+order and its total are already stored, which is all the matcher needs. So even
+an interrupted backfill improves coverage rather than leaving nothing behind.
 """
 from __future__ import annotations
 
@@ -109,8 +109,8 @@ def run_backfill(*, since: str | None = None, limit: int | None = None,
     """List every order back to `since`, then fill in the detail, then match.
 
     The list pass comes first because it is what makes the run useful early: it
-    stores every order and its derived charge, so coverage improves before a
-    single detail page has been read. Matching runs once at the end rather than
+    stores every order and its total, and matching needs only the total — so
+    coverage improves before a single detail page has been read. Matching runs once at the end rather than
     per order — it is global and cheap, and per-order passes would redo the same
     work N times for no benefit.
     """
@@ -135,7 +135,8 @@ def run_backfill(*, since: str | None = None, limit: int | None = None,
                              what="order list", on_progress=on_progress)
         summary = sync.store_and_match(orders, scope=f"backfill-list since={since}",
                                        since=since)
-        say(f"    stored {summary['orders']} orders · {summary['charges']} charges")
+        say(f"    stored {summary['orders']} orders · "
+            f"{summary['matched']} already reconcile")
 
         # ── pass 2: detail, one request each, resumable ─────────────────────
         with db.connect() as conn:

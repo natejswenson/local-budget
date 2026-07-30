@@ -262,14 +262,24 @@ CREATE TABLE IF NOT EXISTS amazon_matches (
 --   walmart_orders.* / walmart_items.*  POSITIVE magnitudes — prices, not
 --                                       postings.
 --
--- ⚠ AND ONE THING AMAZON DOES NOT HAVE. Amazon publishes its own list of card
--- charges at exactly the granularity the bank posts them. Walmart publishes
--- ORDERS. An order still settles as one or several charges, so walmart_charges
--- is the reconciliation key either way — read from the order's payment lines
--- when they exist, and otherwise SYNTHESIZED from the order total with
--- `derived = 1`. That flag is load-bearing: it is the difference between an
--- observation and an inference, and a report that cannot tell them apart is
--- quietly overstating what it knows.
+-- ⚠ AND ONE THING AMAZON DOES NOT HAVE: an order does not map to a charge.
+--
+-- Amazon publishes its own list of card charges at exactly the granularity the
+-- bank posts them. Walmart publishes ORDERS, and an order routinely settles as
+-- SEVERAL partial charges that sum to its total. A pattern seen in a real ledger:
+--
+--     2026-06-24  $118.42  ->  one bank row
+--     2026-07-01  $164.20  ->  two:  $18.65 + $145.55
+--     2026-07-17  $203.60  ->  five: $24.10 + $1.45 + $8.30 + $52.75 + $117.00
+--
+-- Walmart exposes no per-charge record to reconcile against — the order page's
+-- "Charge history" is an empty banner whose contents load separately. So the
+-- relationship is ORDER ↔ SET OF BANK ROWS, and that is what walmart_matches
+-- stores: many rows per order, at most one order per bank row.
+--
+-- An earlier version of this schema synthesized one charge row per order from
+-- its total. It would have matched the first case above and silently failed the
+-- other two — the larger, more interesting orders.
 
 CREATE TABLE IF NOT EXISTS walmart_sync_runs (
     sync_run_id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -279,8 +289,8 @@ CREATE TABLE IF NOT EXISTS walmart_sync_runs (
     scope            TEXT,                -- e.g. 'days=60' / 'backfill'
     orders_seen      INTEGER,
     orders_upserted  INTEGER,
-    charges_seen     INTEGER,
-    charges_upserted INTEGER,
+    items_seen       INTEGER,
+    items_upserted   INTEGER,
     error_message    TEXT
 );
 
@@ -317,7 +327,12 @@ CREATE TABLE IF NOT EXISTS walmart_items (
     product_id       TEXT,                -- Walmart item number, the ASIN analogue
     title            TEXT,
     quantity         INTEGER,
-    unit_price_cents INTEGER,
+    -- What the LINE cost, quantity already included — Walmart publishes
+    -- `linePrice`, not a unit price. Verified: two bags of peanuts is one line
+    -- reading $14.50, four ears of corn one line reading $1.00. Storing that as
+    -- a unit price and multiplying by quantity, as the Amazon connector does
+    -- with its own source, would have doubled and quadrupled those lines.
+    line_price_cents INTEGER,
     seller           TEXT,                -- Walmart, or a marketplace seller
     -- Walmart's own product taxonomy, when the page carries it. Amazon exposes
     -- nothing equivalent, which is why its report has to guess a bucket from
@@ -330,35 +345,19 @@ CREATE TABLE IF NOT EXISTS walmart_items (
 );
 CREATE INDEX IF NOT EXISTS idx_wm_item_order ON walmart_items(order_number);
 
-CREATE TABLE IF NOT EXISTS walmart_charges (
-    walmart_charge_id INTEGER PRIMARY KEY,
-    order_number      TEXT REFERENCES walmart_orders(order_number),
-    charged_date      TEXT NOT NULL,
-    amount_cents      INTEGER NOT NULL,   -- SIGNED: charge negative, refund positive
-    is_refund         INTEGER NOT NULL DEFAULT 0,
-    payment_method    TEXT,
-    -- 1 = synthesized from the order total because the page showed no payment
-    -- line. Reported, never hidden: a derived charge is a guess about WHEN the
-    -- card was hit, and a split-shipment order will have exactly one of these
-    -- standing in for two or three real ones.
-    derived           INTEGER NOT NULL DEFAULT 0,
-    fetched_at        TEXT NOT NULL,
-    sync_run_id       INTEGER,
-    -- A charge is identified by what it is, not by row order: re-syncing an
-    -- overlapping window must update, never duplicate.
-    UNIQUE (order_number, charged_date, amount_cents, payment_method)
-);
-CREATE INDEX IF NOT EXISTS idx_wm_charge_date ON walmart_charges(charged_date);
-
 CREATE TABLE IF NOT EXISTS walmart_matches (
-    walmart_charge_id INTEGER PRIMARY KEY REFERENCES walmart_charges(walmart_charge_id),
-    txn_id            INTEGER NOT NULL REFERENCES transactions(txn_id),
-    confidence        TEXT NOT NULL,      -- exact | windowed | manual
-    method            TEXT,
-    matched_at        TEXT NOT NULL,
-    -- One bank charge maps to at most one Walmart charge and vice versa.
+    match_id     INTEGER PRIMARY KEY,
+    order_number TEXT NOT NULL REFERENCES walmart_orders(order_number),
+    txn_id       INTEGER NOT NULL REFERENCES transactions(txn_id),
+    confidence   TEXT NOT NULL,           -- exact | split | manual
+    method       TEXT,                    -- 'single+0d' | 'sum-of-5+3d' | 'confirmed'
+    matched_at   TEXT NOT NULL,
+    -- MANY rows per order (a split settlement), but a bank row explains at most
+    -- one order. Without this a single charge could be claimed by two orders of
+    -- overlapping totals and both would look reconciled.
     UNIQUE (txn_id)
 );
+CREATE INDEX IF NOT EXISTS idx_wm_match_order ON walmart_matches(order_number);
 
 -- ── transaction splits ──────────────────────────────────────────────────────
 -- One bank charge, several categories. A mixed order — groceries, a school
@@ -571,8 +570,48 @@ def agent_connect(db_path: Path | None = None, write: bool = False) -> Iterator[
             paths.harden_db_files(path)
 
 
+def _drop_stale_walmart_tables(conn: sqlite3.Connection) -> None:
+    """Recreate Walmart tables whose shape changed — but ONLY while empty.
+
+    The Walmart connector's model changed before it ever stored a row: Walmart
+    publishes no per-charge record, so `walmart_charges` was replaced by
+    order-to-many-bank-rows matching, and `unit_price_cents` by
+    `line_price_cents` (the source publishes a line total). Any database that
+    ran `init_schema` in between has the old empty tables, and
+    `CREATE TABLE IF NOT EXISTS` will not reshape them.
+
+    The emptiness check is the safety rail, and it is not a formality: a
+    populated table means an assumption here is wrong, and dropping it would
+    destroy imported facts. So it is left alone and the schema mismatch surfaces
+    as a loud error later instead.
+
+    Runs BEFORE the schema script, so the DDL immediately recreates what it
+    drops.
+    """
+    def has_table(name: str) -> bool:
+        return conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (name,)).fetchone() is not None
+
+    def is_empty(name: str) -> bool:
+        return not conn.execute(f"SELECT 1 FROM {name} LIMIT 1").fetchone()
+
+    stale = [("walmart_charges", None),
+             ("walmart_matches", "order_number"),
+             ("walmart_items", "line_price_cents"),
+             ("walmart_sync_runs", "items_seen")]
+    for name, required_col in stale:
+        if not has_table(name):
+            continue
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({name})")}
+        outdated = required_col is None or required_col not in cols
+        if outdated and is_empty(name):
+            conn.execute(f"DROP TABLE {name}")
+
+
 def init_schema(db_path: Path | None = None) -> None:
     with connect(db_path) as conn:
+        _drop_stale_walmart_tables(conn)
         conn.executescript(SCHEMA)
         _migrate(conn)
         from . import merchants   # lazy: avoid import cycle (merchants imports db)

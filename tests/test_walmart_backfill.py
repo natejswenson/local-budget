@@ -48,8 +48,7 @@ def _bank(c, txn_id, dt, cents, merchant="WALMART.COM"):
 
 def _order(num, dt, total, *, detail=False, items=None):
     return {"order_number": num, "order_placed_date": dt, "grand_total": total,
-            "channel": "online", "detail_fetched": detail,
-            "items": items or [], "charges": []}
+            "channel": "online", "detail_fetched": detail, "items": items or []}
 
 
 class FakeFetcher:
@@ -71,7 +70,7 @@ class FakeFetcher:
         src = next(o for o in self.orders if o["order_number"] == order_number)
         return {**src, "detail_fetched": True,
                 "items": [{"title": f"item for {order_number}",
-                           "unit_price": "10.00", "quantity": 1,
+                           "line_price": "10.00", "quantity": 1,
                            "product_id": f"p-{order_number}"}]}
 
 
@@ -137,8 +136,8 @@ def test_detail_is_queued_newest_first(conn):
 def test_the_list_pass_lands_before_any_detail_is_read(conn, fetcher, tmp_path,
                                                        monkeypatch):
     """This is what makes an interrupted backfill worth having run: every order
-    and its derived charge are stored, so coverage improves before a single
-    detail request."""
+    is stored with its total, which is all the matcher needs — so coverage
+    improves before a single detail request."""
     monkeypatch.setenv("LOCAL_BUDGET_DATA_DIR", str(tmp_path))
     _bank(conn, 1, "2026-07-01", -1000)
     conn.commit()
@@ -147,7 +146,7 @@ def test_the_list_pass_lands_before_any_detail_is_read(conn, fetcher, tmp_path,
     r = backfill.run_backfill()
     assert r["orders"] == 1
     assert r["detailed"] == 0
-    assert r["matched"] == 1, "the derived charge matched without any detail"
+    assert r["matched"] == 1, "the order matched on its total, before any detail"
 
 
 def test_detail_is_fetched_and_stored(conn, fetcher, tmp_path, monkeypatch):

@@ -1,26 +1,40 @@
-"""Reconcile Walmart charges against the bank ledger.
+"""Reconcile Walmart orders against the bank ledger.
 
 The chain this completes:
 
-    bank transaction  →  walmart_charge  →  order  →  items
+    bank transactions  →  order  →  items
 
-The governing rule is **never guess**, the same as the Amazon matcher: two
-Walmart charges of the same amount days apart is routine, and attributing the
-wrong basket of items to a charge is worse than leaving it unexplained.
-Ambiguity is recorded as unmatched and surfaced for confirmation.
+**An order is not a charge.** Amazon publishes its own charge list at the
+granularity the bank posts, so its matcher pairs one charge to one bank row.
+Walmart publishes orders, and an order routinely settles as several partial
+charges it never enumerates. A pattern seen in a real ledger:
 
-**One rule the Amazon matcher has no need for: channel.** Walmart puts online
-orders and in-store receipts in one history, and they post to the bank under
-different merchant strings — `WALMART.COM` versus `WM SUPERCENTER`. Amount and
-date alone would happily attach a $63.41 grocery pickup to a $63.41 in-store
-run three days earlier, and the resulting item list would be confidently,
-invisibly wrong. So candidates are filtered by channel whenever the order says
-which it was.
+    2026-06-24  $118.42  ->  one bank row
+    2026-07-01  $164.20  ->  two:  $18.65 + $145.55
+    2026-07-17  $203.60  ->  five: $24.10 + $1.45 + $8.30 + $52.75 + $117.00
+
+So matching is a subset-sum: find the set of unmatched Walmart bank rows near
+the order date that sums to the order total exactly. One-row matches are simply
+the k=1 case, tried first and separately so a simple order can claim its row
+before any multi-row combination is allowed to take it.
+
+**The governing rule is still: never guess.** Subset-sum is far more willing to
+find *an* answer than exact pairing is — with enough small charges in a window,
+several different subsets can hit the same total. So a match is recorded ONLY
+when the solution is UNIQUE. Two ways to sum to $203.60 means we do not know
+which was the order, and a wrong basket of items attributed to a charge is worse
+than an unexplained charge.
+
+**Channel matters too.** Walmart puts online orders and in-store receipts in one
+history, and they post under different merchant strings — `WALMART.COM` versus
+`WM SUPERCENTER`. Without that filter, amount and date alone would happily
+attach a grocery pickup's item list to a same-total Supercenter run.
 """
 from __future__ import annotations
 
 import sqlite3
 from datetime import datetime
+from itertools import combinations
 
 #: Bank-side merchant patterns, split by where the purchase happened.
 #: Verified against the ledger: these three patterns match every Walmart charge
@@ -32,19 +46,29 @@ ONLINE_LIKE = ("WALMART%",)
 INSTORE_LIKE = ("WAL MART%", "WM SUPERC%")
 MERCHANT_LIKE = ONLINE_LIKE + INSTORE_LIKE
 
-#: How far a settle date may drift from the charge date. Three days covers a
-#: weekend; wider starts pulling in genuinely different purchases. It also
-#: absorbs the error in a `derived` charge, which is dated to the order rather
-#: than to the day the card was actually hit.
-WINDOW_DAYS = 3
+#: How far a bank row may sit from the order date. Wider than the Amazon
+#: connector's ±3 because this window starts at the ORDER, not at a charge:
+#: Walmart bills as each part ships or is picked, and the observed spread runs
+#: to three days after the order with the tail of a split settlement later
+#: still. Asymmetric for the same reason — a charge before the order is not a
+#: settlement of it.
+DAYS_BEFORE = 1
+DAYS_AFTER = 10
+
+#: Bounds on the search. A window holding more rows than this is not evidence,
+#: it is a haystack: the number of subsets grows exponentially, and so does the
+#: chance that two of them coincidentally hit the same total. Beyond these the
+#: order is left unmatched and reported, which is the honest outcome.
+MAX_CANDIDATES = 14
+MAX_SUBSET = 6
 
 
 def patterns_for(channel: str | None) -> tuple[str, ...]:
-    """Which merchant patterns a charge of this channel may match.
+    """Which merchant patterns an order of this channel may match.
 
     An unknown channel falls back to all of them. That is the honest default:
     refusing to match what we cannot classify would drop real reconciliations,
-    and this is still amount-exact and date-bounded.
+    and the sum still has to come out exact.
     """
     if channel == "online":
         return ONLINE_LIKE
@@ -53,95 +77,130 @@ def patterns_for(channel: str | None) -> tuple[str, ...]:
     return MERCHANT_LIKE
 
 
-def _candidates(conn: sqlite3.Connection, cents: int, when: str, window: int,
-                channel: str | None) -> list[sqlite3.Row]:
-    """Unmatched Walmart-looking bank rows of exactly this amount, in window.
-
-    Amount is matched EXACTLY. A tolerance would be the obvious next knob and it
-    is deliberately absent: any slop here buys false matches far faster than it
-    buys true ones.
-    """
-    pats = patterns_for(channel)
+def _candidates(conn: sqlite3.Connection, order: sqlite3.Row) -> list[sqlite3.Row]:
+    """Unmatched Walmart-looking bank rows in this order's settlement window."""
+    pats = patterns_for(order["channel"])
     like = " OR ".join("t.merchant_norm LIKE ?" for _ in pats)
     return conn.execute(
         f"""SELECT t.txn_id, t.posted_date, t.merchant_norm, t.amount_cents
               FROM transactions t
              WHERE t.status = 'posted'
-               AND t.amount_cents = ?
+               AND t.amount_cents < 0
                AND ({like})
-               AND ABS(julianday(t.posted_date) - julianday(?)) <= ?
+               AND julianday(t.posted_date) - julianday(?) BETWEEN ? AND ?
                AND t.txn_id NOT IN (SELECT txn_id FROM walmart_matches)
-          ORDER BY ABS(julianday(t.posted_date) - julianday(?)), t.txn_id""",
-        (cents, *pats, when, window, when)).fetchall()
+          ORDER BY t.posted_date, t.txn_id""",
+        (*pats, order["order_placed_date"], -DAYS_BEFORE, DAYS_AFTER)).fetchall()
 
 
-def _unmatched_charges(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+def solve(candidates: list, target: int, *, max_subset: int = MAX_SUBSET) -> list | None:
+    """The unique subset of `candidates` summing to `target`, or None.
+
+    Returns None both when nothing sums to the target and when SEVERAL things
+    do — the caller cannot act on either, and collapsing them here keeps the
+    "never guess" rule in one place. `ambiguous_solutions` reports the second
+    case separately for the operator.
+
+    Smallest subsets first, so a single row that matches exactly is preferred
+    over a coincidental pair summing to the same figure.
+    """
+    found = _solutions(candidates, target, max_subset, limit=2)
+    return found[0] if len(found) == 1 else None
+
+
+def _solutions(candidates: list, target: int, max_subset: int,
+               *, limit: int = 2) -> list[list]:
+    """Up to `limit` distinct subsets summing to target, smallest first."""
+    if len(candidates) > MAX_CANDIDATES:
+        return []
+    out: list[list] = []
+    for k in range(1, min(max_subset, len(candidates)) + 1):
+        for combo in combinations(candidates, k):
+            if sum(c["amount_cents"] for c in combo) == target:
+                out.append(list(combo))
+                if len(out) >= limit:
+                    return out
+    return out
+
+
+def _unmatched_orders(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Orders with a usable total and no bank rows attached yet.
+
+    A cancelled order is skipped: nothing settled, so there is nothing to find,
+    and letting it into the search only adds a target that can steal rows from
+    an order that really was charged.
+    """
     return conn.execute(
-        """SELECT c.walmart_charge_id, c.charged_date, c.amount_cents,
-                  c.order_number, c.derived, o.channel
-             FROM walmart_charges c
-             LEFT JOIN walmart_orders o ON o.order_number = c.order_number
-            WHERE c.walmart_charge_id NOT IN
-                  (SELECT walmart_charge_id FROM walmart_matches)
-         ORDER BY c.charged_date, c.walmart_charge_id""").fetchall()
+        """SELECT order_number, order_placed_date, grand_total_cents, channel
+             FROM walmart_orders
+            WHERE cancelled = 0
+              AND grand_total_cents IS NOT NULL AND grand_total_cents > 0
+              AND order_number NOT IN
+                  (SELECT order_number FROM walmart_matches)
+         ORDER BY order_placed_date, order_number""").fetchall()
 
 
-def _record(conn: sqlite3.Connection, charge_id: int, txn_id: int,
+def _record(conn: sqlite3.Connection, order_number: str, txns: list,
             confidence: str, method: str) -> None:
-    conn.execute(
-        "INSERT OR IGNORE INTO walmart_matches "
-        "(walmart_charge_id, txn_id, confidence, method, matched_at) "
-        "VALUES (?,?,?,?,?)",
-        (charge_id, txn_id, confidence, method,
-         datetime.now().isoformat(timespec="seconds")))
+    now = datetime.now().isoformat(timespec="seconds")
+    for t in txns:
+        conn.execute(
+            "INSERT OR IGNORE INTO walmart_matches "
+            "(order_number, txn_id, confidence, method, matched_at) "
+            "VALUES (?,?,?,?,?)",
+            (order_number, t["txn_id"], confidence, method, now))
 
 
 def run(conn: sqlite3.Connection) -> dict:
-    """Match everything unambiguous. Returns a summary dict.
+    """Match every order whose settlement is unambiguous. Returns a summary.
 
-    Two passes, and the order is load-bearing: a same-day exact match must be
-    able to claim its bank row before any windowed match is allowed to take it.
-    One combined pass lets a ±3-day match steal the row a same-day charge
-    needed, leaving BOTH wrong — the loose one mismatched and the exact one
+    Two passes, and the order is load-bearing. A single bank row equal to the
+    order total is the strongest evidence there is, so every order gets the
+    chance to claim one before any multi-row combination is considered. Run as
+    one pass, a three-row sum could consume the exact row that a different order
+    needed, leaving both wrong — the loose one mismatched and the exact one
     orphaned.
     """
-    exact = windowed = 0
+    exact = split = 0
     ambiguous: list[dict] = []
 
-    # Pass 1 — same day, same amount, same channel.
-    for c in _unmatched_charges(conn):
-        cands = _candidates(conn, c["amount_cents"], c["charged_date"], 0,
-                            c["channel"])
-        if len(cands) == 1:
-            _record(conn, c["walmart_charge_id"], cands[0]["txn_id"],
-                    "exact", "same-day+amount")
+    # Pass 1 — a single bank row for the whole order total.
+    for o in _unmatched_orders(conn):
+        cands = _candidates(conn, o)
+        hits = [c for c in cands if c["amount_cents"] == -o["grand_total_cents"]]
+        if len(hits) == 1:
+            _record(conn, o["order_number"], hits, "exact", "single")
             exact += 1
 
-    # Pass 2 — within the window, and only when a single candidate remains.
-    for c in _unmatched_charges(conn):
-        cands = _candidates(conn, c["amount_cents"], c["charged_date"],
-                            WINDOW_DAYS, c["channel"])
-        if len(cands) == 1:
-            _record(conn, c["walmart_charge_id"], cands[0]["txn_id"], "windowed",
-                    f"amount+-{WINDOW_DAYS}d")
-            windowed += 1
-        elif len(cands) > 1:
+    # Pass 2 — a set of rows summing to it.
+    for o in _unmatched_orders(conn):
+        cands = _candidates(conn, o)
+        target = -o["grand_total_cents"]
+        found = _solutions(cands, target, MAX_SUBSET, limit=2)
+        if len(found) == 1:
+            _record(conn, o["order_number"], found[0], "split",
+                    f"sum-of-{len(found[0])}")
+            split += 1
+        elif len(found) > 1:
+            # Several different sets of charges hit this total. Which one was
+            # the order is not knowable from the ledger, so it is reported
+            # rather than picked.
             ambiguous.append({
-                "walmart_charge_id": c["walmart_charge_id"],
-                "charged_date": c["charged_date"],
-                "amount_cents": c["amount_cents"],
-                "order_number": c["order_number"],
-                "derived": bool(c["derived"]),
-                "candidates": [dict(x) for x in cands],
+                "order_number": o["order_number"],
+                "order_placed_date": o["order_placed_date"],
+                "amount_cents": o["grand_total_cents"],
+                "channel": o["channel"],
+                "solutions": [[dict(c) for c in s] for s in found],
             })
 
-    return {"exact": exact, "windowed": windowed, "ambiguous": ambiguous,
-            "matched": exact + windowed}
+    return {"exact": exact, "split": split, "ambiguous": ambiguous,
+            "matched": exact + split}
 
 
-def confirm(conn: sqlite3.Connection, charge_id: int, txn_id: int) -> None:
-    """Record a human-chosen match for an ambiguous pair."""
-    _record(conn, charge_id, txn_id, "manual", "confirmed")
+def confirm(conn: sqlite3.Connection, order_number: str, txn_ids: list[int]) -> None:
+    """Record a human-chosen settlement for an ambiguous order."""
+    _record(conn, order_number, [{"txn_id": t} for t in txn_ids],
+            "manual", "confirmed")
 
 
 def _cov_pair(conn: sqlite3.Connection, pats: tuple[str, ...],
@@ -185,34 +244,28 @@ def coverage(conn: sqlite3.Connection, month: str | None = None) -> dict:
         "month": month, **overall,
         "channels": {"online": _cov_pair(conn, ONLINE_LIKE, month),
                      "in-store": _cov_pair(conn, INSTORE_LIKE, month)},
-        "derived": derived_share(conn, month),
+        "split_settlements": split_settlements(conn, month),
     }
 
 
-def derived_share(conn: sqlite3.Connection, month: str | None = None) -> dict:
-    """How much of what we matched rests on a SYNTHESIZED charge.
+def split_settlements(conn: sqlite3.Connection, month: str | None = None) -> dict:
+    """How many matched orders settled as more than one bank charge.
 
-    A derived charge is an inference about when the card was hit, made because
-    the order page showed no payment line. The items behind it are still real;
-    the date is ours. Quoting coverage without this would present an inference
-    with the same confidence as an observation.
+    Worth stating rather than burying: it is the fact that makes this connector
+    different from the Amazon one, and a reader comparing "orders" against
+    "charges" on the same page needs to know the two do not correspond.
     """
     where_month = " AND t.posted_date LIKE ?" if month else ""
     params: tuple = (f"{month}-%",) if month else ()
-    row = conn.execute(
-        f"""SELECT COUNT(*) AS n,
-                   COALESCE(SUM(c.derived), 0) AS d,
-                   COALESCE(-SUM(t.amount_cents), 0) AS cents,
-                   COALESCE(-SUM(CASE WHEN c.derived THEN t.amount_cents END), 0)
-                       AS d_cents
+    rows = conn.execute(
+        f"""SELECT m.order_number, COUNT(*) AS n
               FROM walmart_matches m
-              JOIN walmart_charges c ON c.walmart_charge_id = m.walmart_charge_id
-              JOIN transactions t    ON t.txn_id = m.txn_id
-             WHERE 1=1{where_month}""", params).fetchone()
-    n, d = int(row["n"]), int(row["d"])
-    return {"matched": n, "derived": d, "cents": int(row["cents"]),
-            "derived_cents": int(row["d_cents"]),
-            "derived_pct": round(d / n * 100, 1) if n else 0.0}
+              JOIN transactions t ON t.txn_id = m.txn_id
+             WHERE 1=1{where_month}
+          GROUP BY m.order_number""", params).fetchall()
+    multi = [r for r in rows if r["n"] > 1]
+    return {"orders": len(rows), "split_orders": len(multi),
+            "max_parts": max((r["n"] for r in rows), default=0)}
 
 
 def horizon(conn: sqlite3.Connection) -> dict:
@@ -220,13 +273,13 @@ def horizon(conn: sqlite3.Connection) -> dict:
 
     Without this, a low coverage number is unreadable: it looks like a data
     quality problem when it is a window problem. Charges older than the earliest
-    stored Walmart charge cannot be matched no matter what.
+    stored order cannot be matched no matter what.
 
     Returns ``{earliest, pre_count, pre_cents, has_backlog}``; `earliest` is
     None when nothing is stored at all.
     """
     row = conn.execute(
-        "SELECT MIN(charged_date) AS d FROM walmart_charges").fetchone()
+        "SELECT MIN(order_placed_date) AS d FROM walmart_orders").fetchone()
     earliest = row["d"] if row else None
     if not earliest:
         return {"earliest": None, "pre_count": 0, "pre_cents": 0,
@@ -244,25 +297,24 @@ def horizon(conn: sqlite3.Connection) -> dict:
 
 
 def breakdown(conn: sqlite3.Connection, month: str | None = None) -> list[dict]:
-    """Item lines behind the matched Walmart charges, largest first.
+    """Item lines behind the matched Walmart orders, largest first.
 
-    Joined through the ORDER, and deduplicated to one row per item line: a
-    split-shipment order matches several charges, and joining items through
-    each of them counts the same product once per shipment.
+    One row per item line. The join goes order → items, and the bank side is
+    collapsed with MIN/GROUP BY: an order matched to five bank rows would
+    otherwise repeat every one of its items five times.
     """
     where_month = " AND t.posted_date LIKE ?" if month else ""
     params: tuple = (f"{month}-%",) if month else ()
     rows = conn.execute(
-        f"""SELECT i.title, i.product_id, i.quantity, i.unit_price_cents,
+        f"""SELECT i.title, i.product_id, i.quantity, i.line_price_cents,
                    i.seller, i.category, o.order_number, o.channel,
-                   MIN(t.posted_date) AS posted_date, MIN(t.txn_id) AS txn_id
+                   MIN(t.posted_date) AS posted_date, MIN(t.txn_id) AS txn_id,
+                   COUNT(DISTINCT t.txn_id) AS charge_parts
               FROM walmart_matches m
-              JOIN walmart_charges c ON c.walmart_charge_id = m.walmart_charge_id
-              JOIN transactions t    ON t.txn_id = m.txn_id
-              JOIN walmart_orders o  ON o.order_number = c.order_number
-              JOIN walmart_items i   ON i.order_number = o.order_number
+              JOIN transactions t   ON t.txn_id = m.txn_id
+              JOIN walmart_orders o ON o.order_number = m.order_number
+              JOIN walmart_items i  ON i.order_number = o.order_number
              WHERE 1=1{where_month}
           GROUP BY i.item_id
-          ORDER BY (i.unit_price_cents * COALESCE(i.quantity,1)) DESC""",
-        params).fetchall()
+          ORDER BY i.line_price_cents DESC""", params).fetchall()
     return [dict(r) for r in rows]

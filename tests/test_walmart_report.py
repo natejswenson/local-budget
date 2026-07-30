@@ -1,10 +1,10 @@
 """The standalone Walmart report.
 
-Pins the same defects the Amazon report was written against — a split-shipment
+Pins the same defects the Amazon report was written against — an item
 double-count, a fixed output path that clobbers its own output, an all-time
 footer on a scoped document, a template that must ship — plus the two claims
-this page makes that Amazon's does not: a channel split, and an honest statement
-of how much of the page rests on an inferred charge date.
+this page makes that Amazon's does not: a channel split, and a statement that
+orders and charges do not correspond.
 """
 from __future__ import annotations
 
@@ -33,48 +33,39 @@ def _charge(c, txn_id, dt, cents, merchant="WALMART.COM"):
         (txn_id, f"f{txn_id}", dt, cents, merchant))
 
 
-def _order(c, num, dt, items, *, channel="online", charges=None):
-    """items: [(product_id, title, unit_cents, qty, seller, category)]"""
+def _order(c, num, dt, items, *, channel="online", total=None):
+    """items: [(product_id, title, line_cents, qty, seller, category)]"""
     o = {"order_number": num, "order_placed_date": dt, "channel": channel,
          "detail_fetched": True, "payment_method": "Visa",
-         "grand_total": f"{sum(u * q for _, _, u, q, _, _ in items) / 100:.2f}",
+         "grand_total": total or f"{sum(u for _, _, u, _, _, _ in items) / 100:.2f}",
          "items": [{"product_id": p, "title": t, "quantity": q,
-                    "unit_price": f"{u / 100:.2f}", "seller": s, "category": cat}
-                   for p, t, u, q, s, cat in items],
-         "charges": charges or []}
+                    "line_price": f"{u / 100:.2f}", "seller": s, "category": cat}
+                   for p, t, u, q, s, cat in items]}
     store.store_orders(c, [o], store.start_run(c, "t"))
 
 
-def _match(c, order_number, txn_id):
-    cid = c.execute("SELECT walmart_charge_id i FROM walmart_charges "
-                    "WHERE order_number=? ORDER BY charged_date LIMIT 1",
-                    (order_number,)).fetchone()["i"]
-    c.execute("INSERT INTO walmart_matches (walmart_charge_id, txn_id, "
-              "confidence, method, matched_at) VALUES (?,?,'exact','t','x')",
-              (cid, txn_id))
-    return cid
+def _match(c, order_number, *txn_ids):
+    """Attach bank rows to an order — several of them for a split settlement."""
+    for t in txn_ids:
+        c.execute("INSERT INTO walmart_matches (order_number, txn_id, "
+                  "confidence, method, matched_at) VALUES (?,?,'exact','t','x')",
+                  (order_number, t))
 
 
 # ── the arithmetic ───────────────────────────────────────────────────────────
-def test_a_split_shipment_item_is_counted_once(conn):
-    """One order, two charges, both matched. Joining items through each counts
-    the same product twice and inflates every total on the page."""
+def test_a_split_settlement_counts_its_item_once(conn):
+    """One order, two bank rows, both matched. Joining items through each counts
+    the same product twice and inflates every total on the page — and here that
+    is the NORMAL case, not an edge."""
     _order(conn, "O1", "2026-07-01",
-           [("P1", "Patio umbrella", 14950, 1, "Walmart.com", None)],
-           charges=[{"charged_date": "2026-07-01", "amount": "-100.00"},
-                    {"charged_date": "2026-07-03", "amount": "-49.50"}])
+           [("P1", "Patio umbrella", 14950, 1, "Walmart.com", None)])
     _charge(conn, 1, "2026-07-01", -10000)
     _charge(conn, 2, "2026-07-03", -4950)
-    ids = [r["i"] for r in conn.execute(
-        "SELECT walmart_charge_id i FROM walmart_charges ORDER BY charged_date")]
-    for cid, txn in zip(ids, (1, 2)):
-        conn.execute("INSERT INTO walmart_matches (walmart_charge_id, txn_id, "
-                     "confidence, method, matched_at) VALUES (?,?,'exact','t','x')",
-                     (cid, txn))
+    _match(conn, "O1", 1, 2)
     d = report.gather(conn)
     assert d["items"] == 1
     assert d["line_total"] == 14950
-    assert d["charge_total"] == 14950, "both charges count toward what was spent"
+    assert d["charge_total"] == 14950, "both bank rows count toward what was spent"
 
 
 def test_charge_total_is_a_positive_outflow_not_a_negative(conn):
@@ -131,22 +122,24 @@ def test_the_caption_states_the_mix_it_actually_got(src, total, expect):
     assert expect in report.kind_caption({"items": total, "kinds_from_source": src})
 
 
-# ── derived charges: an inference must not read as an observation ────────────
-def test_the_footer_discloses_charges_dated_from_the_order(conn):
+# ── orders and charges do not correspond ─────────────────────────────────────
+def test_the_footer_says_orders_and_charges_do_not_correspond(conn):
+    """The two counts sit a few lines apart on this page. Left unsaid, a reader
+    reconciles them and concludes the report is wrong."""
+    _order(conn, "O", "2026-07-01", [("P", "Thing", 15000, 1, "W", None)])
+    _charge(conn, 1, "2026-07-01", -10000)
+    _charge(conn, 2, "2026-07-02", -5000)
+    _match(conn, "O", 1, 2)
+    html = report.build_html(report.gather(conn), report.brand.load_theme())
+    assert "settled as more than one charge" in html
+
+
+def test_no_such_note_when_every_order_settled_in_one_charge(conn):
     _order(conn, "O", "2026-07-01", [("P", "Thing", 1000, 1, "W", None)])
     _charge(conn, 1, "2026-07-01", -1000)
     _match(conn, "O", 1)
     html = report.build_html(report.gather(conn), report.brand.load_theme())
-    assert "dated from the order rather than from a payment line" in html
-
-
-def test_no_disclosure_when_every_charge_was_observed(conn):
-    _order(conn, "O", "2026-07-01", [("P", "Thing", 1000, 1, "W", None)],
-           charges=[{"charged_date": "2026-07-01", "amount": "-10.00"}])
-    _charge(conn, 1, "2026-07-01", -1000)
-    _match(conn, "O", 1)
-    html = report.build_html(report.gather(conn), report.brand.load_theme())
-    assert "dated from the order" not in html
+    assert "settled as more than one charge" not in html
 
 
 # ── scoping ──────────────────────────────────────────────────────────────────
