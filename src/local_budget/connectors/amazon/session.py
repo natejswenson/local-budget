@@ -137,5 +137,17 @@ def build_session(*, force_login: bool = False):
                 "there is no password configured to sign in with.\n"
                 "Run `budget amazon login` to capture a fresh session.")
         session.login()
+    else:
+        # A restored jar loads the cookies but leaves `is_authenticated` False,
+        # and every fetch is gated on that flag — so the connector would say
+        # "Call AmazonSession.login() to authenticate first" while holding a
+        # perfectly good session.
+        #
+        # This is not a bypass: login() sets the same flag on exactly this
+        # condition (`if self.auth_cookies_stored(): self.is_authenticated =
+        # True`). We are applying the library's own test to a session it
+        # restored but never evaluated. If the cookies ARE stale, the first
+        # request comes back as a sign-in page and fetch._wrap reports it.
+        session.is_authenticated = True
     harden()
     return session
