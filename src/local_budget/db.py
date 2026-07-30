@@ -246,6 +246,57 @@ CREATE TABLE IF NOT EXISTS amazon_matches (
     -- One bank charge maps to at most one Amazon charge and vice versa.
     UNIQUE (txn_id)
 );
+
+-- ── transaction splits ──────────────────────────────────────────────────────
+-- One bank charge, several categories. A mixed order — groceries, a school
+-- supply and a household item in one box — otherwise counts entirely against
+-- whichever category the merchant rule assigned.
+--
+-- Splits are DERIVED, on the same footing as transactions.category: the agent
+-- may write them (txn_splits is in _AGENT_WRITE_TABLES) while the imported
+-- bank row stays immutable. The ledger remains the record of what the bank
+-- said; a split only reapportions it.
+--
+-- THE INVARIANT: a transaction's splits sum to its amount, exactly. Enforced
+-- on write in splits.apply() and auditable at any time via splits.verify().
+-- Everything else here is bookkeeping; this is the part that must never break,
+-- because a violation invents or destroys money in every report downstream.
+CREATE TABLE IF NOT EXISTS txn_splits (
+    split_id     INTEGER PRIMARY KEY,
+    txn_id       INTEGER NOT NULL REFERENCES transactions(txn_id) ON DELETE CASCADE,
+    amount_cents INTEGER NOT NULL,        -- signed, ledger convention
+    category     TEXT    NOT NULL,
+    subcategory  TEXT,
+    source       TEXT    NOT NULL,        -- 'amazon' | 'manual'
+    item_ref     TEXT,                    -- ASIN, when derived from an order line
+    note         TEXT,
+    created_at   TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_splits_txn ON txn_splits(txn_id);
+
+-- Every category aggregate reads THIS, not `transactions`.
+--
+-- An unsplit row LEFT JOINs to NULL and yields itself; a split row yields one
+-- line per split. That is what makes the whole feature a one-line change at
+-- each of the seven aggregate sites instead of a rewrite of each — and why
+-- unsplit transactions, the overwhelming majority, are untouched by design.
+--
+-- Only non-PII columns are exposed: the agent reads this view through the
+-- authorizer, which would abort a statement touching payee/memo/raw_ofx.
+CREATE VIEW IF NOT EXISTS effective_txns AS
+    SELECT t.txn_id,
+           t.account_id,
+           t.posted_date,
+           t.status,
+           t.merchant_norm,
+           t.canonical_merchant,
+           t.txn_type,
+           COALESCE(s.category,     t.category)     AS category,
+           COALESCE(s.subcategory,  t.subcategory)  AS subcategory,
+           COALESCE(s.amount_cents, t.amount_cents) AS amount_cents,
+           (s.split_id IS NOT NULL)                 AS is_split
+      FROM transactions t
+      LEFT JOIN txn_splits s ON s.txn_id = t.txn_id;
 """
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -327,7 +378,10 @@ def writer(conn: sqlite3.Connection | None = None) -> Iterator[sqlite3.Connectio
 _AGENT_WRITE_COLS = {("transactions", "category"),
                      ("transactions", "subcategory"),
                      ("transactions", "category_source")}
-_AGENT_WRITE_TABLES = {"category_rules", "budgets", "settings"}
+# txn_splits is here for the same reason transactions.category is writable: a
+# split is a DERIVED judgment about an imported fact, not the fact itself. The
+# bank row stays immutable; only its apportionment is editable.
+_AGENT_WRITE_TABLES = {"category_rules", "budgets", "settings", "txn_splits"}
 _AGENT_READ_DENY = {("transactions", "raw_ofx"), ("transactions", "payee"),
                     ("transactions", "memo"), ("accounts", "acct_hash"),
                     ("inbox_files", "filename"), ("import_runs", "source_name"),
