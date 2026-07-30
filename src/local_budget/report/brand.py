@@ -142,7 +142,16 @@ def stylesheet(theme: dict) -> str:
   --rule: {rule};
   --ink-mid: {ink_mid};
 }}
-@page {{ size: letter; margin: 14mm; }}
+/* Full-bleed cream. Chromium will not paint a background into the @page
+   margin — not from the canvas, not from a fixed layer (both measured on the
+   résumé theme) — so `margin: 0` is the ONLY way the paper reaches the sheet
+   edge. The gutters move onto `main` instead.
+
+   Inline (left/right) padding on a block applies to every page fragment, so
+   the side gutters are safe. Block (top/bottom) padding applies only at the
+   very start and very end of the flow, which is why `.sheet-pad` below gives
+   the content that lands after a page break its own top gutter. */
+@page {{ size: letter; margin: 0; }}
 * {{ box-sizing: border-box; }}
 html {{ background: var(--paper); }}
 body {{
@@ -153,7 +162,7 @@ body {{
   line-height: 1.45;
   margin: 0;
 }}
-main {{ max-width: 60rem; margin: 0 auto; }}
+main {{ padding: 13mm 15mm 15mm; }}
 
 /* Masthead — heavy ink rule, rotated accent stamp, tracked-caps mono eyebrow,
    dim byline right. The editorial opening: no banner fills, no pills. */
@@ -208,7 +217,9 @@ section.stat-strip {{
   gap: 0 1.4rem;
   border-top: 2px solid var(--rule);
   border-bottom: 2px solid var(--rule);
-  margin: 1.5rem 0 2rem;
+  /* No bottom margin — the next block-title's padding-top owns the gap, so
+     the two don't stack into a five-rem hole. */
+  margin: 1.5rem 0 0;
   padding: 0.9rem 0 1rem;
   break-inside: avoid;
 }}
@@ -242,7 +253,14 @@ h3.block-title {{
   color: var(--ink);
   border-bottom: 1px solid var(--dim);
   padding-bottom: 0.3rem;
-  margin: 2rem 0 0.9rem;
+  /* The section gutter is PADDING, not margin, and that is load-bearing:
+     with a zero-margin @page buying the full-bleed paper, a margin at the
+     top of a page fragment is dropped by Chromium and the heading prints
+     flush against the sheet edge. Padding survives the break, so whichever
+     section happens to start a page still gets its gutter. Sized to read as
+     deliberate section spacing mid-page and as a top margin at a break. */
+  margin: 0 0 0.9rem;
+  padding-top: 3rem;
 }}
 section {{ break-inside: avoid; }}
 
@@ -264,10 +282,16 @@ div.sb-label {{
   text-overflow: ellipsis;
   white-space: nowrap;
 }}
-div.sb-label span.warn {{ color: var(--ink); font-weight: 700; }}
+span.warn {{ color: var(--accent); font-weight: 700; }}
 div.sb-track {{ position: relative; height: 0.62rem; background: var(--paper);
   border-bottom: 1px solid var(--dim); }}
 span.sb-fill {{ position: absolute; left: 0; top: 0; bottom: 0; background: var(--ink);
+  display: block; }}
+/* The overspend. The bar runs ink to the budget tick and accent past it, so
+   the orange is a MEASURE of how far over the row went rather than a label
+   saying that it did. This is the accent doing data work — the one use that
+   earns extra volume on a page that otherwise spends it twice. */
+span.sb-over {{ position: absolute; top: 0; bottom: 0; background: var(--accent);
   display: block; }}
 span.tick {{ position: absolute; top: -3px; bottom: -3px; width: 2px;
   background: var(--ink); display: block; }}
@@ -335,6 +359,7 @@ div.legend .key i {{ width: 0.7rem; height: 0.7rem; display: inline-block; }}
 
 svg {{ display: block; max-width: 100%; height: auto; }}
 text.axis {{ font-family: {f["mono_stack"]}; font-size: 9px; fill: var(--dim); }}
+text.axis.now {{ fill: var(--accent); font-weight: 700; }}
 
 p.caption {{
   font-family: {f["serif_stack"]};
