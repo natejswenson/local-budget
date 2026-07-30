@@ -26,8 +26,16 @@ ORDERS_URL = "https://www.walmart.com/orders"
 #: presence alone is not, because Walmart sets plenty of them before sign-in.
 LOGIN_PATHS = ("/account/login", "/signin", "/account/signin")
 
-POLL_SECONDS = 3
-DEFAULT_TIMEOUT = 300
+POLL_SECONDS = 2
+DEFAULT_TIMEOUT = 600
+
+#: How long to go without probing when the cookie heuristic says nothing. The
+#: heuristic is a GUESS about cookie names (see `session.AUTH_COOKIE_CANDIDATES`)
+#: and the first version of this treated it as a requirement — so an account
+#: whose cookies are named anything else could sign in perfectly and still time
+#: out, never having been asked. Now it only ACCELERATES: miss it and the probe
+#: still runs, just less often.
+FORCED_PROBE_SECONDS = 30
 
 
 def signed_in(url: str) -> bool:
@@ -36,13 +44,11 @@ def signed_in(url: str) -> bool:
 
 
 def looks_done(url: str, cookie_names: set[str]) -> bool:
-    """Cheap "the human is probably finished" test, run on every poll tick.
+    """Cheap "the human is probably finished" hint. Never a precondition.
 
-    It has to be cheap AND non-disruptive, because the expensive confirmation —
-    navigating to the orders page — would yank someone out of a half-typed
-    one-time code if it ran on a timer. So: off the login page, and at least one
-    account cookie set. Both are true only after Walmart has redirected away
-    from sign-in, and neither disturbs the page.
+    Off the login page, and at least one cookie we associate with an account.
+    When it fires we probe immediately; when it does not, `FORCED_PROBE_SECONDS`
+    probes anyway.
     """
     if any(p in url for p in LOGIN_PATHS):
         return False
@@ -57,36 +63,58 @@ def login(*, timeout: int = DEFAULT_TIMEOUT, echo=print) -> dict:
     """
     echo("  Opening a browser window — sign in to Walmart however it asks "
          "(code, passkey, challenge).")
-    echo("  Nothing is captured until your order history actually loads.")
+    echo(f"  Nothing is captured until your order history actually loads. "
+         f"You have {timeout // 60} minutes.")
 
     with browser.context(headless=False) as (ctx, page):
         page.goto(SIGN_IN_URL)
+        # The probe runs in a SECOND TAB, never in the tab the human is using.
+        # Confirming means loading the orders page, and doing that in their tab
+        # would yank them out of a half-typed one-time code — which is why the
+        # first version only dared probe on a cookie signal, and why it hung
+        # when that signal never came. A background tab can be probed freely.
+        probe = ctx.new_page()
         deadline = time.monotonic() + timeout
-        announced = False
-        while time.monotonic() < deadline:
-            names = {c["name"] for c in ctx.cookies()
-                     if WALMART_DOMAIN in (c.get("domain") or "")}
-            if looks_done(page.url, names):
-                if not announced:
-                    echo("  ✓ signed in — confirming against your orders…")
-                    announced = True
-                # The real proof. Account cookies alone are not it: Walmart sets
-                # some of them before the one-time code is entered, so a
-                # cookie-only test would capture a session that cannot read an
-                # order and call it success.
+        last_probe = 0.0
+        last_url = ""
+        seen: list[str] = []
+
+        try:
+            while time.monotonic() < deadline:
+                names = {c["name"] for c in ctx.cookies()
+                         if WALMART_DOMAIN in (c.get("domain") or "")}
                 try:
-                    page.goto(ORDERS_URL, wait_until="domcontentloaded")
+                    last_url = page.url
                 except Exception:                          # pragma: no cover
-                    time.sleep(POLL_SECONDS)   # mid-navigation; try again
-                    continue
-                if signed_in(page.url):
-                    n = save_storage_state(ctx.storage_state())
-                    harden()
-                    echo(f"  ✓ captured {n} cookies")
-                    return {"cookies": n, "path": str(storage_state_path())}
-                announced = False                          # bounced — keep waiting
-            time.sleep(POLL_SECONDS)
+                    pass                                   # mid-navigation
+                due = (time.monotonic() - last_probe) >= FORCED_PROBE_SECONDS
+                if looks_done(last_url, names) or due:
+                    last_probe = time.monotonic()
+                    try:
+                        probe.goto(ORDERS_URL, wait_until="domcontentloaded")
+                    except Exception:                      # pragma: no cover
+                        time.sleep(POLL_SECONDS)
+                        continue
+                    if signed_in(probe.url):
+                        n = save_storage_state(ctx.storage_state())
+                        harden()
+                        echo(f"  ✓ captured {n} cookies")
+                        return {"cookies": n, "path": str(storage_state_path())}
+                time.sleep(POLL_SECONDS)
+        finally:
+            # Cookie NAMES only — never values. They are what tells us whether
+            # AUTH_COOKIE_CANDIDATES is right, and a timeout with no diagnostic
+            # leaves the next attempt guessing exactly as blindly as this one.
+            try:
+                seen = sorted({c["name"] for c in ctx.cookies()
+                               if WALMART_DOMAIN in (c.get("domain") or "")})
+                probe.close()
+            except Exception:                              # pragma: no cover
+                pass          # a diagnostic must never mask the real failure
 
     raise WalmartAuthError(
-        f"timed out after {timeout}s without a signed-in Walmart session. "
-        "Re-run `budget walmart login` and complete sign-in in the window.")
+        f"timed out after {timeout}s without a signed-in Walmart session.\n"
+        f"  last page in the window: {last_url or '(none)'}\n"
+        f"  walmart.com cookies present: {', '.join(seen) if seen else '(none)'}\n"
+        "If you did finish signing in, that cookie list is the diagnostic — the "
+        "orders page was still redirecting to sign-in when asked.")
