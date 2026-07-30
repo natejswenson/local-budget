@@ -190,3 +190,48 @@ def test_filename_stem_cannot_escape_the_reports_directory(evil):
 def test_empty_range_refuses_rather_than_rendering_a_blank_report(conn):
     with pytest.raises(ValueError, match="no reconciled Amazon items"):
         report.render(since="2099-01-01")
+
+
+# ── the template is a tracked, shipped artifact ──────────────────────────────
+def test_template_css_exists_and_ships_with_the_package():
+    """A missing template is a PACKAGING error. Rendering without it produces a
+    silently different-looking document rather than a failure, which is exactly
+    the kind of break that reaches a reader before it reaches a developer."""
+    assert report.TEMPLATE_CSS.is_file(), report.TEMPLATE_CSS
+    assert report.TEMPLATE_CSS.parent.name == "assets"
+    assert report.template_css().strip(), "template is empty"
+
+
+def test_template_is_tracked_in_git():
+    """It is the report's look. An untracked template means the next checkout
+    renders a different document, and nobody can review a change to it."""
+    import subprocess
+    root = report.TEMPLATE_CSS.parents[5]        # assets->amazon->connectors->local_budget->src->repo
+    rel = report.TEMPLATE_CSS.relative_to(root)
+    out = subprocess.run(["git", "ls-files", "--error-unmatch", str(rel)],
+                         cwd=root, capture_output=True, text=True)
+    assert out.returncode == 0, f"{rel} is not tracked in git"
+
+
+def test_a_missing_template_raises_instead_of_rendering_unstyled(monkeypatch, tmp_path):
+    monkeypatch.setattr(report, "TEMPLATE_CSS", tmp_path / "gone.css")
+    with pytest.raises(FileNotFoundError, match="missing report template"):
+        report.template_css()
+
+
+def test_template_carries_layout_only_never_colour():
+    """Colour belongs to the PRESS brand, which is overridable in one place.
+    A hex here would fork the palette and quietly desynchronise the two."""
+    css = report.template_css()
+    assert "#" not in css.split("*/")[-1] or "var(--" in css
+    for literal in ("#F5F0E6", "#181510", "#E8501F", "#6E675C"):
+        assert literal not in css, f"{literal} belongs in brand.py, not the template"
+
+
+def test_the_rendered_page_actually_includes_the_template(conn):
+    _order(conn, "O", "2026-07-01", [("A", "Thing", 1000, 1, "S")])
+    _charge(conn, 1, "2026-07-02", -1000)
+    _match(conn, _az_txn(conn, "2026-07-02", -1000, "O"), 1)
+    html = report.build_html(report.gather(conn), report.brand.load_theme())
+    # a rule that exists ONLY in the template, not in the shared stylesheet
+    assert "break-after: avoid" in html
