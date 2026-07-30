@@ -136,6 +136,39 @@ def coverage(conn: sqlite3.Connection, month: str | None = None) -> dict:
             "coverage_pct": pct}
 
 
+def horizon(conn: sqlite3.Connection) -> dict:
+    """How far back reconciliation actually reaches, and what lies beyond it.
+
+    Matching goes through Amazon's own transaction records, and that page is
+    queried days-back — it may not reach as far as order history does. Charges
+    older than the earliest stored transaction therefore CANNOT be matched, no
+    matter how many orders were backfilled.
+
+    Without this, a low coverage number is unreadable: it looks like a data
+    quality problem when it is a window problem. Reporting the horizon is what
+    keeps coverage an honest figure rather than a discouraging one.
+
+    Returns ``{earliest, pre_count, pre_cents, has_backlog}``; `earliest` is
+    None when no transactions are stored at all.
+    """
+    row = conn.execute(
+        "SELECT MIN(completed_date) AS d FROM amazon_transactions").fetchone()
+    earliest = row["d"] if row else None
+    if not earliest:
+        return {"earliest": None, "pre_count": 0, "pre_cents": 0,
+                "has_backlog": False}
+
+    like = " OR ".join("merchant_norm LIKE ?" for _ in MERCHANT_LIKE)
+    pre = conn.execute(
+        f"""SELECT COUNT(*) AS n, COALESCE(-SUM(amount_cents), 0) AS c
+              FROM transactions
+             WHERE status='posted' AND amount_cents < 0
+               AND posted_date < ? AND ({like})""",
+        (earliest, *MERCHANT_LIKE)).fetchone()
+    return {"earliest": earliest, "pre_count": int(pre["n"]),
+            "pre_cents": int(pre["c"]), "has_backlog": bool(pre["n"])}
+
+
 def breakdown(conn: sqlite3.Connection, month: str | None = None) -> list[dict]:
     """Item lines behind the matched Amazon charges, largest first."""
     where_month = " AND t.posted_date LIKE ?" if month else ""

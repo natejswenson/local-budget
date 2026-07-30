@@ -12,4 +12,4 @@ See `session.py` for the standing trade-offs: Amazon publishes no consumer
 order API, so this parses the consumer site, and that has ToS and durability
 consequences that are properties of the approach rather than defects in it.
 """
-from . import fetch, match, session, store, sync   # noqa: F401
+from . import backfill, fetch, match, session, store, sync   # noqa: F401
