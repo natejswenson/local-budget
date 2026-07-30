@@ -1,0 +1,43 @@
+/* Amazon purchases report — layout on top of the shared PRESS stylesheet.
+ *
+ * This file is the report's TEMPLATE: it is tracked in git, ships with the
+ * package, and is loaded at render time. Edit it and re-run
+ * `budget amazon report` to see the change — no Python edit required.
+ *
+ * It deliberately holds NO colour values. Colour belongs to the PRESS brand in
+ * report/brand.py (paper / ink / dim / accent / ink-mid), which is itself
+ * overridable via BUDGET_BRAND_FILE. Everything here is layout, proportion and
+ * pagination, and refers to brand colours only through their tokens — so a
+ * palette change never has to be made in two places.
+ */
+
+/* ── proportions ─────────────────────────────────────────────────────────── */
+
+/* Wider label column than the monthly report: these rows carry category names
+ * and month keys rather than short budget labels. */
+div.sb-row { grid-template-columns: 13rem 1fr 7rem; }
+
+/* The one accent on the "when" chart marks the report's most recent month, so
+ * a reader can place the document in the series without counting columns. */
+span.sb-fill.last { background: var(--accent); }
+
+/* Item titles get the remaining width; everything else is dates and figures. */
+table.data td:last-child { width: 55%; }
+
+h3.block-title { padding-top: 2.2rem; }
+
+/* ── pagination ──────────────────────────────────────────────────────────── */
+/* These two rules are the difference between five ragged pages and four tight
+ * ones, and both were written after looking at a rendered PDF rather than at
+ * the markup. */
+
+/* A heading must never be the last thing on a page. Without this, "BIGGEST
+ * SINGLE ITEMS" stranded itself at the foot of a page with its table overleaf. */
+h3.block-title { break-after: avoid; page-break-after: avoid; }
+
+/* The monthly report keeps whole sections together because its sections are
+ * short. Here they are long tables, so forbidding a split shunts an entire
+ * table to the next page and leaves half a page blank. Let tables break —
+ * but never mid-row, which reads as corruption rather than as a page turn. */
+section { break-inside: auto; }
+table.data tr, div.sb-row { break-inside: avoid; }
