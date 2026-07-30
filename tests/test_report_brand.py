@@ -176,11 +176,11 @@ def test_warn_mark_is_forced_to_text_presentation():
 
 
 def test_page_carries_the_press_frame():
-    page = _page(user_name="Nate", narrative="Sports ran hot.")
+    page = _page(user_name="Sam", narrative="Dining Out ran hot.")
     assert 'class="masthead"' in page and 'class="stamp"' in page
     assert "LOCAL BUDGET · MONTHLY REPORT · 2026-07-11" in page
-    assert 'class="standfirst"' in page and "Sports ran hot." in page
-    assert 'class="provenance"' in page and "Nate" in page
+    assert 'class="standfirst"' in page and "Dining Out ran hot." in page
+    assert 'class="provenance"' in page and "Sam" in page
     assert "@page {{" not in page and "@page { size: letter" in page
 
 

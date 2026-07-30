@@ -586,7 +586,7 @@ async def amazon_coverage(args: dict, conn) -> dict:
     cov = az_match.coverage(conn, month)
     rendered = (f"## Amazon coverage — {month}\n\n"
                 # coverage() already returns POSITIVE outflow magnitudes —
-                # negating here printed "-$430.00" for money that was spent.
+                # negating here rendered spend as a negative, i.e. as a refund.
                 f"- **{cov['coverage_pct']}%** of Amazon spend has item detail\n"
                 f"- {render.money(cov['matched_cents'])} of "
                 f"{render.money(cov['total_cents'])}\n"

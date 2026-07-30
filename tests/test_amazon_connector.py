@@ -85,8 +85,8 @@ def _bank(c, txn_id, dt, cents, merchant="AMAZON MKTPL AMZN.COM"):
 
 # ── money conversion ─────────────────────────────────────────────────────────
 @pytest.mark.parametrize("raw,cents", [
-    (19.99, 1999), (0.1, 10), (0.07, 7), (149.50, 14950),
-    ("$1,200.00", 120000), ("-50.00", -5000), (0, 0),
+    (19.99, 1999), (0.1, 10), (0.07, 7), (123.45, 12345),
+    ("$1,234.56", 123456), ("-50.00", -5000), (0, 0),
     (None, None), ("", None),
 ])
 def test_to_cents_never_loses_a_penny_to_float(raw, cents):
@@ -412,7 +412,7 @@ def test_agent_cannot_read_sync_error_messages(conn):
 
 def test_coverage_returns_positive_magnitudes(conn):
     """Spend is stored as negative cents but reported as a positive magnitude.
-    Getting this backwards renders "-$430.00 of Amazon spend", which reads as a
+    Getting this backwards renders spend as a negative, which reads as a
     refund — it shipped that way in the agent tool once."""
     _bank(conn, 980, "2026-07-20", -14950)
     cov = match.coverage(conn, "2026-07")

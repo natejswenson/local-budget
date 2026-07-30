@@ -268,7 +268,7 @@ section {{ break-inside: avoid; }}
    Square track, square fill, no radii. The tick is the budget position. */
 div.sb-row {{
   /* The value column is sized for the longest string it can hold —
-     "$10,000.00 of $3,000.00 · 433%" — because wrapping it puts the percentage
+     "$00,000.00 of $0,000.00 · 000%" — because wrapping it puts the percentage
      on its own ragged second line and breaks the row rhythm. */
   display: grid;
   grid-template-columns: 10rem 1fr 14.5rem;
@@ -336,7 +336,8 @@ table.data th {{
 }}
 table.data td {{ border-bottom: 1px solid var(--dim); padding: 0.35em 0.6em 0.35em 0; }}
 /* A right-aligned column needs a LEFT gutter, or its digits butt against the
-   previous cell's text — "-$50.00" + "2026-07-23" reads as one token. Only the
+   previous cell's text — an amount and the next column's date run together
+   into one unreadable token. Only the
    last column may drop its right padding, so the figures align to the rule. */
 table.data td.num, table.data th.num {{ text-align: right; padding-left: 1.6em;
   font-variant-numeric: tabular-nums; }}
