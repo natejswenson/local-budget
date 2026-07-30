@@ -908,18 +908,27 @@ def walmart_capture(headed: bool) -> None:
 @walmart.command("sync")
 @click.option("--days", type=int, default=90, show_default=True,
               help="how far back to pull")
+@click.option("--detail", is_flag=True,
+              help="also read each order's page for item lines (slow; one page "
+                   "load per order, and the part Walmart challenges)")
 @click.option("--headed", is_flag=True, help="show the browser window")
-def walmart_sync(days: int, headed: bool) -> None:
-    """Fetch recent orders with item detail, store them, and match them."""
+def walmart_sync(days: int, detail: bool, headed: bool) -> None:
+    """Fetch recent orders, store them, and match them to bank charges.
+
+    Reconciling needs only the order total, which the list carries — so this is
+    quick and safe to run often. Item lines come from `budget walmart backfill`,
+    or from `--detail` here.
+    """
     from .connectors.walmart import sync as wm_sync
     db.init_schema()
     try:
-        r = wm_sync.run_sync(days=days, headless=not headed,
+        r = wm_sync.run_sync(days=days, detail=detail, headless=not headed,
                              on_progress=click.echo)
     except Exception as e:
         raise click.ClickException(str(e)) from e
     cov = r["coverage"]
-    click.echo(f"  ✓ {r['orders']} orders · {r['items']} item lines")
+    click.echo(f"  ✓ {r['orders']} orders · {r['items']} item lines"
+               + (f" · {r['detailed']} detail pages read" if "detailed" in r else ""))
     click.echo(f"    matched {r['matched']} "
                f"({r['exact']} single-charge, {r['split']} split settlement)"
                + (f" · {r['ambiguous']} need confirming" if r["ambiguous"] else ""))

@@ -94,22 +94,62 @@ def record_failure(scope: str, error: Exception) -> None:
         store.finish_run(conn, rid, status="failed", error=str(error)[:500])
 
 
-def run_sync(*, days: int = 90, headless: bool = True, on_progress=None) -> dict:
-    """Pull recent orders with item detail, store them, then match."""
+def run_sync(*, days: int = 90, detail: bool = False, headless: bool = True,
+             on_progress=None) -> dict:
+    """Pull recent orders, store them, match, then optionally fill in detail.
+
+    **The list is stored BEFORE any detail page is fetched**, and that ordering
+    is the whole point. Matching needs only the order total, which the list page
+    carries — so a sync that reaches the list has already done the reconciling
+    work even if every subsequent request fails. The first version fetched all
+    detail before storing anything, and a bot challenge on the first detail page
+    threw away ten successfully-fetched orders.
+
+    **`detail` is off by default**, for the same reason plus one more: item
+    detail is one page load per order, which is both the slow part and the part
+    that draws a challenge. A plain `sync` should be cheap enough to run often;
+    `budget walmart backfill` is where item lines get collected, at its own pace
+    and resumably.
+    """
     from . import fetch                       # lazy: pulls in Playwright
+
+    def say(msg: str) -> None:
+        if on_progress:
+            on_progress(msg)
 
     scope = f"days={days}"
     since = (date.today() - timedelta(days=days)).isoformat()
     try:
-        orders = fetch.fetch_orders(since=since, detail=True, headless=headless,
-                                    on_progress=on_progress)
-    except Exception as e:
-        record_failure(scope, e)
-        raise
-    try:
-        return store_and_match(orders, scope=scope, since=since)
+        with fetch.browser_session(headless=headless) as f:
+            orders = f.order_list(since=since, on_progress=on_progress)
+            summary = store_and_match(orders, scope=scope, since=since)
+
+            if detail:
+                # Best-effort from here. Everything above is already committed,
+                # so a challenge now costs item lines, not the reconciliation.
+                with db.connect() as conn:
+                    todo = [o["order_number"] for o in orders
+                            if not conn.execute(
+                                "SELECT detail_fetched FROM walmart_orders "
+                                "WHERE order_number = ?",
+                                (o["order_number"],)).fetchone()["detail_fetched"]]
+                got = 0
+                for num in todo:
+                    try:
+                        d = f.order_detail(num)
+                    except Exception as e:                    # noqa: BLE001
+                        say(f"    detail stopped after {got} orders — {e}")
+                        break
+                    with db.connect() as conn:
+                        rid = store.start_run(conn, f"sync-detail {num}")
+                        store.store_orders(conn, [d], rid)
+                        store.finish_run(conn, rid, status="success",
+                                         orders_seen=1, orders_upserted=1)
+                    got += 1
+                summary["detailed"] = got
     except store.SyncAborted:
         raise                      # nothing was written; there is no run to log
     except Exception as e:
         record_failure(scope, e)
         raise
+    return summary

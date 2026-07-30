@@ -28,8 +28,9 @@ from .match import MERCHANT_LIKE
 from .session import WalmartAuthError
 
 #: Between detail fetches. Not a throttle we are forced into — a long scrape
-#: that hammers a server gets blocked harder, and a backfill is not urgent.
-POLITE_DELAY_SECONDS = 1.5
+#: that hammers a server gets blocked harder, and a backfill is not urgent. 1.5s
+#: was too brisk: a live run drew a bot challenge on its first detail page.
+POLITE_DELAY_SECONDS = 5.0
 
 #: Transient-failure retry schedule, in seconds. Deliberately short and few.
 BACKOFF_SECONDS = (5, 20, 60)

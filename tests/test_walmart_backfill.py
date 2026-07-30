@@ -251,3 +251,51 @@ def test_a_challenge_is_never_retried(monkeypatch, msg):
     with pytest.raises(RuntimeError):
         backfill._with_retry(challenged, what="x")
     assert len(attempts) == 1
+
+
+# ── sync: the list must be banked before any detail is attempted ─────────────
+def test_sync_stores_the_list_before_fetching_any_detail(conn, fetcher, tmp_path,
+                                                         monkeypatch):
+    """The regression. The first version fetched every detail page before
+    storing anything, so a bot challenge on the FIRST detail page threw away ten
+    successfully-fetched orders — including the reconciliation, which needs only
+    the totals the list already carried."""
+    from local_budget.connectors.walmart import sync
+
+    monkeypatch.setenv("LOCAL_BUDGET_DATA_DIR", str(tmp_path))
+    _bank(conn, 1, "2026-07-01", -1000)
+    conn.commit()
+
+    class Challenged(FakeFetcher):
+        def order_detail(self, order_number):
+            self.calls.append(order_number)
+            raise RuntimeError("Walmart served its bot challenge")
+
+    fetcher["f"] = Challenged([_order("A", "2026-07-01", "10.00")])
+    r = sync.run_sync(days=60, detail=True)
+
+    assert r["orders"] == 1
+    assert r["matched"] == 1, "reconciliation survives a failed detail fetch"
+    assert r["detailed"] == 0
+    with db.connect(tmp_path / "budget.db") as c:
+        assert c.execute("SELECT COUNT(*) n FROM walmart_orders").fetchone()["n"] == 1
+
+
+def test_sync_does_not_touch_detail_pages_unless_asked(conn, fetcher, tmp_path,
+                                                       monkeypatch):
+    """Detail is one page load per order and the part Walmart challenges. A
+    plain sync should be cheap enough to run often."""
+    from local_budget.connectors.walmart import sync
+
+    monkeypatch.setenv("LOCAL_BUDGET_DATA_DIR", str(tmp_path))
+    _bank(conn, 1, "2026-07-01", -1000)
+    conn.commit()
+    fetcher["f"] = FakeFetcher([_order("A", "2026-07-01", "10.00")])
+    r = sync.run_sync(days=60)
+    assert fetcher["f"].calls == []
+    assert r["matched"] == 1, "the order total alone is enough to reconcile"
+
+
+def test_the_polite_delay_is_not_brisk(monkeypatch):
+    """1.5s drew a challenge on a live run's first detail page."""
+    assert backfill.POLITE_DELAY_SECONDS >= 5.0

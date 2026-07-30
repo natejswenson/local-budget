@@ -37,8 +37,10 @@ LIST_SETTLE_MS = 4000
 DETAIL_SETTLE_MS = 6000
 
 #: Between navigations. Deliberate courtesy, and cheap insurance: the block that
-#: taught this module its rule came from going fast.
-POLITE_DELAY_SECONDS = 2.0
+#: taught this module its rule came from going fast. Raised to 5s after a real
+#: sync was challenged on its FIRST order-detail navigation, having just paged
+#: the list twice — the per-order pages are the sensitive ones.
+POLITE_DELAY_SECONDS = 5.0
 
 #: Hard stop on paging, so a cursor that stops advancing cannot loop forever.
 MAX_PAGES = 80
