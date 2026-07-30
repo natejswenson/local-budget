@@ -219,10 +219,27 @@ def add_category(name: str) -> None:
 
 @main.command("report-pdf")
 @click.argument("period")
-def report_pdf(period: str) -> None:
+@click.option("--no-sync", is_flag=True,
+              help="skip the Amazon refresh and render from stored data")
+def report_pdf(period: str, no_sync: bool) -> None:
     """Render the visual report PDF for PERIOD (YYYY-MM) — the no-MCP path to
-    the same deterministic renderer the render_report tool uses."""
+    the same deterministic renderer the render_report tool uses.
+
+    Refreshes Amazon item data first when it would help: current or previous
+    month, a saved session, and nothing synced in the last 12 hours. The
+    refresh can never fail the report — a stale scraper cookie is not a reason
+    to be unable to render your month.
+    """
     from .report import render as report_render
+    if not no_sync:
+        from .connectors.amazon import autosync
+        r = autosync.maybe_sync(period)
+        if r["status"] == "synced":
+            click.echo(f"  ✓ amazon refreshed — {r['detail']}")
+        elif r["status"] in ("no-session", "failed"):
+            # Surfaced, never fatal. Silence here would let item data quietly
+            # rot for months behind a report that still looks complete.
+            click.echo(f"  ! amazon not refreshed — {r['detail']}")
     try:
         out = report_render.render_report(period)
     except (ValueError, report_render.ChromeNotFoundError) as e:
@@ -449,6 +466,174 @@ def config_get(key: str | None) -> None:
     else:
         for k, v in db.all_settings().items():
             click.echo(f"  {k} = {v}")
+
+
+# ── amazon connector ─────────────────────────────────────────────────────────
+@main.group()
+def amazon() -> None:
+    """Pull Amazon order + item detail and reconcile it against the ledger.
+
+    Amazon publishes no consumer order API, so this signs in to your account
+    and parses the consumer site. Your data, your account — but Amazon's terms
+    prohibit automated extraction, and a page redesign can break it. Set
+    AMAZON_USERNAME / AMAZON_PASSWORD (and AMAZON_OTP_SECRET_KEY, which is what
+    makes sync unattended) in .env.
+    """
+
+
+@amazon.command("login")
+@click.option("--password", "use_password", is_flag=True,
+              help="force the AMAZON_USERNAME/PASSWORD flow instead of a browser")
+@click.option("--timeout", default=300, show_default=True,
+              help="seconds to wait for you to finish signing in")
+def amazon_login(use_password: bool, timeout: int) -> None:
+    """Sign in and cache the session (0600, under data/amazon/).
+
+    Defaults to opening a real browser window, which is the only thing that
+    works for a passkey account — there is no replayable secret in a passkey,
+    so we capture the resulting session instead of storing a credential. Falls
+    back to the password flow only if you ask for it explicitly.
+    """
+    from .connectors.amazon import browser_login, session as az_session
+    db.init_schema()
+    try:
+        if use_password:
+            az_session.build_session(force_login=True)
+            click.echo(f"  ✓ signed in — session cached at {az_session.cookie_path()}")
+        else:
+            r = browser_login.login(timeout=timeout, echo=click.echo)
+            click.echo(f"  ✓ session cached at {r['path']} (0600)")
+            click.echo("    now run: budget amazon sync --days 60")
+    except Exception as e:
+        raise click.ClickException(str(e)) from e
+
+
+@amazon.command("sync")
+@click.option("--days", type=int, default=365, show_default=True,
+              help="how far back to pull")
+@click.option("--year", type=int, default=None,
+              help="pull one calendar year instead of a rolling window")
+def amazon_sync(days: int, year: int | None) -> None:
+    """Fetch orders + charges, store them, and match them to transactions."""
+    from .connectors.amazon import sync as az_sync
+    db.init_schema()
+    try:
+        r = az_sync.run_sync(days=None if year else days, year=year)
+    except Exception as e:
+        raise click.ClickException(str(e)) from e
+    cov = r["coverage"]
+    click.echo(f"  ✓ {r['orders']} orders · {r['transactions']} Amazon charges")
+    click.echo(f"    matched {r['matched']} "
+               f"({r['exact']} exact, {r['windowed']} windowed)"
+               + (f" · {r['ambiguous']} need confirming" if r["ambiguous"] else ""))
+    click.echo(f"    coverage {cov['coverage_pct']}% of Amazon spend "
+               f"({dollars(cov['matched_cents'])} of {dollars(cov['total_cents'])})")
+
+
+@amazon.command("status")
+@click.option("--month", default=None, help="YYYY-MM (default: all time)")
+def amazon_status(month: str | None) -> None:
+    """Coverage — what share of Amazon dollars have item detail behind them."""
+    from .connectors.amazon import match as az_match
+    db.init_schema()
+    with db.connect() as conn:
+        cov = az_match.coverage(conn, month)
+        last = conn.execute(
+            "SELECT started_at, status, scope, orders_upserted, error_message "
+            "FROM amazon_sync_runs ORDER BY sync_run_id DESC LIMIT 1").fetchone()
+    scope = month or "all time"
+    click.echo(f"Amazon coverage — {scope}")
+    click.echo(f"  {cov['coverage_pct']}% of dollars "
+               f"({dollars(cov['matched_cents'])} of {dollars(cov['total_cents'])})")
+    click.echo(f"  {cov['matched_txns']} of {cov['total_txns']} charges explained")
+    if last:
+        click.echo(f"  last sync: {last['started_at']} · {last['status']} · {last['scope']}")
+        if last["error_message"]:
+            click.echo(f"    ! {last['error_message']}")
+    else:
+        click.echo("  last sync: never — run `budget amazon sync`")
+
+
+@amazon.command("match")
+@click.option("--confirm", "confirm_pair", default=None, metavar="AMAZON_ID:TXN_ID",
+              help="resolve one ambiguous pair by hand")
+def amazon_match(confirm_pair: str | None) -> None:
+    """Re-run matching, or confirm an ambiguous pair.
+
+    Ambiguity is never guessed: two Amazon charges of the same amount days
+    apart is routine, and attributing the wrong basket of items to a charge is
+    worse than leaving it unexplained.
+    """
+    from .connectors.amazon import match as az_match
+    db.init_schema()
+    if confirm_pair:
+        try:
+            a_id, t_id = (int(x) for x in confirm_pair.split(":", 1))
+        except ValueError as e:
+            raise click.ClickException("use --confirm AMAZON_ID:TXN_ID") from e
+        with db.connect() as conn:
+            az_match.confirm(conn, a_id, t_id)
+        click.echo(f"  ✓ amazon txn {a_id} -> transaction {t_id}")
+        return
+    with db.connect() as conn:
+        r = az_match.run(conn)
+    click.echo(f"  ✓ matched {r['matched']} ({r['exact']} exact, {r['windowed']} windowed)")
+    for a in r["ambiguous"]:
+        click.echo(f"\n  ? amazon txn {a['amazon_txn_id']} · {a['completed_date']} · "
+                   f"{dollars(a['amount_cents'])} · order {a['order_number'] or '—'}")
+        for c in a["candidates"]:
+            click.echo(f"      confirm with: budget amazon match --confirm "
+                       f"{a['amazon_txn_id']}:{c['txn_id']}"
+                       f"   ({c['posted_date']} {c['merchant_norm']})")
+
+
+@amazon.command("items")
+@click.option("--month", default=None, help="YYYY-MM (default: all time)")
+def amazon_items(month: str | None) -> None:
+    """What you actually bought, behind the matched Amazon charges."""
+    from .connectors.amazon import match as az_match
+    db.init_schema()
+    with db.connect() as conn:
+        rows = az_match.breakdown(conn, month)
+        cov = az_match.coverage(conn, month)
+    if not rows:
+        click.echo("  no matched Amazon items yet — run `budget amazon sync`")
+        return
+    click.echo(f"Amazon items — {month or 'all time'}")
+    click.echo(f"  {'DATE':<11} {'AMOUNT':>10}  ITEM")
+    for r in rows:
+        line = (r["unit_price_cents"] or 0) * (r["quantity"] or 1)
+        qty = f" x{r['quantity']}" if (r["quantity"] or 1) > 1 else ""
+        title = (r["title"] or "—")[:58]
+        click.echo(f"  {r['posted_date']:<11} {dollars(line):>10}  {title}{qty}")
+    if cov["coverage_pct"] < 100:
+        click.echo(f"\n  ! {100 - cov['coverage_pct']:.1f}% of Amazon spend is still "
+                   f"unexplained — `budget amazon status`")
+
+
+@amazon.command("unmatched")
+@click.option("--month", default=None, help="YYYY-MM (default: all time)")
+def amazon_unmatched(month: str | None) -> None:
+    """Amazon charges in the ledger with no item detail behind them."""
+    from .connectors.amazon.match import MERCHANT_LIKE
+    db.init_schema()
+    like = " OR ".join("merchant_norm LIKE ?" for _ in MERCHANT_LIKE)
+    where_month = " AND posted_date LIKE ?" if month else ""
+    params = (*MERCHANT_LIKE, *((f"{month}-%",) if month else ()))
+    with db.connect() as conn:
+        rows = conn.execute(
+            f"""SELECT txn_id, posted_date, merchant_norm, amount_cents
+                  FROM transactions
+                 WHERE status='posted' AND amount_cents < 0 AND ({like}){where_month}
+                   AND txn_id NOT IN (SELECT txn_id FROM amazon_matches)
+              ORDER BY amount_cents""", params).fetchall()
+    if not rows:
+        click.echo("  ✓ every Amazon charge has item detail behind it")
+        return
+    click.echo(f"Unexplained Amazon charges — {month or 'all time'}")
+    for r in rows:
+        click.echo(f"  {r['txn_id']:>5}  {r['posted_date']}  "
+                   f"{dollars(r['amount_cents']):>10}  {r['merchant_norm']}")
 
 
 if __name__ == "__main__":
