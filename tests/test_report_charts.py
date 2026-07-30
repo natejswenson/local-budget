@@ -109,7 +109,11 @@ def test_floor_rows_do_not_set_the_scale_and_clamp_with_a_clip_mark():
     ]})
     # scale is set by the ceiling rows: max(120000, 63430, 80000, 103400)
     shopping = out.split("Shopping")[1].split("sb-row")[0]
-    assert 'style="width:100.0%"' in shopping        # the largest ceiling row
+    # the largest ceiling row fills the track, split at its budget
+    s_base = float(shopping.split('class="sb-fill" style="width:')[1].split("%")[0])
+    s_over = float(shopping.split('class="sb-over" style="left:')[1]
+                   .split("width:")[1].split("%")[0])
+    assert round(s_base + s_over, 1) == 100.0
     groceries = out.split("Groceries")[1].split("sb-row")[0]
     g_fill = float(groceries.split('class="sb-fill" style="width:')[1].split("%")[0])
     assert 40.0 < g_fill < 50.0                      # legible, not a stub
@@ -118,6 +122,45 @@ def test_floor_rows_do_not_set_the_scale_and_clamp_with_a_clip_mark():
     assert 'style="width:100.0%"' in inv and 'class="clip"' in inv
     assert "$10,000.00 of $3,000.00 · 433%" in inv   # the truth is in the text
     assert out.count('class="clip"') == 1            # only the clamped row
+
+
+def test_bar_splits_at_the_budget_so_the_accent_measures_the_overspend():
+    """The orange segment must be exactly the part of the bar past the budget
+    tick — that is what earns it a place on a page this sparing with color. If
+    the split drifts, the accent stops being a measurement and becomes a label."""
+    out = charts.spend_vs_budget({"month": "2026-07", "categories": [
+        _cat("Dining Out", 60000, 30000, over=True, pct=200),
+    ]})
+    row = out.split("Dining Out")[1]
+    base = float(row.split('class="sb-fill" style="width:')[1].split("%")[0])
+    over_left = float(row.split('class="sb-over" style="left:')[1].split("%")[0])
+    over_w = float(row.split('class="sb-over" style="left:')[1]
+                   .split("width:")[1].split("%")[0])
+    tick = float(row.split('class="tick" style="left:')[1].split("%")[0])
+    # spent 600 vs budget 300 → the bar is half ink, half accent...
+    assert base == 50.0 and over_w == 50.0
+    # ...the accent starts exactly where the ink stops, and both meet the tick
+    assert over_left == base == tick
+
+
+def test_under_budget_and_floor_rows_get_no_accent_segment():
+    """Only a real overrun is orange. A floor row past its savings target has
+    exceeded a goal, not blown a budget — colouring it would invert the
+    meaning of the accent on the page."""
+    out = charts.spend_vs_budget({"month": "2026-07", "categories": [
+        _cat("Groceries", 30000, 60000, pct=50),
+        _cat("State529", 60000, 30000, floor=True, pct=200),
+    ]})
+    assert "sb-over" not in out
+
+
+def test_trend_highlights_only_the_reports_own_month():
+    out = charts.trend_chart(_TREND, highlight="2026-03")
+    assert out.count('fill="var(--accent)"') == 1
+    assert out.count('class="axis now"') == 1
+    # and no highlight at all when the period isn't in the series
+    assert "var(--accent)" not in charts.trend_chart(_TREND, highlight="2099-01")
+    assert "var(--accent)" not in charts.trend_chart(_TREND)
 
 
 def test_scale_falls_back_when_every_row_is_a_floor_row():

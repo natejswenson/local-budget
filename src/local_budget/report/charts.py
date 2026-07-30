@@ -19,6 +19,7 @@ from .brand import WARN
 _INK = "var(--ink)"
 _INK_MID = "var(--ink-mid)"
 _DIM = "var(--dim)"
+_ACCENT = "var(--accent)"
 
 
 def _esc(s: object) -> str:
@@ -130,6 +131,15 @@ def spend_vs_budget(overview: dict) -> str:
         bar_cents = max(spent, 0)                        # bar floors at zero;
         budget = c.get("budget_cents")                   # the text keeps the sign
         width = min(round(bar_cents / scale * 100, 2), 100.0)
+        # Split the bar at the budget: ink up to it, accent past it. The orange
+        # segment is literally the size of the overspend. A floor row is not
+        # split — exceeding a savings target is the goal, not an overrun.
+        if budget is not None and not c.get("floor") and bar_cents > int(budget):
+            base = min(round(int(budget) / scale * 100, 2), 100.0)
+            over_seg = (f'<span class="sb-over" style="left:{base}%;'
+                        f'width:{round(width - base, 2)}%"></span>')
+        else:
+            base, over_seg = width, ""
         # Only the bar overflowing needs the mark. A tick past the scale is
         # clamped too, but a budget line pinned at the end reads correctly as
         # "off the top" without further annotation.
@@ -148,7 +158,7 @@ def spend_vs_budget(overview: dict) -> str:
         out.append(
             f'<div class="sb-row"><div class="sb-label">{warn}{_esc(c["category"])}</div>'
             f'<div class="sb-track">'
-            f'<span class="sb-fill" style="width:{width}%"></span>'
+            f'<span class="sb-fill" style="width:{base}%"></span>{over_seg}'
             f'{tick}{clip}</div>'
             f'<div class="sb-value">{_esc(trailing)}</div></div>')
     out.append("</section>")
@@ -193,11 +203,16 @@ def flags_section(month_anomalies: list[dict], month_recurring: list[dict],
 
 
 # ── monthly trend (dashboard parity — new in the deterministic renderer) ─────
-def trend_chart(trend: list[dict], months: int = 12) -> str:
+def trend_chart(trend: list[dict], months: int = 12,
+                highlight: str | None = None) -> str:
     """Grouped spend/income bars per month as inline SVG. `trend` is
     reports.monthly_trend's oldest-first list; the most recent `months` are
     shown. No per-bar numeric labels (axis months only), so no formatted-money
-    text is re-derived here."""
+    text is re-derived here.
+
+    `highlight` is the report's own period: that month's spend bar and axis
+    label take the accent, so a reader can place the document in the series
+    at a glance instead of counting columns from the right."""
     rows = trend[-months:]
     if not rows:
         return '<section class="trend"><p class="empty">no history yet</p></section>'
@@ -209,18 +224,22 @@ def trend_chart(trend: list[dict], months: int = 12) -> str:
     bars, labels = [], []
     for i, r in enumerate(rows):
         x0 = pad + i * group_w
+        this_month = highlight is not None and r["month"] == highlight
         # Ink for spend (the subject), mid-ink for income. Both clear 3:1 on
-        # cream; the legend below carries identity, never the hue alone.
+        # cream; the legend below carries identity, never the hue alone. The
+        # report's own month is the exception — its spend bar is the accent.
         for j, (key, color) in enumerate((("spend_cents", _INK),
                                           ("income_cents", _INK_MID))):
             v = max(int(r[key]), 0)
             bh = round(v / peak * (h - 2 * pad), 1)
             x = round(x0 + group_w * 0.15 + j * bar_w, 1)
+            fill = _ACCENT if (this_month and key == "spend_cents") else color
             bars.append(f'<rect x="{x}" y="{round(h - pad - bh, 1)}" '
-                        f'width="{round(bar_w, 1)}" height="{bh}" fill="{color}"/>')
+                        f'width="{round(bar_w, 1)}" height="{bh}" fill="{fill}"/>')
         if n <= 12 or i % 2 == 0:
+            cls = "axis now" if this_month else "axis"
             labels.append(f'<text x="{round(x0 + group_w / 2, 1)}" y="{h - 4}" '
-                          f'text-anchor="middle" class="axis">{_esc(r["month"][2:])}</text>')
+                          f'text-anchor="middle" class="{cls}">{_esc(r["month"][2:])}</text>')
     legend = (f'<span class="key"><i style="background:{_INK}"></i>'
               f'Spent</span><span class="key">'
               f'<i style="background:{_INK_MID}"></i>Income</span>')

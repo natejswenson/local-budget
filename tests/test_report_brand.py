@@ -99,12 +99,23 @@ def _page(**kw):
     return html.assemble(**{**defaults, **kw})
 
 
-def test_accent_is_declared_once_and_spent_only_on_the_stamp_and_focal_figure():
-    """Strict one-accent. The orange hex is declared exactly once (on :root),
-    and only two selectors are allowed to spend it: the masthead stamp and the
-    single focal figure. If a third selector picks it up, the document stops
-    matching every other PRESS artifact — so the selector set, not a raw count,
-    is what this pins."""
+#: Every selector allowed to spend the accent, and why it earns it. The orange
+#: is the brand's scarcest resource — this set IS the budget, and a new entry
+#: is a deliberate design decision, not an implementation detail.
+ACCENT_BUDGET = {
+    "span.stamp":            "the masthead monogram — part of the frame",
+    "div.stat.focal .value": "the one headline figure (Spent)",
+    "span.sb-over":          "the overspend segment — the orange MEASURES it",
+    "span.warn":             "the ⚠ on an over-budget row",
+    "text.axis.now":         "the report's own month in the trend series",
+}
+
+
+def test_accent_is_declared_once_and_spent_only_by_the_budgeted_selectors():
+    """The orange hex is declared exactly once (on :root) and spent only by the
+    selectors in ACCENT_BUDGET. Pinning the selector SET rather than a count is
+    what makes an unplanned fifth use fail loudly instead of quietly diluting
+    the one thing the eye is supposed to land on."""
     page = _page()
     assert page.count("#E8501F") == 1                    # declared once, on :root
 
@@ -114,7 +125,22 @@ def test_accent_is_declared_once_and_spent_only_on_the_stamp_and_focal_figure():
         for block in css.split("}")
         if "var(--accent)" in block and "{" in block
     }
-    assert users == {"span.stamp", "div.stat.focal .value"}, users
+    assert users == set(ACCENT_BUDGET), users
+
+
+def test_accent_uses_are_all_data_bearing_not_decorative():
+    """Every accent use past the frame must be attached to a specific datum —
+    a figure, a magnitude, or a row that broke its budget. None may be a
+    background, a border on a container, or a heading."""
+    css = brand.stylesheet(brand.load_theme())
+    for block in css.split("}"):
+        if "var(--accent)" not in block or "{" not in block:
+            continue
+        selector = block.split("{")[0].strip().splitlines()[-1].strip()
+        if selector == "span.stamp":                      # the frame is exempt
+            continue
+        assert "background" not in block or selector == "span.sb-over", (
+            f"{selector} fills with accent but is not the overspend bar")
 
 
 def test_exactly_one_focal_figure_and_charts_never_reach_for_the_accent():
