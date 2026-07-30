@@ -120,7 +120,7 @@ def run(*, headless: bool = True, echo=print) -> dict:
                                json.dumps(blobs, indent=2))
             manifest["pages"].append({
                 "label": label, "requested": url, "landed": page.url,
-                "signed_in": signed_in(page.url),
+                "signed_in": signed_in(page.url, html),
                 "html": html_path.name, "html_bytes": len(html),
                 "inline": json_path.name,
                 "inline_keys": {k: len(v or "") for k, v in blobs.items()},
@@ -128,13 +128,15 @@ def run(*, headless: bool = True, echo=print) -> dict:
 
         snapshot(ORDERS_URL, "orders")
         if not manifest["pages"][0]["signed_in"]:
-            # Say it here rather than letting a later parser puzzle over a login
-            # page. Headless-vs-headed is exactly what this command is for.
+            # Say it here rather than letting a later parser puzzle over a guest
+            # page. Walmart serves a 200 at the right URL either way, so this is
+            # the only place the difference is visible.
             raise WalmartAuthError(
-                f"the orders page redirected to {page.url} — the saved session "
-                f"is not being honoured"
+                "the orders page served the guest sign-in wall — the saved "
+                "session is not being honoured"
                 + (" in headless mode; retry with --headed" if headless else "")
-                + ". If --headed also bounces, run `budget walmart login` again.")
+                + ". If --headed also shows the wall, run "
+                  "`budget walmart login` again.")
 
         links = _order_links(page)
         manifest["order_links"] = len(links)

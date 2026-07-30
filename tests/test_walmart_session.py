@@ -30,33 +30,44 @@ def _cookie(name, domain=".walmart.com", expires=-1):
             "expires": expires}
 
 
-# ── the login gates ──────────────────────────────────────────────────────────
-@pytest.mark.parametrize("url,ok", [
-    ("https://www.walmart.com/orders", True),
-    ("https://www.walmart.com/orders/2000123", True),
-    ("https://www.walmart.com/account/login?returnUrl=/orders", False),
-    ("https://www.walmart.com/", False),
+# ── the login gate ───────────────────────────────────────────────────────────
+#: Copy taken verbatim from a real anonymous fetch of walmart.com/orders.
+GUEST_PAGE = """<html><title>Manage Account - Track your order - Walmart.com</title>
+<main data-testid="maincontent">Track your order. If you don't have an account
+yet, you can still track your order status. Email address Order number
+View order status. Sign in to do more with your account.</main></html>"""
+
+SIGNED_IN_PAGE = """<html><title>Purchase history</title>
+<main data-testid="maincontent">Purchase history. Jul 20 order. $149.50</main></html>"""
+
+
+def test_the_guest_wall_is_never_mistaken_for_an_order_history():
+    """THE bug this file exists for. Walmart does not redirect a logged-out
+    visitor away from /orders — it serves a 200 at that exact URL with a guest
+    tracking form. A URL-only test called that success, closed the window about
+    two seconds after opening it, and saved an anonymous browsing session."""
+    assert browser_login.signed_in("https://www.walmart.com/orders", GUEST_PAGE) is False
+
+
+def test_a_real_order_history_is_recognised():
+    assert browser_login.signed_in("https://www.walmart.com/orders", SIGNED_IN_PAGE) is True
+
+
+@pytest.mark.parametrize("url", [
+    "https://www.walmart.com/account/login?returnUrl=/orders",
+    "https://www.walmart.com/",
+    "https://www.walmart.com/account",
 ])
-def test_only_actually_reaching_the_orders_page_counts_as_signed_in(url, ok):
-    """Cookies are set long before sign-in completes. Loading the orders page is
-    the only test that cannot pass while logged out."""
-    assert browser_login.signed_in(url) is ok
+def test_being_somewhere_other_than_the_orders_page_is_not_a_session(url):
+    assert browser_login.signed_in(url, SIGNED_IN_PAGE) is False
 
 
-def test_the_cookie_hint_is_an_accelerator_not_a_requirement():
-    """The regression. `looks_done` returning False must NOT mean "never check" —
-    the forced probe interval exists precisely so an unrecognised cookie name
-    costs 30 seconds rather than the whole session."""
-    assert browser_login.looks_done("https://www.walmart.com/", {"CID"}) is True
-    assert browser_login.looks_done("https://www.walmart.com/", {"whatever"}) is False
-    assert browser_login.FORCED_PROBE_SECONDS > 0
-    assert browser_login.FORCED_PROBE_SECONDS < browser_login.DEFAULT_TIMEOUT
-
-
-def test_the_hint_never_fires_while_still_on_a_sign_in_page():
-    """Probing is cheap but not free; there is nothing to confirm yet."""
-    for p in browser_login.LOGIN_PATHS:
-        assert browser_login.looks_done(f"https://www.walmart.com{p}", {"CID"}) is False
+def test_no_cookie_name_is_treated_as_evidence_of_a_session():
+    """Checked, not assumed: a browser that has NEVER signed in comes back from
+    /orders holding ACID, hasACID and AID. Any module-level list of "auth
+    cookies" here is a bug waiting to be re-found."""
+    assert not hasattr(browser_login, "AUTH_COOKIE_CANDIDATES")
+    assert not hasattr(session, "AUTH_COOKIE_CANDIDATES")
 
 
 def test_the_timeout_is_long_enough_for_a_texted_code():
@@ -65,6 +76,34 @@ def test_the_timeout_is_long_enough_for_a_texted_code():
 
 
 # ── what gets written, and how ───────────────────────────────────────────────
+def test_only_a_verified_capture_is_stamped():
+    """The stamp is the entire basis on which a later run trusts the file, so
+    only the path that has READ a signed-in orders page may write it."""
+    session.save_storage_state(_state(_cookie("ACID")))
+    assert session.CAPTURED_AT not in json.loads(
+        session.storage_state_path().read_text())
+    session.save_storage_state(_state(_cookie("ACID")), verified=True)
+    assert session.CAPTURED_AT in json.loads(
+        session.storage_state_path().read_text())
+
+
+def test_an_unstamped_jar_is_not_treated_as_a_session():
+    """It may well be the anonymous browsing session an earlier bug saved."""
+    session.save_storage_state(_state(_cookie("ACID")))
+    assert session.stored_session_looks_valid() is False
+
+
+def test_a_verified_capture_is_a_session():
+    session.save_storage_state(_state(_cookie("ACID")), verified=True)
+    assert session.stored_session_looks_valid() is True
+
+
+def test_a_capture_older_than_the_max_age_is_not_worth_a_browser_launch():
+    session.save_storage_state(_state(_cookie("ACID")), verified=True)
+    later = time.time() + (session.SESSION_MAX_AGE_DAYS + 1) * 86400
+    assert session.stored_session_looks_valid(now=later) is False
+
+
 def test_only_walmart_cookies_are_kept(tmp_path):
     """Third-party cookies are not ours to store, are not needed to read an
     order page, and would widen what a leaked file is worth."""
@@ -103,24 +142,6 @@ def test_a_state_with_no_walmart_cookies_is_refused():
 # ── the offline validity heuristic ───────────────────────────────────────────
 def test_no_file_means_no_session():
     assert session.stored_session_looks_valid() is False
-
-
-def test_a_session_cookie_with_no_expiry_is_live():
-    session.save_storage_state(_state(_cookie("CID", expires=-1)))
-    assert session.stored_session_looks_valid() is True
-
-
-def test_an_expired_cookie_is_not_a_session():
-    """Checked offline, unlike the Amazon equivalent: a session that has
-    demonstrably lapsed should say so before opening a browser and walking into
-    a login wall."""
-    session.save_storage_state(_state(_cookie("CID", expires=time.time() - 60)))
-    assert session.stored_session_looks_valid() is False
-
-
-def test_an_unexpired_cookie_is_a_session():
-    session.save_storage_state(_state(_cookie("CID", expires=time.time() + 8640)))
-    assert session.stored_session_looks_valid() is True
 
 
 def test_a_corrupt_state_file_is_not_a_session_and_does_not_raise():

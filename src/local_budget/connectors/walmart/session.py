@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime
 from pathlib import Path
 
 from ... import paths
@@ -39,14 +40,24 @@ class WalmartAuthError(RuntimeError):
     """No captured session, or the captured one is no longer honoured."""
 
 
-#: Cookie names that only exist on a signed-in walmart.com session. Used for a
-#: CHEAP OFFLINE heuristic — "is it even worth trying" — never as proof. Whether
-#: Walmart still honours the session is knowable only by making a request, which
-#: `fetch` reports on. Any one of these present is enough; requiring all three
-#: would turn a harmless cookie rename into "you are logged out".
-AUTH_COOKIE_CANDIDATES = ("CID", "customer", "type", "hasCID")
-
 WALMART_DOMAIN = "walmart.com"
+
+#: **There is no cookie that means "signed in".** This was checked, not assumed:
+#: loading walmart.com/orders in a browser that has never signed in sets `ACID`,
+#: `hasACID`, `AID` and forty others — the same names a signed-in session
+#: carries. An earlier version of this module treated `ACID`-style names as
+#: evidence and was wrong about every anonymous visit.
+#:
+#: So authentication is established ONE way only: ask for the orders page and
+#: look at what came back (`browser_login.signed_in`). What this module can do
+#: offline is remember that a verified capture happened, and when.
+CAPTURED_AT = "captured_at"
+
+#: How long a captured session is assumed worth trying. Not Walmart's real
+#: expiry, which is Walmart's business and unknowable from here — just the point
+#: past which "run login again" is better advice than a browser launch that ends
+#: at a sign-in wall.
+SESSION_MAX_AGE_DAYS = 30
 
 
 def walmart_dir() -> Path:
@@ -92,30 +103,29 @@ def _walmart_cookies(state: dict) -> list[dict]:
 
 
 def stored_session_looks_valid(now: float | None = None) -> bool:
-    """Does the stored state hold an unexpired walmart.com auth cookie?
+    """Is there a state file worth opening a browser for?
 
-    Offline and cheap. Expiry IS checked — unlike the Amazon equivalent, which
-    only tests for a cookie's presence — because Playwright records it and a
-    session that has demonstrably lapsed should say so before opening a browser
-    and walking into a login wall.
+    Deliberately weak, and named for what it can actually claim. It asks three
+    things: is there a capture, did it come from a run that VERIFIED itself
+    against the orders page (the `captured_at` stamp is only written on that
+    path), and is it younger than `SESSION_MAX_AGE_DAYS`.
+
+    It cannot tell you the session still works. Nothing offline can — see the
+    note on `CAPTURED_AT`. Callers that need to know make a request.
     """
-    p = storage_state_path()
-    if not p.exists():
+    state = load_storage_state()
+    if not state or not _walmart_cookies(state):
+        return False
+    stamp = state.get(CAPTURED_AT)
+    if not stamp:
+        # A jar with no stamp predates content verification, so it may well be
+        # an anonymous browsing session that an earlier bug called a login.
         return False
     try:
-        state = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        age = (time.time() if now is None else now) - datetime.fromisoformat(stamp).timestamp()
+    except (TypeError, ValueError):
         return False
-    now = time.time() if now is None else now
-    for c in _walmart_cookies(state):
-        if c.get("name") not in AUTH_COOKIE_CANDIDATES:
-            continue
-        exp = c.get("expires")
-        # -1 (or absent) marks a session cookie: no expiry to fail, and it is
-        # live for as long as the state is. Only a real past timestamp is stale.
-        if exp is None or exp == -1 or float(exp) > now:
-            return True
-    return False
+    return age < SESSION_MAX_AGE_DAYS * 86400
 
 
 def load_storage_state() -> dict | None:
@@ -140,12 +150,17 @@ def require_session() -> dict:
     return state
 
 
-def save_storage_state(state: dict) -> int:
+def save_storage_state(state: dict, *, verified: bool = False) -> int:
     """Write the state 0600. Returns the number of walmart.com cookies kept.
 
     Third-party cookies are dropped: they are not ours to store, they are not
     needed to read an order page, and keeping them would widen what a leaked
     file is worth.
+
+    `verified=True` stamps `captured_at`, and ONLY the login path that has read
+    a signed-in orders page may pass it. That stamp is the whole basis on which
+    `stored_session_looks_valid` later trusts the file, so writing it from
+    anywhere else would relaunch the bug it exists to close.
     """
     cookies = _walmart_cookies(state)
     if not cookies:
@@ -157,6 +172,8 @@ def save_storage_state(state: dict) -> int:
         "origins": [o for o in (state.get("origins") or [])
                     if WALMART_DOMAIN in (o.get("origin") or "")],
     }
+    if verified:
+        trimmed[CAPTURED_AT] = datetime.now().isoformat(timespec="seconds")
     path = storage_state_path()
     path.write_text(json.dumps(trimmed), encoding="utf-8")
     path.chmod(paths.FILE_MODE)

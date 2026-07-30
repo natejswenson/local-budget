@@ -860,12 +860,18 @@ def walmart() -> None:
 
 
 @walmart.command("login")
-@click.option("--timeout", default=300, show_default=True,
-              help="seconds to wait for you to finish signing in")
-def walmart_login(timeout: int) -> None:
+@click.option("--timeout", default=None, type=int,
+              help="seconds to wait for you to finish signing in "
+                   "(default: the connector's, currently 600)")
+def walmart_login(timeout: int | None) -> None:
     """Sign in through a browser window and cache the session (0600)."""
     from .connectors.walmart import browser_login
     db.init_schema()
+    # Defaulted HERE rather than in the option, so the connector stays the one
+    # place that decides how long a sign-in reasonably takes. A literal here
+    # silently overrode it once already — the module said 600 and the window
+    # closed at 300.
+    timeout = timeout or browser_login.DEFAULT_TIMEOUT
     try:
         r = browser_login.login(timeout=timeout, echo=click.echo)
     except Exception as e:
