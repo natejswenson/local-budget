@@ -375,6 +375,41 @@ def test_capturing_a_session_without_x_main_is_refused(tmp_path, monkeypatch):
             {"name": "session-id", "value": "1", "domain": ".amazon.com"}])
 
 
+# ── the agent's read/write boundary over the new tables ──────────────────────
+def test_agent_cannot_write_any_amazon_table(conn):
+    """Amazon rows are IMPORTED FACTS, like bank transactions. The authorizer
+    denies writes to every table absent from _AGENT_WRITE_TABLES, and none of
+    the amazon_* tables are listed — asserted here rather than assumed, because
+    adding one to that set later would silently make imported data mutable."""
+    import sqlite3
+    for sql in (
+        "INSERT INTO amazon_items (order_number, line_no, title) VALUES ('x',0,'y')",
+        "UPDATE amazon_orders SET grand_total_cents = 1",
+        "DELETE FROM amazon_matches",
+        "UPDATE amazon_transactions SET grand_total_cents = 1",
+        "INSERT INTO amazon_sync_runs (started_at, status) VALUES ('x','y')",
+    ):
+        with pytest.raises(sqlite3.DatabaseError):
+            with db.agent_connect(write=True) as c:
+                c.execute(sql)
+
+
+def test_agent_cannot_read_sync_error_messages(conn):
+    """A sync failure stores str(e) from any exception, and a sqlite error
+    embeds the values it was binding — product titles among them. Matches the
+    existing deny on import_runs.error_message."""
+    import sqlite3
+    conn.execute("INSERT INTO amazon_sync_runs (started_at, status, error_message) "
+                 "VALUES ('2026-07-29T00:00:00','failed','leaky detail')")
+    conn.commit()          # agent_connect() is a separate connection
+    with pytest.raises(sqlite3.DatabaseError):
+        with db.agent_connect() as c:
+            c.execute("SELECT error_message FROM amazon_sync_runs").fetchall()
+    # the rest of the row stays readable — status is not sensitive
+    with db.agent_connect() as c:
+        assert c.execute("SELECT status FROM amazon_sync_runs").fetchall()
+
+
 def test_coverage_returns_positive_magnitudes(conn):
     """Spend is stored as negative cents but reported as a positive magnitude.
     Getting this backwards renders "-$430.00 of Amazon spend", which reads as a
