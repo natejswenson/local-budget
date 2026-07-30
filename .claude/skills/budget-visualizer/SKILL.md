@@ -83,8 +83,8 @@ Two constraints on that grouping, both load-bearing:
 
 **The line total is not the charge total, and saying otherwise contradicts the
 report.** Item prices are list prices before discounts, promotions and gift
-cards; the charge is what settled. Items list at $XXX against $YYY
-charged. Quote the line total as *what the items list at* and the charge total
+cards; the charge is what settled, and it is routinely a few percent lower.
+Quote the line total as *what the items list at* and the charge total
 as *what you spent* — never swap them, and never present their difference as
 an error.
 

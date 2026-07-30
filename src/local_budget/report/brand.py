@@ -336,7 +336,8 @@ table.data th {{
 }}
 table.data td {{ border-bottom: 1px solid var(--dim); padding: 0.35em 0.6em 0.35em 0; }}
 /* A right-aligned column needs a LEFT gutter, or its digits butt against the
-   previous cell's text — an amount and a date run together into one token. Only the
+   previous cell's text — an amount and the next column's date run together
+   into one unreadable token. Only the
    last column may drop its right padding, so the figures align to the rule. */
 table.data td.num, table.data th.num {{ text-align: right; padding-left: 1.6em;
   font-variant-numeric: tabular-nums; }}
