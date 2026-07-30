@@ -157,6 +157,20 @@ CREATE TABLE IF NOT EXISTS normalize_changes (
 -- (gift recipients' names and addresses), order_details_link, image_link.
 -- None are needed to answer "what did I buy", and each would be one more
 -- piece of other people's data to guard.
+--
+-- ⚠ TWO SIGN CONVENTIONS LIVE HERE, on purpose:
+--
+--   amazon_transactions.grand_total_cents  SIGNED like the ledger.
+--       Negative = a charge, positive = a refund. It is compared directly
+--       against transactions.amount_cents by the matcher, so it must agree.
+--
+--   amazon_orders.* / amazon_items.*       POSITIVE magnitudes.
+--       These are prices — what a thing cost — never postings, and are never
+--       compared against the ledger. Printing them negated reads as a refund.
+--
+-- This mirrors the upstream library, whose Order.grand_total is positive while
+-- Transaction.grand_total is negative for a charge. Verified against real
+-- parser output in tests/test_amazon_contract.py, which fails if either flips.
 
 CREATE TABLE IF NOT EXISTS amazon_sync_runs (
     sync_run_id    INTEGER PRIMARY KEY AUTOINCREMENT,

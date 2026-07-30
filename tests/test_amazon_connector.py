@@ -16,28 +16,38 @@ from local_budget.connectors.amazon import match, store
 
 
 # ── fakes matching the amazon-orders entity surface ──────────────────────────
+# Conventions here are the REAL ones, verified against live parser output in
+# test_amazon_contract.py — Order money is a POSITIVE magnitude, Transaction
+# money is ledger-signed (negative = charge), and Item.seller is an OBJECT.
+# An earlier version of these fakes had all three wrong and every test passed.
+@dataclass
+class FakeSeller:
+    """`Item.seller` is a Seller entity, not a string. sqlite3 refuses it."""
+    name: str
+
+
 @dataclass
 class FakeItem:
     title: str
-    price: float
+    price: float                       # POSITIVE — what the item cost
     asin: str = "B000TEST"
-    quantity: int = 1
-    seller: str = "Amazon.com"
-    condition: str | None = None
+    quantity: int | None = None        # real parser returns None on 1-qty lines
+    seller: FakeSeller = field(default_factory=lambda: FakeSeller("Amazon.com"))
+    condition: str | None = "New"
 
 
 @dataclass
 class FakeOrder:
     order_number: str
     order_placed_date: date
-    grand_total: float
+    grand_total: float                 # POSITIVE — not ledger-signed
     items: list = field(default_factory=list)
     subtotal: float | None = None
     estimated_tax: float | None = None
     shipping_total: float | None = None
     refund_total: float | None = None
-    payment_method: str = "Visa ****1234"
-    item_count: int = 1
+    payment_method: str | None = "Visa ****1234"
+    item_count: int | None = None
     cancelled: bool = False
 
 
@@ -92,9 +102,9 @@ def test_to_cents_rounds_half_up_not_half_to_even():
 
 # ── storage ──────────────────────────────────────────────────────────────────
 def test_store_orders_writes_items_and_is_idempotent(conn):
-    o = FakeOrder("111-A", date(2026, 7, 20), -149.50, item_count=2, items=[
-        FakeItem("Dog food 24lb", -42.99),
-        FakeItem("HDMI cable", -11.49, quantity=2),
+    o = FakeOrder("111-A", date(2026, 7, 20), 149.50, item_count=2, items=[
+        FakeItem("Dog food 24lb", 42.99),
+        FakeItem("HDMI cable", 11.49, quantity=2),
     ])
     run = store.start_run(conn, "days=30")
     assert store.store_orders(conn, [o], run) == 1
@@ -103,8 +113,18 @@ def test_store_orders_writes_items_and_is_idempotent(conn):
     items = conn.execute("SELECT * FROM amazon_items ORDER BY line_no").fetchall()
     assert len(items) == 2, "re-sync must replace items, not duplicate them"
     assert items[0]["title"] == "Dog food 24lb"
-    assert items[0]["unit_price_cents"] == -4299
+    assert items[0]["unit_price_cents"] == 4299           # price, not a posting
+    assert items[0]["quantity"] == 1                      # None normalised
     assert items[1]["quantity"] == 2
+
+
+def test_seller_object_is_flattened_to_its_name(conn):
+    """sqlite3 rejects the Seller entity outright; `str()` on it would store
+    "Seller: Amazon.com". Only `.name` is the data."""
+    o = FakeOrder("111-S", date(2026, 7, 20), 10.0,
+                  items=[FakeItem("Thing", 10.0, seller=FakeSeller("Acme LLC"))])
+    store.store_orders(conn, [o], store.start_run(conn, "t"))
+    assert conn.execute("SELECT seller FROM amazon_items").fetchone()["seller"] == "Acme LLC"
 
 
 def test_store_orders_skips_a_row_with_no_order_number(conn):
