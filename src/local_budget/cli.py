@@ -10,6 +10,7 @@ load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 from . import budgets as budgets_mod
 from . import categories, db, detect, reconcile, reports
+from . import splits as splits_mod
 from .ingest import importer
 from .money import cents_from_amount_str, dollars
 
@@ -466,6 +467,105 @@ def config_get(key: str | None) -> None:
     else:
         for k, v in db.all_settings().items():
             click.echo(f"  {k} = {v}")
+
+
+# ── transaction splits ───────────────────────────────────────────────────────
+@main.command("split")
+@click.argument("txn_id", type=int)
+@click.option("--dry-run", is_flag=True, help="show the proposed allocation, write nothing")
+@click.option("--category", "cats", multiple=True, metavar="ASIN=CATEGORY",
+              help="assign a category to an item line (repeatable)")
+@click.option("--rest", default=None, metavar="CATEGORY",
+              help="category for every line not named by --category")
+def split_cmd(txn_id: int, dry_run: bool, cats: tuple[str, ...], rest: str | None) -> None:
+    """Split a charge across categories using the Amazon order behind it.
+
+    Item prices do not sum to what the card was charged — discounts and
+    promotions land between them — so lines are scaled proportionally and every
+    cent of the charge is attributed to a real item.
+    """
+    from .connectors.amazon import split as az_split
+    db.init_schema()
+    with db.connect() as conn:
+        try:
+            p = az_split.propose(conn, txn_id)
+        except Exception as e:
+            raise click.ClickException(str(e)) from e
+
+        assigned = dict(c.split("=", 1) for c in cats if "=" in c)
+        click.echo(f"Split {dollars(p['charge_cents'])} · "
+                   f"{p['txn']['merchant_norm']} · {p['txn']['posted_date']}")
+        if p["scaled"]:
+            click.echo(f"  items list at {dollars(p['item_total_cents'])}; "
+                       f"scaled to the {dollars(p['charge_cents'])} charged")
+        lines = []
+        for it in p["items"]:
+            cat = assigned.get(it["asin"] or "") or rest
+            click.echo(f"  {dollars(it['suggested_cents']):>10}  "
+                       f"{(cat or '?'):<16}  {(it['title'] or '—')[:44]}")
+            if cat:
+                lines.append({"amount_cents": it["suggested_cents"], "category": cat,
+                              "item_ref": it["asin"], "note": (it["title"] or "")[:80]})
+
+        if len(lines) != len(p["items"]):
+            click.echo("\n  ! every line needs a category — use --category ASIN=Cat "
+                       "and/or --rest Cat")
+            return
+        if dry_run:
+            click.echo("\n  (dry run — nothing written)")
+            return
+        try:
+            n = splits_mod.apply(conn, txn_id, lines, source="amazon")
+        except splits_mod.SplitError as e:
+            raise click.ClickException(str(e)) from e
+    click.echo(f"\n  ✓ split into {n} lines — `budget report --month "
+               f"{p['txn']['posted_date'][:7]}` reflects it")
+
+
+@main.command("unsplit")
+@click.argument("txn_id", type=int)
+def unsplit_cmd(txn_id: int) -> None:
+    """Remove a transaction's splits; it reverts to its own category."""
+    db.init_schema()
+    with db.connect() as conn:
+        n = splits_mod.unsplit(conn, txn_id)
+    click.echo(f"  ✓ removed {n} split lines" if n else "  (no splits on that transaction)")
+
+
+@main.command("splits")
+@click.option("--month", default=None, help="YYYY-MM (default: all)")
+def splits_cmd(month: str | None) -> None:
+    """Every split transaction and its parts — so a total that moved is traceable."""
+    db.init_schema()
+    with db.connect() as conn:
+        rows = splits_mod.list_split_txns(conn, month)
+    if not rows:
+        click.echo("  no split transactions")
+        return
+    for r in rows:
+        click.echo(f"\n{r['posted_date']}  {dollars(r['amount_cents'])}  "
+                   f"{r['merchant_norm']}  (was {r['original_category']})")
+        for s in r["splits"]:
+            click.echo(f"    {dollars(s['amount_cents']):>10}  {s['category']:<18} "
+                       f"{(s['note'] or '')[:40]}")
+
+
+@main.command("verify-splits")
+def verify_splits_cmd() -> None:
+    """Audit the invariant: every split set sums to its transaction."""
+    db.init_schema()
+    with db.connect() as conn:
+        bad = splits_mod.verify(conn)
+        total = conn.execute("SELECT COUNT(DISTINCT txn_id) n FROM txn_splits").fetchone()["n"]
+    if not bad:
+        click.echo(f"  ✓ {total} split transaction(s), all summing to their parent")
+        return
+    click.echo(f"  ✗ {len(bad)} transaction(s) whose splits do NOT sum to the charge:")
+    for b in bad:
+        click.echo(f"    txn {b['txn_id']}  {b['posted_date']}  "
+                   f"charge {dollars(b['txn_cents'])} vs splits "
+                   f"{dollars(b['split_cents'])}  (drift {dollars(b['drift_cents'])})")
+    raise SystemExit(1)
 
 
 # ── amazon connector ─────────────────────────────────────────────────────────
