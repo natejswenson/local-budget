@@ -15,6 +15,14 @@ dependencies = [
     "python-dotenv>=1.0.1",
     "fastapi>=0.115",
     "uvicorn>=0.30",
+    # Amazon connector. Pinned to a floor, not exact: this parses Amazon's
+    # consumer site, so upstream fixes ARE the maintenance story — an old pin
+    # is the failure mode, not the safety net.
+    "amazon-orders>=4.4.6",
+    # Interactive sign-in. A passkey has no replayable secret, so the only way
+    # to authenticate is for a human to do it in a real browser and for us to
+    # keep the resulting session. Needs `playwright install chromium` once.
+    "playwright>=1.40",
 ]
 
 [dependency-groups]

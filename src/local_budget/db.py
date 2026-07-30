@@ -146,6 +146,106 @@ CREATE TABLE IF NOT EXISTS normalize_changes (
     new_pattern    TEXT,                 -- the llm/manual alias this batch added (for undo)
     created_at     TEXT
 );
+
+-- ── Amazon connector ────────────────────────────────────────────────────────
+-- Item-level detail behind an otherwise opaque `AMAZON MKTPL` bank charge.
+-- These are IMPORTED FACTS, on the same footing as `transactions`: written by
+-- the deterministic core through connect(), never by the agent (the authorizer
+-- omits them from _AGENT_WRITE_TABLES, so every agent write is denied).
+--
+-- Deliberately NOT stored, though the source exposes them: order recipient
+-- (gift recipients' names and addresses), order_details_link, image_link.
+-- None are needed to answer "what did I buy", and each would be one more
+-- piece of other people's data to guard.
+--
+-- ⚠ TWO SIGN CONVENTIONS LIVE HERE, on purpose:
+--
+--   amazon_transactions.grand_total_cents  SIGNED like the ledger.
+--       Negative = a charge, positive = a refund. It is compared directly
+--       against transactions.amount_cents by the matcher, so it must agree.
+--
+--   amazon_orders.* / amazon_items.*       POSITIVE magnitudes.
+--       These are prices — what a thing cost — never postings, and are never
+--       compared against the ledger. Printing them negated reads as a refund.
+--
+-- This mirrors the upstream library, whose Order.grand_total is positive while
+-- Transaction.grand_total is negative for a charge. Verified against real
+-- parser output in tests/test_amazon_contract.py, which fails if either flips.
+
+CREATE TABLE IF NOT EXISTS amazon_sync_runs (
+    sync_run_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at     TEXT NOT NULL,
+    completed_at   TEXT,
+    status         TEXT NOT NULL,        -- success | failed
+    scope          TEXT,                 -- e.g. 'days=60' / 'year=2026'
+    orders_seen    INTEGER,
+    orders_upserted INTEGER,
+    txns_seen      INTEGER,
+    txns_upserted  INTEGER,
+    error_message  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS amazon_orders (
+    order_number      TEXT PRIMARY KEY,
+    order_placed_date TEXT NOT NULL,
+    grand_total_cents INTEGER,
+    subtotal_cents    INTEGER,
+    tax_cents         INTEGER,
+    shipping_cents    INTEGER,
+    refund_total_cents INTEGER,
+    payment_method    TEXT,
+    item_count        INTEGER,
+    cancelled         INTEGER NOT NULL DEFAULT 0,
+    fetched_at        TEXT NOT NULL,
+    sync_run_id       INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_az_order_date ON amazon_orders(order_placed_date);
+
+CREATE TABLE IF NOT EXISTS amazon_items (
+    item_id          INTEGER PRIMARY KEY,
+    order_number     TEXT NOT NULL REFERENCES amazon_orders(order_number),
+    -- Position within the order. With asin it forms the natural key a re-sync
+    -- upserts on: ASIN alone is not unique (the same item can appear twice in
+    -- one order at different prices/conditions).
+    line_no          INTEGER NOT NULL,
+    asin             TEXT,
+    title            TEXT,
+    quantity         INTEGER,
+    unit_price_cents INTEGER,
+    seller           TEXT,
+    condition        TEXT,
+    UNIQUE (order_number, line_no)
+);
+CREATE INDEX IF NOT EXISTS idx_az_item_order ON amazon_items(order_number);
+
+-- Amazon's OWN list of card charges. This is the reconciliation key: it is
+-- what actually hit the card, which an order total frequently is not (one
+-- order ships in three boxes and settles as three charges).
+CREATE TABLE IF NOT EXISTS amazon_transactions (
+    amazon_txn_id     INTEGER PRIMARY KEY,
+    completed_date    TEXT NOT NULL,
+    grand_total_cents INTEGER NOT NULL,
+    is_refund         INTEGER NOT NULL DEFAULT 0,
+    order_number      TEXT,
+    payment_method    TEXT,
+    seller            TEXT,
+    fetched_at        TEXT NOT NULL,
+    sync_run_id       INTEGER,
+    -- A charge is identified by what it is, not by row order: re-syncing an
+    -- overlapping window must update, never duplicate.
+    UNIQUE (completed_date, grand_total_cents, order_number, payment_method)
+);
+CREATE INDEX IF NOT EXISTS idx_az_txn_date ON amazon_transactions(completed_date);
+
+CREATE TABLE IF NOT EXISTS amazon_matches (
+    amazon_txn_id INTEGER PRIMARY KEY REFERENCES amazon_transactions(amazon_txn_id),
+    txn_id        INTEGER NOT NULL REFERENCES transactions(txn_id),
+    confidence    TEXT NOT NULL,         -- exact | windowed | manual
+    method        TEXT,
+    matched_at    TEXT NOT NULL,
+    -- One bank charge maps to at most one Amazon charge and vice versa.
+    UNIQUE (txn_id)
+);
 """
 
 def _migrate(conn: sqlite3.Connection) -> None:
