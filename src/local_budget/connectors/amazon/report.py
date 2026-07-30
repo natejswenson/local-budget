@@ -20,7 +20,7 @@ from datetime import date
 
 from ...agent.render import money
 from ...report import brand
-from .match import coverage, horizon
+from .match import MERCHANT_LIKE, horizon
 
 #: Keyword → bucket, first match wins. Order matters: more specific patterns
 #: come first so "canvas board" lands in art rather than office supplies.
@@ -115,6 +115,16 @@ def gather(conn: sqlite3.Connection, since: str | None = None,
               FROM amazon_matches m JOIN transactions t ON t.txn_id = m.txn_id
              WHERE 1=1{where}""", params).fetchone()
 
+    # Coverage must be scoped to the SAME window as the rest of the page.
+    # Reporting the all-time figure on a two-month report describes a
+    # different document than the one the reader is holding.
+    like = " OR ".join("t.merchant_norm LIKE ?" for _ in MERCHANT_LIKE)
+    scoped = conn.execute(
+        f"""SELECT COUNT(*) n, COALESCE(-SUM(t.amount_cents),0) c
+              FROM transactions t
+             WHERE t.status='posted' AND t.amount_cents < 0
+               AND ({like}){where}""", (*MERCHANT_LIKE, *params)).fetchone()
+
     by_kind: Counter = Counter()
     by_month: Counter = Counter()
     by_seller: Counter = Counter()
@@ -147,12 +157,21 @@ def gather(conn: sqlite3.Connection, since: str | None = None,
         "by_seller": by_seller.most_common(10),
         "repeats": repeats[:12],
         "biggest": biggest,
-        "coverage": coverage(conn), "horizon": horizon(conn),
+        "scoped_total_cents": int(scoped["c"]), "scoped_charges": int(scoped["n"]),
+        "scoped_pct": (round(int(charges["c"]) / int(scoped["c"]) * 100, 1)
+                       if scoped["c"] else 0.0),
+        "horizon": horizon(conn), "is_scoped": bool(since or until),
     }
 
 
 def _esc(s: object) -> str:
     return _html.escape(str(s), quote=True)
+
+
+def _safe(stem: str) -> str:
+    """Filename stem reduced to characters that cannot escape the reports dir.
+    `since`/`until` reach this from the command line."""
+    return "".join(c for c in stem if c.isalnum() or c in "-_") or "amazon"
 
 
 def _clip(text: str | None, n: int) -> str:
@@ -183,7 +202,10 @@ def _bars(pairs: list[tuple[str, int]], *, accent_last: bool = False) -> str:
     return "".join(out)
 
 
-def _table(headers: list[str], rows: list[list[str]], nums: set[int]) -> str:
+def _table(headers: list[str], rows: list[list[str]], nums: set[int],
+           empty: str = "nothing to show") -> str:
+    if not rows:
+        return f'<p class="empty">{_esc(empty)}</p>' 
     th = "".join(f'<th{" class=\"num\"" if i in nums else ""}>{_esc(h)}</th>'
                  for i, h in enumerate(headers))
     body = "".join(
@@ -195,7 +217,7 @@ def _table(headers: list[str], rows: list[list[str]], nums: set[int]) -> str:
 
 def build_html(d: dict, theme: dict) -> str:
     lo, hi = d["span"]
-    cov, hz = d["coverage"], d["horizon"]
+    hz = d["horizon"]
     ident = theme["identity"]
 
     stats = "".join(
@@ -248,18 +270,23 @@ def build_html(d: dict, theme: dict) -> str:
         f'<section>{_table(["Date", "Amount", "Item"], biggest_rows, {1})}</section>'
 
         '<h3 class="block-title">Bought more than once</h3>'
-        f'<section>{_table(["Times", "Total", "Item"], repeat_rows, {0, 1})}</section>'
+        f'<section>{_table(["Times", "Total", "Item"], repeat_rows, {0, 1}, "nothing was bought more than once in this period")}</section>'
 
         '<h3 class="block-title">Top sellers</h3>'
         f'<section>{_table(["Seller", "Total"], seller_rows, {1})}</section>'
         f'{note}'
 
         f'<footer class="provenance">'
-        f'{d["charge_count"]} reconciled charges · {cov["coverage_pct"]}% of Amazon '
-        f'spend has item detail'
-        + (f' · reconcilable back to {_esc(hz["earliest"])}' if hz["earliest"] else '')
-        + (f' · {hz["pre_count"]} older charges predate any transaction record'
-           if hz["has_backlog"] else '')
+        f'{d["charge_count"]} of {d["scoped_charges"]} Amazon charges in this '
+        f'period reconciled · {d["scoped_pct"]}% of the '
+        f'{money(d["scoped_total_cents"])} charged has item detail'
+        # The horizon is a property of the whole dataset, so it only belongs on
+        # an all-history report — on a scoped one it describes something else.
+        + ((f' · item detail reaches back to {_esc(hz["earliest"])}'
+            if hz["earliest"] else '')
+           + (f'; {hz["pre_count"]} older charges predate any transaction record'
+              if hz["has_backlog"] else '')
+           if not d["is_scoped"] else '')
         + '</footer></main></body></html>')
 
 
@@ -296,7 +323,12 @@ def render(since: str | None = None, until: str | None = None,
                          "run `budget amazon backfill` first")
     html = build_html(d, brand.load_theme())
     base = (out_dir or paths.reports_dir()).resolve()
-    out = (base / "amazon-purchases.pdf").resolve()
+    # The filename carries the scope. With a fixed name, rendering a two-month
+    # view silently overwrites the all-history one — same path, wholly different
+    # document, and no way to tell them apart afterwards.
+    lo, hi = d["span"]
+    stem = "amazon-purchases" if not (since or until) else f"amazon-{lo}_{hi}"
+    out = (base / f"{_safe(stem)}.pdf").resolve()
     if not out.is_relative_to(base):
         raise ValueError("invalid output path")
     render_pdf(html, out)
