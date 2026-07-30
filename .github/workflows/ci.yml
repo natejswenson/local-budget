@@ -43,3 +43,5 @@ jobs:
 
       - name: Secret scan (staged-tree denylist)
         run: bash scripts/secret-scan.sh
+
+# CI dispatch probe — remove after verifying.
