@@ -44,9 +44,24 @@ GUEST_MARKERS = (
     "you can still track your order status",
 )
 
+#: Walmart's bot interstitial. Detected separately from the guest wall because
+#: the two call for opposite responses — see `session.WalmartBlocked`.
+BLOCK_MARKERS = ("Robot or human?", "px-captcha", "/blocked?url=")
+
 #: Every few seconds, in a background tab. Cheap because it disturbs nothing.
 POLL_SECONDS = 5
 DEFAULT_TIMEOUT = 600
+
+
+def blocked(url: str, html: str) -> bool:
+    """Did Walmart's bot defence answer instead of Walmart?
+
+    Checked before anything else, because a block page satisfies every negative
+    test we have — it is not the guest wall and not an order list — and would
+    otherwise be reported as "your session expired", sending someone to sign in
+    again from the address currently being throttled.
+    """
+    return "/blocked" in url or any(m in html for m in BLOCK_MARKERS)
 
 
 def signed_in(url: str, html: str) -> bool:
@@ -56,6 +71,8 @@ def signed_in(url: str, html: str) -> bool:
     the content rules out the guest wall, which serves a 200 at the very URL we
     asked for.
     """
+    if blocked(url, html):
+        return False
     if "/orders" not in url or any(p in url for p in LOGIN_PATHS):
         return False
     return not any(m in html for m in GUEST_MARKERS)

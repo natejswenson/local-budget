@@ -28,8 +28,9 @@ from pathlib import Path
 
 from ... import paths
 from . import browser
-from .browser_login import ORDERS_URL, signed_in
-from .session import WalmartAuthError, capture_dir, require_session
+from .browser_login import ORDERS_URL, blocked, signed_in
+from .session import (WalmartAuthError, WalmartBlocked, capture_dir,
+                      require_session)
 
 #: Responses worth keeping. The page pulls in a lot of telemetry and imagery;
 #: this is the subset that could plausibly carry order data.
@@ -121,12 +122,21 @@ def run(*, headless: bool = True, echo=print) -> dict:
             manifest["pages"].append({
                 "label": label, "requested": url, "landed": page.url,
                 "signed_in": signed_in(page.url, html),
+                "blocked": blocked(page.url, html),
                 "html": html_path.name, "html_bytes": len(html),
                 "inline": json_path.name,
                 "inline_keys": {k: len(v or "") for k, v in blobs.items()},
             })
 
         snapshot(ORDERS_URL, "orders")
+        if manifest["pages"][0].get("blocked"):
+            raise WalmartBlocked(
+                "Walmart served its bot challenge instead of the orders page.\n"
+                "  Wait before retrying — signing in again would send MORE "
+                "traffic from an address already being throttled, which is the "
+                "one thing that makes this worse.\n"
+                "  The saved session is probably still fine; nothing here needs "
+                "fixing except the timing.")
         if not manifest["pages"][0]["signed_in"]:
             # Say it here rather than letting a later parser puzzle over a guest
             # page. Walmart serves a 200 at the right URL either way, so this is

@@ -53,6 +53,36 @@ def test_a_real_order_history_is_recognised():
     assert browser_login.signed_in("https://www.walmart.com/orders", SIGNED_IN_PAGE) is True
 
 
+# ── the bot block, which is NOT an expired session ───────────────────────────
+BLOCK_PAGE = """<html><title>Robot or human?</title>
+<div id="px-captcha"></div>Activate and hold the button to confirm.</html>"""
+BLOCK_URL = "https://www.walmart.com/blocked?url=L29yZGVycw==&uuid=9102"
+
+
+@pytest.mark.parametrize("url,html", [
+    (BLOCK_URL, BLOCK_PAGE),
+    ("https://www.walmart.com/orders", BLOCK_PAGE),
+    (BLOCK_URL, "<html>whatever</html>"),
+])
+def test_a_bot_challenge_is_recognised_as_itself(url, html):
+    assert browser_login.blocked(url, html) is True
+
+
+def test_an_ordinary_page_is_not_a_block():
+    assert browser_login.blocked("https://www.walmart.com/orders", SIGNED_IN_PAGE) is False
+    assert browser_login.blocked("https://www.walmart.com/orders", GUEST_PAGE) is False
+
+
+def test_a_block_is_never_reported_as_a_session_problem():
+    """The remedies are opposites. An expired session is fixed by signing in
+    again; a block is made WORSE by it — more traffic, more sign-in requests,
+    from the address already being throttled. Earned by replaying Walmart's
+    GraphQL endpoint until PerimeterX served an interstitial."""
+    assert browser_login.signed_in(BLOCK_URL, BLOCK_PAGE) is False
+    assert issubclass(session.WalmartBlocked, RuntimeError)
+    assert not issubclass(session.WalmartBlocked, session.WalmartAuthError)
+
+
 @pytest.mark.parametrize("url", [
     "https://www.walmart.com/account/login?returnUrl=/orders",
     "https://www.walmart.com/",

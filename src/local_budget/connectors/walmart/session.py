@@ -40,6 +40,22 @@ class WalmartAuthError(RuntimeError):
     """No captured session, or the captured one is no longer honoured."""
 
 
+class WalmartBlocked(RuntimeError):
+    """Walmart's bot defence served a challenge instead of the page.
+
+    A DIFFERENT failure from `WalmartAuthError`, and telling them apart matters
+    more than it looks. Both render as "not the page we asked for", but the
+    remedies are opposites: an expired session is fixed by signing in again,
+    while a block is made WORSE by it — more traffic, more sign-in requests,
+    from the address already being throttled. The only thing that fixes a block
+    is waiting.
+
+    Earned the hard way: replaying Walmart's own GraphQL endpoint returned 412s
+    and escalated to a full PerimeterX interstitial. Hence the standing rule in
+    `fetch.py` — navigate pages, never call the API directly.
+    """
+
+
 WALMART_DOMAIN = "walmart.com"
 
 #: **There is no cookie that means "signed in".** This was checked, not assumed:
