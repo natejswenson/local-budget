@@ -142,17 +142,24 @@ def store_orders(conn: sqlite3.Connection, orders: list, run_id: int) -> dict:
             " channel, cancelled, detail_fetched, fetched_at, sync_run_id) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(order_number) DO UPDATE SET "
+            # Present on both pages, so the newer read wins outright.
             " order_placed_date=excluded.order_placed_date,"
             " grand_total_cents=excluded.grand_total_cents,"
-            " subtotal_cents=excluded.subtotal_cents,"
-            " tax_cents=excluded.tax_cents,"
-            " shipping_cents=excluded.shipping_cents,"
-            " savings_cents=excluded.savings_cents,"
-            " refund_total_cents=excluded.refund_total_cents,"
-            " payment_method=excluded.payment_method,"
-            " item_count=excluded.item_count,"
-            " channel=excluded.channel,"
             " cancelled=excluded.cancelled,"
+            # COALESCED, because the two pages carry different fields and either
+            # can arrive second. Only the LIST page knows the channel; only the
+            # DETAIL page knows tax and shipping. Taking `excluded` outright
+            # would let a detail fetch blank the channel an order was already
+            # classified by — and the matcher filters candidates on it, so the
+            # order would quietly stop matching anything.
+            " subtotal_cents=COALESCE(excluded.subtotal_cents, subtotal_cents),"
+            " tax_cents=COALESCE(excluded.tax_cents, tax_cents),"
+            " shipping_cents=COALESCE(excluded.shipping_cents, shipping_cents),"
+            " savings_cents=COALESCE(excluded.savings_cents, savings_cents),"
+            " refund_total_cents=COALESCE(excluded.refund_total_cents, refund_total_cents),"
+            " payment_method=COALESCE(excluded.payment_method, payment_method),"
+            " item_count=COALESCE(excluded.item_count, item_count),"
+            " channel=COALESCE(excluded.channel, channel),"
             " detail_fetched=MAX(walmart_orders.detail_fetched, excluded.detail_fetched),"
             " fetched_at=excluded.fetched_at,"
             " sync_run_id=excluded.sync_run_id",
