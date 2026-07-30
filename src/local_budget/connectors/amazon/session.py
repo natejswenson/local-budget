@@ -29,6 +29,7 @@ work", never "the budget CLI won't start".
 """
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -63,17 +64,38 @@ def harden() -> None:
             p.chmod(paths.FILE_MODE)
 
 
-def credentials() -> tuple[str, str, str | None]:
-    """(username, password, otp_secret). Raises if the first two are unset."""
-    user = (os.environ.get("AMAZON_USERNAME") or "").strip()
-    pw = os.environ.get("AMAZON_PASSWORD") or ""
+def credentials(*, required: bool = True) -> tuple[str | None, str | None, str | None]:
+    """(username, password, otp_secret) from the environment.
+
+    `required=False` for the captured-session path, where there is no password
+    at all — a passkey account has no replayable secret, so the cookie jar IS
+    the credential.
+    """
+    user = (os.environ.get("AMAZON_USERNAME") or "").strip() or None
+    pw = os.environ.get("AMAZON_PASSWORD") or None
     otp = (os.environ.get("AMAZON_OTP_SECRET_KEY") or "").strip() or None
-    if not user or not pw:
+    if required and not (user and pw):
         raise AmazonAuthError(
-            "AMAZON_USERNAME / AMAZON_PASSWORD are not set. Add them to .env "
-            "(gitignored), and AMAZON_OTP_SECRET_KEY too if you use 2FA — "
-            "without it every sync needs someone at the terminal.")
+            "No saved Amazon session, and AMAZON_USERNAME / AMAZON_PASSWORD "
+            "are not set.\nRun `budget amazon login` to sign in through a "
+            "browser window (works with a passkey — nothing is stored but the "
+            "session cookie).")
     return user, pw, otp
+
+
+def stored_session_looks_valid() -> bool:
+    """Does the jar hold the one cookie the library treats as authentication?
+
+    Cheap and offline. Whether Amazon still HONOURS the session is only
+    knowable by making a request, which `fetch` reports on.
+    """
+    p = cookie_path()
+    if not p.exists():
+        return False
+    try:
+        return "x-main" in json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
 
 
 def build_session(*, force_login: bool = False):
@@ -95,7 +117,10 @@ def build_session(*, force_login: bool = False):
         raise AmazonAuthError(
             "the `amazon-orders` package is not installed — run `uv sync`") from e
 
-    user, pw, otp = credentials()
+    # A captured browser session means no password is needed — and for a
+    # passkey account, none exists to need.
+    have_session = stored_session_looks_valid() and not force_login
+    user, pw, otp = credentials(required=not have_session)
     config = AmazonOrdersConfig(data={
         "cookie_jar_path": str(cookie_path()),
         "output_dir": str(amazon_dir() / "output"),
@@ -103,6 +128,14 @@ def build_session(*, force_login: bool = False):
 
     session = AmazonSession(user, pw, otp_secret_key=otp, config=config)
     if force_login or not session.auth_cookies_stored():
+        if not (user and pw):
+            # The captured session is gone or unreadable and there is no
+            # password to fall back on. Say that, rather than letting the
+            # library fail somewhere inside a sign-in form with None.
+            raise AmazonAuthError(
+                "the saved Amazon session is missing or no longer valid, and "
+                "there is no password configured to sign in with.\n"
+                "Run `budget amazon login` to capture a fresh session.")
         session.login()
     harden()
     return session
