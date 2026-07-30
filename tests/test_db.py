@@ -17,8 +17,8 @@ def test_init_schema_idempotent(data_dir):
 def test_settings_roundtrip(data_dir):
     db.init_schema()
     assert db.get_setting("user_name") is None
-    db.set_setting("user_name", "Nate")
-    assert db.get_setting("user_name") == "Nate"
+    db.set_setting("user_name", "Sam")
+    assert db.get_setting("user_name") == "Sam"
 
 
 def test_acct_hash_is_deterministic_and_keyed(data_dir):
