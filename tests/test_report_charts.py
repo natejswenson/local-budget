@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from local_budget.report import charts, html, palette
+from local_budget.report import brand, charts, html
 
 GOLDEN = Path(__file__).parent / "golden" / "report"
 
@@ -46,12 +46,13 @@ _TREND = [{"month": f"2026-{m:02d}", "spend_cents": 100000 + m * 1000,
            "income_cents": 200000} for m in range(1, 7)]
 
 
-def test_stat_row_golden_and_net_color():
+def test_stat_row_golden_and_negative_net_is_marked_not_colored():
     out = charts.stat_row(_SUMMARY)
     assert "$1,320.00" in out and "$2,500.00" in out and "$1,180.00" in out
-    assert "var(--report-good)" in out          # positive net
+    assert brand.WARN not in out                        # positive net: no mark
+    assert out.count('class="stat focal"') == 1         # Spent is the one accent
     neg = charts.stat_row({"spend_total_cents": 300000, "income_cents": 100000})
-    assert "var(--report-critical)" in neg and "-$2,000.00" in neg
+    assert brand.WARN in neg and "-$2,000.00" in neg
     _check_golden("stat_row.html", out)
 
 
@@ -64,7 +65,7 @@ def test_stat_row_savings_tile_shown_and_not_subtracted_from_net():
     assert "Savings" in out and "$10,000.00" in out
     # Net = income - spent only; savings is NOT subtracted (Spent 2627.23,
     # Income 6457.27 -> Net 3830.04, positive despite the $13k also moved).
-    assert "$3,500.00" in out and "var(--report-good)" in out
+    assert "$3,500.00" in out and brand.WARN not in out
 
 
 def test_spend_vs_budget_golden_and_rules():
@@ -73,20 +74,117 @@ def test_spend_vs_budget_golden_and_rules():
     # Investments (floor, over, $0) is IN with a zero-width bar
     assert "Housing" not in out and "Refunds" not in out
     assert "Investments" in out and "width:0.0%" in out
-    # colors: ceiling-over + floor-missed → critical; floor met NEVER warning
-    assert out.count("var(--report-critical)") == 2
-    ny529 = out.split("State529")[1].split("sb-row")[0]
-    assert "var(--report-good)" in ny529 and "var(--report-warning)" not in ny529
-    # warning tier for the 84% ceiling row
+    # Every bar is ink now; the recipe-2 classification is carried by the ⚠
+    # mark instead of a traffic light. The rules it encoded are unchanged:
+    # ceiling-over + floor-missed are the only two marked rows...
+    assert out.count(charts.WARN) == 2
+    # ...a floor row that MET its target is never marked (pct >= 100 is good
+    # on a floor, and pct alone never selected warning there either)...
+    assert charts.WARN not in out.split("State529")[1].split("sb-row")[0]
+    # ...and the old 80% warning tier is now read off the tick: Groceries at
+    # 84% is unmarked, with its bar stopping short of its budget tick.
     groceries = out.split("Groceries")[1].split("sb-row")[0]
-    assert "var(--report-warning)" in groceries
+    assert charts.WARN not in groceries
+    g_fill = float(groceries.split('class="sb-fill" style="width:')[1].split("%")[0])
+    g_tick = float(groceries.split('class="tick" style="left:')[1].split("%")[0])
+    assert g_fill < g_tick
     # shared scale = Housing excluded, so max(60000 spent, 50000 budgets…) etc.
     # ticks always inside the row: no tick position > 100%
     for chunk in out.split('class="tick" style="left:')[1:]:
         assert float(chunk.split("%")[0]) <= 100.0
     # over rows carry the ⚠ marker
-    assert "⚠ Dining Out" in out and "⚠ Investments" in out
+    assert f"{charts.WARN} </span>Dining Out" in out
+    assert f"{charts.WARN} </span>Investments" in out
     _check_golden("spend_vs_budget.html", out)
+
+
+def test_floor_rows_do_not_set_the_scale_and_clamp_with_a_clip_mark():
+    """A savings transfer is money relocated, not spent, and dwarfs every real
+    spending row. Letting one set the shared scale crushed the whole chart to
+    stubs (a real $13,000 Investments row against $1,488 of Shopping)."""
+    out = charts.spend_vs_budget({"month": "2026-07", "categories": [
+        _cat("Investments", 1000000, 300000, floor=True, pct=433),
+        _cat("Shopping", 120000, 80000, over=True, pct=186),
+        _cat("Groceries", 63430, 103400, pct=61),
+    ]})
+    # scale is set by the ceiling rows: max(120000, 63430, 80000, 103400)
+    shopping = out.split("Shopping")[1].split("sb-row")[0]
+    # the largest ceiling row fills the track, split at its budget
+    s_base = float(shopping.split('class="sb-fill" style="width:')[1].split("%")[0])
+    s_over = float(shopping.split('class="sb-over" style="left:')[1]
+                   .split("width:")[1].split("%")[0])
+    assert round(s_base + s_over, 1) == 100.0
+    groceries = out.split("Groceries")[1].split("sb-row")[0]
+    g_fill = float(groceries.split('class="sb-fill" style="width:')[1].split("%")[0])
+    assert 40.0 < g_fill < 50.0                      # legible, not a stub
+    # the floor row clamps and says so
+    inv = out.split("Investments")[1].split("sb-row")[0]
+    assert 'style="width:100.0%"' in inv and 'class="clip"' in inv
+    assert "$10,000.00 of $3,000.00 · 433%" in inv   # the truth is in the text
+    assert out.count('class="clip"') == 1            # only the clamped row
+
+
+def test_bar_splits_at_the_budget_so_the_accent_measures_the_overspend():
+    """The orange segment must be exactly the part of the bar past the budget
+    tick — that is what earns it a place on a page this sparing with color. If
+    the split drifts, the accent stops being a measurement and becomes a label."""
+    out = charts.spend_vs_budget({"month": "2026-07", "categories": [
+        _cat("Dining Out", 60000, 30000, over=True, pct=200),
+    ]})
+    row = out.split("Dining Out")[1]
+    base = float(row.split('class="sb-fill" style="width:')[1].split("%")[0])
+    over_left = float(row.split('class="sb-over" style="left:')[1].split("%")[0])
+    over_w = float(row.split('class="sb-over" style="left:')[1]
+                   .split("width:")[1].split("%")[0])
+    tick = float(row.split('class="tick" style="left:')[1].split("%")[0])
+    # spent 600 vs budget 300 → the bar is half ink, half accent...
+    assert base == 50.0 and over_w == 50.0
+    # ...the accent starts exactly where the ink stops, and both meet the tick
+    assert over_left == base == tick
+
+
+def test_under_budget_and_floor_rows_get_no_accent_segment():
+    """Only a real overrun is orange. A floor row past its savings target has
+    exceeded a goal, not blown a budget — colouring it would invert the
+    meaning of the accent on the page."""
+    out = charts.spend_vs_budget({"month": "2026-07", "categories": [
+        _cat("Groceries", 30000, 60000, pct=50),
+        _cat("State529", 60000, 30000, floor=True, pct=200),
+    ]})
+    assert "sb-over" not in out
+
+
+def test_trend_highlights_only_the_reports_own_month():
+    out = charts.trend_chart(_TREND, highlight="2026-03")
+    assert out.count('fill="var(--accent)"') == 1
+    assert out.count('class="axis now"') == 1
+    # and no highlight at all when the period isn't in the series
+    assert "var(--accent)" not in charts.trend_chart(_TREND, highlight="2099-01")
+    assert "var(--accent)" not in charts.trend_chart(_TREND)
+
+
+def test_scale_falls_back_when_every_row_is_a_floor_row():
+    """A savings-only month must still draw bars rather than divide by `or 1`
+    and render every row at a meaningless 100%."""
+    out = charts.spend_vs_budget({"month": "2026-07", "categories": [
+        _cat("Investments", 1000000, 300000, floor=True, pct=433),
+        _cat("State529", 10000, 10000, floor=True, pct=100),
+    ]})
+    ny529 = out.split("State529")[1].split("sb-row")[0]
+    ny_fill = float(ny529.split('class="sb-fill" style="width:')[1].split("%")[0])
+    assert ny_fill < 5.0                             # scaled against the $13k
+    assert 'class="clip"' not in out                 # nothing exceeds the scale
+
+
+def test_negative_spend_floor_row_keeps_its_sign_in_the_text():
+    """The bar floors at zero; the figure must not. A refund-heavy floor row
+    still short of target renders a $0-width bar and a negative amount."""
+    out = charts.spend_vs_budget({"month": "2026-07", "categories": [
+        _cat("Investments", -500, 300000, over=True, floor=True, pct=0),
+        _cat("Shopping", 120000, 80000, pct=186),
+    ]})
+    inv = out.split("Investments")[1].split("sb-row")[0]
+    assert 'style="width:0.0%"' in inv and "-$5.00" in inv
 
 
 def test_spend_vs_budget_empty():
@@ -118,15 +216,14 @@ def test_trend_chart_golden_and_empty():
 
 
 def test_assemble_full_page_golden_escapes_and_tokens():
-    toks = palette.tokens()
     page = html.assemble(
-        period="2026-06", tokens=toks,
+        period="2026-06", theme=brand.load_theme(),
         sections=[charts.stat_row(_SUMMARY), charts.spend_vs_budget(_OVERVIEW)],
         user_name="Sam <script>alert(1)</script>",
         narrative="Spending & saving on track — <b>not bold</b>",
         generated_on="2026-07-11")
     assert "<script>alert(1)</script>" not in page          # escaped
     assert "&lt;b&gt;not bold&lt;/b&gt;" in page            # narrative is text, not HTML
-    assert "--report-accent:#2a78d6" in page                # tokens inlined on :root
-    assert "@page{size:letter" in page
+    assert "--accent: #E8501F" in page                      # tokens inlined on :root
+    assert "@page { size: letter" in page
     _check_golden("full_page.html", page)
