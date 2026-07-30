@@ -277,6 +277,71 @@ def test_breakdown_is_empty_not_wrong_when_nothing_matched(conn):
     assert match.breakdown(conn, "2026-07") == []
 
 
+# ── captured-session auth (the passkey path) ─────────────────────────────────
+def _isolate_amazon_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCAL_BUDGET_DATA_DIR", str(tmp_path))
+    for k in ("AMAZON_USERNAME", "AMAZON_PASSWORD", "AMAZON_OTP_SECRET_KEY"):
+        monkeypatch.delenv(k, raising=False)
+
+
+def test_a_captured_session_makes_credentials_unnecessary(tmp_path, monkeypatch):
+    """The whole point of the passkey path: no password exists to store, so a
+    valid cookie jar has to be sufficient on its own."""
+    from local_budget.connectors.amazon import session as az
+    _isolate_amazon_dir(tmp_path, monkeypatch)
+    az.cookie_path().write_text('{"x-main": "abc123", "session-id": "1"}')
+    assert az.stored_session_looks_valid() is True
+    assert az.credentials(required=False) == (None, None, None)
+
+
+def test_no_session_and_no_password_says_what_to_do(tmp_path, monkeypatch):
+    from local_budget.connectors.amazon import session as az
+    _isolate_amazon_dir(tmp_path, monkeypatch)
+    assert az.stored_session_looks_valid() is False
+    with pytest.raises(az.AmazonAuthError, match="budget amazon login"):
+        az.credentials(required=True)
+
+
+@pytest.mark.parametrize("jar,valid", [
+    ('{"x-main": "abc"}', True),
+    ('{"session-id": "1"}', False),      # logged out / partial
+    ('not json', False),
+    ('{}', False),
+])
+def test_only_the_x_main_cookie_counts_as_authenticated(tmp_path, monkeypatch, jar, valid):
+    """`x-main` is the single cookie amazon-orders treats as proof. A jar
+    without it would sail past a naive exists() check and then fail mid-sync."""
+    from local_budget.connectors.amazon import session as az
+    _isolate_amazon_dir(tmp_path, monkeypatch)
+    az.cookie_path().write_text(jar)
+    assert az.stored_session_looks_valid() is valid
+
+
+def test_cookie_jar_keeps_only_amazon_cookies_and_is_0600(tmp_path, monkeypatch):
+    """The jar is a flat name->value map with no domain scoping, so a
+    third-party cookie of the same name would silently shadow a real one."""
+    from local_budget.connectors.amazon import browser_login
+    _isolate_amazon_dir(tmp_path, monkeypatch)
+    n = browser_login._write_jar([
+        {"name": "x-main", "value": "keep", "domain": ".amazon.com"},
+        {"name": "at-main", "value": "keep2", "domain": "www.amazon.com"},
+        {"name": "x-main", "value": "EVIL", "domain": ".tracker.example"},
+    ])
+    import json as _json
+    jar = _json.loads(browser_login.cookie_path().read_text())
+    assert n == 2 and jar["x-main"] == "keep" and "at-main" in jar
+    assert oct(browser_login.cookie_path().stat().st_mode)[-3:] == "600"
+
+
+def test_capturing_a_session_without_x_main_is_refused(tmp_path, monkeypatch):
+    from local_budget.connectors.amazon import browser_login
+    from local_budget.connectors.amazon.session import AmazonAuthError
+    _isolate_amazon_dir(tmp_path, monkeypatch)
+    with pytest.raises(AmazonAuthError, match="not authenticated"):
+        browser_login._write_jar([
+            {"name": "session-id", "value": "1", "domain": ".amazon.com"}])
+
+
 def test_coverage_returns_positive_magnitudes(conn):
     """Spend is stored as negative cents but reported as a positive magnitude.
     Getting this backwards renders spend as a negative, which reads as a

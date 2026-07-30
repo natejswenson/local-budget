@@ -465,15 +465,30 @@ def amazon() -> None:
 
 
 @amazon.command("login")
-def amazon_login() -> None:
-    """Sign in once and cache the session (0600, under data/amazon/)."""
-    from .connectors.amazon import session as az_session
+@click.option("--password", "use_password", is_flag=True,
+              help="force the AMAZON_USERNAME/PASSWORD flow instead of a browser")
+@click.option("--timeout", default=300, show_default=True,
+              help="seconds to wait for you to finish signing in")
+def amazon_login(use_password: bool, timeout: int) -> None:
+    """Sign in and cache the session (0600, under data/amazon/).
+
+    Defaults to opening a real browser window, which is the only thing that
+    works for a passkey account — there is no replayable secret in a passkey,
+    so we capture the resulting session instead of storing a credential. Falls
+    back to the password flow only if you ask for it explicitly.
+    """
+    from .connectors.amazon import browser_login, session as az_session
     db.init_schema()
     try:
-        az_session.build_session(force_login=True)
+        if use_password:
+            az_session.build_session(force_login=True)
+            click.echo(f"  ✓ signed in — session cached at {az_session.cookie_path()}")
+        else:
+            r = browser_login.login(timeout=timeout, echo=click.echo)
+            click.echo(f"  ✓ session cached at {r['path']} (0600)")
+            click.echo("    now run: budget amazon sync --days 60")
     except Exception as e:
         raise click.ClickException(str(e)) from e
-    click.echo(f"  ✓ signed in — session cached at {az_session.cookie_path()}")
 
 
 @amazon.command("sync")
