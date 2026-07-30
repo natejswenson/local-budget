@@ -42,6 +42,27 @@ def to_cents(value) -> int | None:
     return int(d * 100)
 
 
+def _text(v) -> str | None:
+    """Anything destined for a TEXT column → a plain string.
+
+    Not defensive padding: the library returns a `Seller` OBJECT for
+    `Item.seller` and a plain `str` for `Transaction.seller` — same concept,
+    two types — and sqlite3 rejects the object outright with "type 'Seller' is
+    not supported". Every mock-based test passed while this was guaranteed to
+    crash on the first real sync.
+
+    `.name` is preferred over `str()` because the entity's `__str__` renders as
+    `Seller: Amazon.com Services, Inc`, which would land the class name in the
+    data.
+    """
+    if v is None:
+        return None
+    name = getattr(v, "name", None)
+    if isinstance(name, str):
+        return name
+    return v if isinstance(v, str) else str(v)
+
+
 def _iso(d) -> str | None:
     if d is None:
         return None
@@ -108,7 +129,7 @@ def store_orders(conn: sqlite3.Connection, orders: list, run_id: int) -> int:
              to_cents(getattr(o, "estimated_tax", None)),
              to_cents(getattr(o, "shipping_total", None)),
              to_cents(getattr(o, "refund_total", None)),
-             getattr(o, "payment_method", None),
+             _text(getattr(o, "payment_method", None)),
              getattr(o, "item_count", None),
              1 if getattr(o, "cancelled", False) else 0,
              now, run_id))
@@ -120,12 +141,12 @@ def store_orders(conn: sqlite3.Connection, orders: list, run_id: int) -> int:
                 " quantity, unit_price_cents, seller, condition) "
                 "VALUES (?,?,?,?,?,?,?,?)",
                 (num, i,
-                 getattr(it, "asin", None),
-                 getattr(it, "title", None),
+                 _text(getattr(it, "asin", None)),
+                 _text(getattr(it, "title", None)),
                  getattr(it, "quantity", None) or 1,
                  to_cents(getattr(it, "price", None)),
-                 getattr(it, "seller", None),
-                 getattr(it, "condition", None)))
+                 _text(getattr(it, "seller", None)),
+                 _text(getattr(it, "condition", None))))
         written += 1
     return written
 
@@ -154,9 +175,9 @@ def store_transactions(conn: sqlite3.Connection, txns: list, run_id: int) -> int
             " fetched_at=excluded.fetched_at, sync_run_id=excluded.sync_run_id",
             (completed, cents,
              1 if getattr(t, "is_refund", False) else 0,
-             getattr(t, "order_number", None),
-             getattr(t, "payment_method", None),
-             getattr(t, "seller", None),
+             _text(getattr(t, "order_number", None)),
+             _text(getattr(t, "payment_method", None)),
+             _text(getattr(t, "seller", None)),
              now, run_id))
         written += 1
     return written
