@@ -17,6 +17,7 @@ import html as _html
 import sqlite3
 from collections import Counter, defaultdict
 from datetime import date
+from pathlib import Path
 
 from ...agent.render import money
 from ...report import brand
@@ -246,7 +247,7 @@ def build_html(d: dict, theme: dict) -> str:
     return (
         '<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
         '<title>Amazon purchases</title>'
-        f'<style>{brand.stylesheet(theme)}{_EXTRA_CSS}</style></head><body><main>'
+        f'<style>{brand.stylesheet(theme)}{template_css()}</style></head><body><main>'
         '<header class="masthead"><div class="masthead-row">'
         f'<span class="stamp">{_esc(ident["stamp"])}</span>'
         f'<span class="eyebrow">LOCAL BUDGET · AMAZON PURCHASES · '
@@ -290,24 +291,22 @@ def build_html(d: dict, theme: dict) -> str:
         + '</footer></main></body></html>')
 
 
-#: Only what the monthly report's stylesheet does not already provide.
-#:
-#: The two pagination rules are the difference between five ragged pages and
-#: three tight ones. The monthly report keeps whole sections together because
-#: its sections are short; here they are long tables, so forbidding a split
-#: shunts an entire table to the next page and leaves half a page blank.
-_EXTRA_CSS = """
-div.sb-row { grid-template-columns: 13rem 1fr 7rem; }
-span.sb-fill.last { background: var(--accent); }
-table.data td:last-child { width: 55%; }
-h3.block-title { padding-top: 2.2rem; }
+#: The report's layout template, tracked in git and shipped with the package.
+#: Kept as a real .css file rather than a Python string so it can be edited and
+#: re-rendered without touching code — the same reason the dashboard's colours
+#: live in web/static/palette.css instead of a literal.
+TEMPLATE_CSS = Path(__file__).resolve().parent / "assets" / "amazon-report.css"
 
-/* A heading must never be the last thing on a page. */
-h3.block-title { break-after: avoid; page-break-after: avoid; }
-/* Long tables may split; individual rows may not. */
-section { break-inside: auto; }
-table.data tr, div.sb-row { break-inside: avoid; }
-"""
+
+def template_css() -> str:
+    """The layout stylesheet. A missing file is a PACKAGING error, not a
+    cosmetic one — rendering without it silently produces a differently-laid-out
+    document, so it raises rather than falling back to an empty string."""
+    if not TEMPLATE_CSS.is_file():
+        raise FileNotFoundError(
+            f"missing report template: {TEMPLATE_CSS} — the package is "
+            f"incomplete (it ships as package data alongside report.py)")
+    return TEMPLATE_CSS.read_text(encoding="utf-8")
 
 
 def render(since: str | None = None, until: str | None = None,
