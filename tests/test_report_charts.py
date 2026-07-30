@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from local_budget.report import charts, html, palette
+from local_budget.report import brand, charts, html
 
 GOLDEN = Path(__file__).parent / "golden" / "report"
 
@@ -46,12 +46,13 @@ _TREND = [{"month": f"2026-{m:02d}", "spend_cents": 100000 + m * 1000,
            "income_cents": 200000} for m in range(1, 7)]
 
 
-def test_stat_row_golden_and_net_color():
+def test_stat_row_golden_and_negative_net_is_marked_not_colored():
     out = charts.stat_row(_SUMMARY)
     assert "$1,320.00" in out and "$2,500.00" in out and "$1,180.00" in out
-    assert "var(--report-good)" in out          # positive net
+    assert brand.WARN not in out                        # positive net: no mark
+    assert out.count('class="stat focal"') == 1         # Spent is the one accent
     neg = charts.stat_row({"spend_total_cents": 300000, "income_cents": 100000})
-    assert "var(--report-critical)" in neg and "-$2,000.00" in neg
+    assert brand.WARN in neg and "-$2,000.00" in neg
     _check_golden("stat_row.html", out)
 
 
@@ -64,7 +65,7 @@ def test_stat_row_savings_tile_shown_and_not_subtracted_from_net():
     assert "Savings" in out and "$10,000.00" in out
     # Net = income - spent only; savings is NOT subtracted (Spent 2627.23,
     # Income 6457.27 -> Net 3830.04, positive despite the $13k also moved).
-    assert "$3,500.00" in out and "var(--report-good)" in out
+    assert "$3,500.00" in out and brand.WARN not in out
 
 
 def test_spend_vs_budget_golden_and_rules():
@@ -73,19 +74,27 @@ def test_spend_vs_budget_golden_and_rules():
     # Investments (floor, over, $0) is IN with a zero-width bar
     assert "Housing" not in out and "Refunds" not in out
     assert "Investments" in out and "width:0.0%" in out
-    # colors: ceiling-over + floor-missed → critical; floor met NEVER warning
-    assert out.count("var(--report-critical)") == 2
-    ny529 = out.split("State529")[1].split("sb-row")[0]
-    assert "var(--report-good)" in ny529 and "var(--report-warning)" not in ny529
-    # warning tier for the 84% ceiling row
+    # Every bar is ink now; the recipe-2 classification is carried by the ⚠
+    # mark instead of a traffic light. The rules it encoded are unchanged:
+    # ceiling-over + floor-missed are the only two marked rows...
+    assert out.count(charts.WARN) == 2
+    # ...a floor row that MET its target is never marked (pct >= 100 is good
+    # on a floor, and pct alone never selected warning there either)...
+    assert charts.WARN not in out.split("State529")[1].split("sb-row")[0]
+    # ...and the old 80% warning tier is now read off the tick: Groceries at
+    # 84% is unmarked, with its bar stopping short of its budget tick.
     groceries = out.split("Groceries")[1].split("sb-row")[0]
-    assert "var(--report-warning)" in groceries
+    assert charts.WARN not in groceries
+    g_fill = float(groceries.split('class="sb-fill" style="width:')[1].split("%")[0])
+    g_tick = float(groceries.split('class="tick" style="left:')[1].split("%")[0])
+    assert g_fill < g_tick
     # shared scale = Housing excluded, so max(60000 spent, 50000 budgets…) etc.
     # ticks always inside the row: no tick position > 100%
     for chunk in out.split('class="tick" style="left:')[1:]:
         assert float(chunk.split("%")[0]) <= 100.0
     # over rows carry the ⚠ marker
-    assert "⚠ Dining Out" in out and "⚠ Investments" in out
+    assert f"{charts.WARN} </span>Dining Out" in out
+    assert f"{charts.WARN} </span>Investments" in out
     _check_golden("spend_vs_budget.html", out)
 
 
@@ -118,15 +127,14 @@ def test_trend_chart_golden_and_empty():
 
 
 def test_assemble_full_page_golden_escapes_and_tokens():
-    toks = palette.tokens()
     page = html.assemble(
-        period="2026-06", tokens=toks,
+        period="2026-06", theme=brand.load_theme(),
         sections=[charts.stat_row(_SUMMARY), charts.spend_vs_budget(_OVERVIEW)],
         user_name="Sam <script>alert(1)</script>",
         narrative="Spending & saving on track — <b>not bold</b>",
         generated_on="2026-07-11")
     assert "<script>alert(1)</script>" not in page          # escaped
     assert "&lt;b&gt;not bold&lt;/b&gt;" in page            # narrative is text, not HTML
-    assert "--report-accent:#2a78d6" in page                # tokens inlined on :root
-    assert "@page{size:letter" in page
+    assert "--accent: #E8501F" in page                      # tokens inlined on :root
+    assert "@page { size: letter" in page
     _check_golden("full_page.html", page)
