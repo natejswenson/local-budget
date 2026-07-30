@@ -15,19 +15,26 @@ from . import fetch, match, store
 from .match import MERCHANT_LIKE
 
 
-def _ledger_has_amazon_charges(conn, since: str) -> bool:
+def _ledger_has_amazon_charges(conn, since: str, until: str | None = None) -> bool:
     """Does the BANK think there were Amazon charges in this window?
 
     This is the ground truth the anti-vacuity check leans on. If the ledger
     says yes and the connector returns nothing, the parser is broken — a fact
     only knowable by comparing against data we already trust.
+
+    `until` bounds the window at the top, which a per-year backfill needs. With
+    only a lower bound, checking 2024 would also count every 2025 and 2026
+    charge, so a 2024 fetch that silently returned nothing would still look
+    "expected" and pass — the check would be vacuous exactly where a long
+    multi-year job most needs it.
     """
     like = " OR ".join("merchant_norm LIKE ?" for _ in MERCHANT_LIKE)
+    upper = " AND posted_date <= ?" if until else ""
     row = conn.execute(
         f"""SELECT COUNT(*) AS n FROM transactions
              WHERE status='posted' AND amount_cents < 0
-               AND posted_date >= ? AND ({like})""",
-        (since, *MERCHANT_LIKE)).fetchone()
+               AND posted_date >= ?{upper} AND ({like})""",
+        (since, *((until,) if until else ()), *MERCHANT_LIKE)).fetchone()
     return bool(row["n"])
 
 

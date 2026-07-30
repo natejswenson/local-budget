@@ -584,6 +584,7 @@ async def amazon_coverage(args: dict, conn) -> dict:
     from ..connectors.amazon import match as az_match
     month = _month_or_current(args.get("month"))
     cov = az_match.coverage(conn, month)
+    hz = az_match.horizon(conn)
     rendered = (f"## Amazon coverage — {month}\n\n"
                 # coverage() already returns POSITIVE outflow magnitudes —
                 # negating here rendered spend as a negative, i.e. as a refund.
@@ -591,7 +592,15 @@ async def amazon_coverage(args: dict, conn) -> dict:
                 f"- {render.money(cov['matched_cents'])} of "
                 f"{render.money(cov['total_cents'])}\n"
                 f"- {cov['matched_txns']} of {cov['total_txns']} charges explained")
-    return {"data": cov, "rendered": rendered}
+    if hz["has_backlog"]:
+        # Report the window, not just the number. A low percentage reads as bad
+        # data unless it says the older charges have nothing to match against.
+        rendered += (f"\n- reconcilable back to **{hz['earliest']}** — "
+                     f"{hz['pre_count']} older charges "
+                     f"({render.money(hz['pre_cents'])}) predate any transaction "
+                     f"record, so they cannot be matched (not a data problem; "
+                     f"`budget amazon backfill` pulls what the source allows)")
+    return {"data": {**cov, "horizon": hz}, "rendered": rendered}
 
 
 @_with_ro_conn

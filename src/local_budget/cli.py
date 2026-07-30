@@ -630,6 +630,74 @@ def amazon_sync(days: int, year: int | None) -> None:
                f"({dollars(cov['matched_cents'])} of {dollars(cov['total_cents'])})")
 
 
+@amazon.command("backfill")
+@click.option("--from", "from_year", type=int, default=None,
+              help="first year (default: earliest Amazon charge in the ledger)")
+@click.option("--to", "to_year", type=int, default=None, help="last year")
+@click.option("--no-resume", is_flag=True, help="re-fetch years already recorded")
+@click.option("--dry-run", is_flag=True, help="show what would be fetched")
+def amazon_backfill(from_year: int | None, to_year: int | None,
+                    no_resume: bool, dry_run: bool) -> None:
+    """Pull order history across years, not just the rolling sync window.
+
+    A long job — full order detail is one request per order — so it is
+    resumable: each completed year is recorded, and re-running skips it.
+    """
+    from .connectors.amazon import backfill as az_backfill
+    db.init_schema()
+    with db.connect() as conn:
+        p = az_backfill.plan(conn, from_year, to_year, not no_resume)
+    if p["reason"]:
+        click.echo(f"  {p['reason']}")
+        return
+    click.echo(f"  years to fetch: {p['years'] or '(none — all done)'}")
+    if p["skipped"]:
+        click.echo(f"  already done:   {p['skipped']}  (--no-resume to redo)")
+    click.echo(f"  transactions:   one call reaching back {p['days']} days")
+    if dry_run:
+        click.echo("\n  (dry run — nothing fetched)")
+        return
+    if not p["years"]:
+        click.echo("  nothing to do")
+        return
+    try:
+        r = az_backfill.run_backfill(from_year=from_year, to_year=to_year,
+                                     resume=not no_resume, on_progress=click.echo)
+    except Exception as e:
+        raise click.ClickException(str(e)) from e
+    cov, hz = r["coverage"], r["horizon"]
+    click.echo(f"\n  ✓ {r['orders']} orders across {r['years']} · "
+               f"{r['transactions']} charges")
+    click.echo(f"    matched {r['matched']}"
+               + (f" · {r['ambiguous']} need confirming" if r["ambiguous"] else ""))
+    click.echo(f"    coverage {cov['coverage_pct']}% "
+               f"({dollars(cov['matched_cents'])} of {dollars(cov['total_cents'])})")
+    if hz["has_backlog"]:
+        click.echo(f"    reconcilable back to {hz['earliest']}; "
+                   f"{hz['pre_count']} older charges ({dollars(hz['pre_cents'])}) "
+                   f"have no transaction record to match on")
+
+
+@amazon.command("report")
+@click.option("--since", default=None, help="YYYY-MM-DD (default: all history)")
+@click.option("--until", default=None, help="YYYY-MM-DD")
+def amazon_report(since: str | None, until: str | None) -> None:
+    """Render a PRESS-branded PDF breaking down what was bought at Amazon.
+
+    Deliberately separate from the monthly budget report: that page is a fixed
+    one-pager about a month, and hundreds of product titles would swamp it.
+    """
+    from .connectors.amazon import report as az_report
+    db.init_schema()
+    try:
+        r = az_report.render(since, until)
+    except Exception as e:
+        raise click.ClickException(str(e)) from e
+    click.echo(f"  ✓ {r['items']} items across {r['orders']} orders "
+               f"({dollars(r["spent_cents"])})")
+    click.echo(f"  ✓ saved to {r['path']}")
+
+
 @amazon.command("status")
 @click.option("--month", default=None, help="YYYY-MM (default: all time)")
 def amazon_status(month: str | None) -> None:
@@ -638,6 +706,7 @@ def amazon_status(month: str | None) -> None:
     db.init_schema()
     with db.connect() as conn:
         cov = az_match.coverage(conn, month)
+        hz = az_match.horizon(conn)
         last = conn.execute(
             "SELECT started_at, status, scope, orders_upserted, error_message "
             "FROM amazon_sync_runs ORDER BY sync_run_id DESC LIMIT 1").fetchone()
@@ -646,6 +715,13 @@ def amazon_status(month: str | None) -> None:
     click.echo(f"  {cov['coverage_pct']}% of dollars "
                f"({dollars(cov['matched_cents'])} of {dollars(cov['total_cents'])})")
     click.echo(f"  {cov['matched_txns']} of {cov['total_txns']} charges explained")
+    # Without this line a low percentage is unreadable — it looks like a data
+    # quality problem when it is a window problem.
+    if hz["has_backlog"]:
+        click.echo(f"  reconcilable back to {hz['earliest']} — "
+                   f"{hz['pre_count']} older charges ({dollars(hz['pre_cents'])}) "
+                   f"predate any transaction record")
+        click.echo("    `budget amazon backfill` pulls what history the source allows")
     if last:
         click.echo(f"  last sync: {last['started_at']} · {last['status']} · {last['scope']}")
         if last["error_message"]:
