@@ -68,10 +68,10 @@ implemented in commit `a695b56`) surfaced three real issues once actually render
    literal string, nothing else) — this string does not uniquely identify one
    real merchant, so it can never be reliably attributed to a single
    `recurring_charges` row. Verified live: `recurring_charges` has a row for
-   `UNKNOWN` (avg $74.78, last charge 2026-06-16), but June 2026's actual
+   `UNKNOWN` (avg $77.77, last charge 2026-06-16), but June 2026's actual
    transactions include at least two unrelated transactions both normalized to
    `UNKNOWN` (-$666.66 Home Improvement on 06-08, -$50.00 Sports on
-   06-16) — neither matches the $74.78 average. An exact-match
+   06-16) — neither matches the $77.77 average. An exact-match
    cross-reference, applied naively, would wrongly attribute one of these
    unrelated charges to the "UNKNOWN recurring charge" and include it in the
    report. Fix: `UNKNOWN` is excluded from the month-scoped cross-reference
@@ -99,7 +99,7 @@ implemented in commit `a695b56`) surfaced three real issues once actually render
    pattern is real in this dataset — two merchants already on the recurring
    list, `GABB WIRELESS` and `ONCE UPON A`, have genuine positive-amount rows
    (refunds/credits) on record (`GABB WIRELESS`: $16.18 on 2026-01-20 and
-   $9.42 on 2025-01-23; `ONCE UPON A`: $15.95 and $7.33, both on 2026-04-06)
+   $8.88 on 2025-01-23; `ONCE UPON A`: $15.95 and $9.99, both on 2026-04-06)
    — demonstrating that refund/credit rows do occur for recurring merchants
    in this data, not a hypothetical concern. Of the two, only `ONCE UPON A`
    demonstrates the sign check doing independent work: its refund rows are
