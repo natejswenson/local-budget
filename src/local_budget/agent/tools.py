@@ -551,18 +551,30 @@ async def amazon_breakdown(args: dict, conn) -> dict:
         return {"data": {"month": month, "items": [], "coverage": cov},
                 "rendered": f"## Amazon items — {month}\n\nNo matched Amazon items. "
                             "Run `budget amazon sync` to pull order detail."}
+    lines = [(i, (i["unit_price_cents"] or 0) * (i["quantity"] or 1)) for i in items]
+    orders = {i["order_number"] for i in items}
     rows = [{"Date": i["posted_date"],
-             "Amount": render.money((i["unit_price_cents"] or 0) * (i["quantity"] or 1)),
+             "Amount": render.money(line),
              "Qty": i["quantity"] or 1,
              "Item": (i["title"] or "—")[:60]}
-            for i in items]
-    rendered = f"## Amazon items — {month}\n" + render.table(
-        rows, [("Date", "Date"), ("Amount", "Amount"), ("Qty", "Qty"), ("Item", "Item")])
+            for i, line in lines]
+    # Lead with the shape. "Break down my Amazon purchases" answered by twenty-six
+    # undifferentiated rows is a list, not a breakdown — the header is what makes
+    # the table readable, and it is summed here so the agent never has to.
+    rendered = (
+        f"## Amazon items — {month}\n\n"
+        f"{len(items)} items across {len(orders)} orders · "
+        f"{render.money(sum(v for _, v in lines))} in line totals\n\n"
+        + render.table(rows, [("Date", "Date"), ("Amount", "Amount"),
+                              ("Qty", "Qty"), ("Item", "Item")]))
     if cov["coverage_pct"] < 100:
         rendered += (f"\n\n⚠ {cov['coverage_pct']}% of Amazon spend is explained "
                      f"({render.money(cov['matched_cents'])} of "
                      f"{render.money(cov['total_cents'])}) — the rest has no item detail.")
-    return {"data": {"month": month, "items": items, "coverage": cov}, "rendered": rendered}
+    return {"data": {"month": month, "items": items, "coverage": cov,
+                     "order_count": len(orders),
+                     "line_total_cents": sum(v for _, v in lines)},
+            "rendered": rendered}
 
 
 @_with_ro_conn

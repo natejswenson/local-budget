@@ -42,6 +42,66 @@ the full `render_report` PDF — point the user at it rather than hand-building
 a one-off (a lone stat row is the only exception worth hand-writing, and even
 then prefer the tool).
 
+## After the report: Amazon follow-ups
+
+Amazon item detail is deliberately **not** on the page. A monthly report is a
+fixed one-pager, and a list of twenty-six product titles would swamp it while
+answering a question the reader may not have asked. It lives in follow-up
+instead, which is also where it is genuinely useful — the report shows that
+Shopping ran over, and the follow-up says what it was.
+
+Once a report is rendered, offer the breakdown when the numbers invite it —
+Shopping or another Amazon-heavy category over budget, or an anomaly on an
+`AMAZON`/`AMZN` merchant:
+
+- `amazon_breakdown(month)` — item titles, quantities, line totals.
+- `amazon_coverage(month)` — **check this before trusting a breakdown.**
+
+### Answering "break down my Amazon purchases"
+
+The literal ask, and the one this exists for. Twenty-six undifferentiated rows
+is a list, not a breakdown — **group before you print**:
+
+1. Print the tool's `rendered` block. It is the source of truth and its header
+   already carries item count, order count and the summed line total.
+2. Above it, add a grouped table — the kinds of thing bought (household,
+   kids, kitchen, school, personal care…), each with a summed amount.
+3. Lead with the one sentence the report could not say. "Two-thirds of July's
+   Amazon spend was school supplies and kitchen gear, not discretionary
+   shopping" is the answer; the table is the evidence.
+
+Two constraints on that grouping, both load-bearing:
+
+- **The groups are your judgment, and must be labelled as such.** There is no
+  product category in the data — only titles, ASINs and sellers. Never present
+  a grouping as though the ledger asserted it.
+- **Group totals must sum to the printed line total.** Every item lands in
+  exactly one group. Amounts come from the `rendered` rows, never re-derived.
+
+**The line total is not the charge total, and saying otherwise contradicts the
+report.** Item prices are list prices before discounts, promotions and gift
+cards; the charge is what settled. Items list at $XXX against $YYY
+charged. Quote the line total as *what the items list at* and the charge total
+as *what you spent* — never swap them, and never present their difference as
+an error.
+
+If a grouping suggests items are miscategorised in the ledger — school
+supplies sitting in Shopping — say so and offer to recategorise the
+transaction. Do not recategorise as a side effect of answering.
+
+Coverage is the honesty gate. It is the share of Amazon **dollars** with items
+behind them, and it is routinely below 100%: subscription billing like Audible
+is charged through Amazon but is not an order, so it has nothing to attribute.
+A breakdown at 60% coverage is not "what you bought at Amazon", it is what you
+bought in the 60% that reconciled — say so rather than presenting a partial
+list as the whole. Both tools print a coverage warning; do not drop it.
+
+Item data refreshes automatically before a `report-pdf` for the current or
+previous month, and never at the report's expense — if the Amazon session has
+expired the report still renders and the CLI prints a note. If coverage looks
+stale or a period was never synced, the fix is `budget amazon sync`, which the
+user runs; do not attempt it as a side effect of a question.
+
 ## Displayed figures are extracted, never recomputed
 
 Wherever a skill DOES place a figure in prose or narrative: use the dollar
