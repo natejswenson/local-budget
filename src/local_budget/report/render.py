@@ -13,7 +13,7 @@ from datetime import date
 from pathlib import Path
 
 from .. import db, detect, paths, reports
-from . import charts, flags, html, palette
+from . import brand, charts, flags, html
 from .pdf import ChromeNotFoundError, render_pdf  # noqa: F401 (re-exported)
 
 PERIOD_RE = re.compile(r"^[0-9]{4}-[0-9]{2}$")
@@ -47,17 +47,18 @@ def render_report(period: str, narrative: str | None = None,
 
     sections = [
         charts.stat_row(summary),
-        "<h3>💸 Spend vs budget</h3>" + charts.spend_vs_budget(overview),
+        '<h3 class="block-title">Spend vs budget</h3>' + charts.spend_vs_budget(overview),
         charts.trend_chart(summary["trend"]),
-        "<h3>🚩 Flags</h3>" + charts.flags_section(
+        '<h3 class="block-title">Flags</h3>' + charts.flags_section(
             flags.month_anomalies(anomalies, period, recurring),
             flags.month_recurring(recurring, txns, period),
             period),
     ]
     page = html.assemble(
-        period=period, tokens=palette.tokens(), sections=sections,
+        period=period, theme=brand.load_theme(), sections=sections,
         user_name=db.get_setting("user_name"), narrative=narrative,
-        generated_on=date.today().isoformat())
+        generated_on=date.today().isoformat(),
+        provenance=f"{len(txns)} posted transactions")
 
     base = (out_dir or paths.reports_dir()).resolve()
     out = (base / f"budget-report-{period}.pdf").resolve()

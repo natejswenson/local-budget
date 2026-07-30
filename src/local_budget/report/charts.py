@@ -11,60 +11,68 @@ from __future__ import annotations
 import html as _html
 
 from ..agent.render import money
+from .brand import WARN
 
-# Palette token names (resolved to hex by html.assemble via palette.tokens()).
-_GOOD = "var(--report-good)"
-_WARNING = "var(--report-warning)"
-_CRITICAL = "var(--report-critical)"
-_TRACK = "var(--report-gridline)"
-_ACCENT = "var(--report-accent)"
+# Brand token names (declared on :root by brand.stylesheet). Fragments emit
+# var(...) rather than hex so they stay theme-independent and the golden
+# snapshots don't bake in one palette.
+_INK = "var(--ink)"
+_INK_MID = "var(--ink-mid)"
+_DIM = "var(--dim)"
 
 
 def _esc(s: object) -> str:
     return _html.escape(str(s), quote=True)
 
 
+def _warn_mark() -> str:
+    """The over-budget / negative-net mark. Carries U+FE0E via brand.WARN —
+    see the note there; bare U+26A0 renders as a colored emoji in Chromium and
+    would put a second loud color on a strictly one-accent page."""
+    return f'<span class="warn">{WARN} </span>'
+
+
 # ── recipe 1: stat row ────────────────────────────────────────────────────────
 def stat_row(summary: dict) -> str:
-    """Spent / [Savings] / Income / Net tiles from reports.month_summary data.
+    """Spent / [Savings] / Income / Net figures from reports.month_summary data.
     Net has no dedicated field, so it's computed here from the same integer
     cents the old recipe extracted — formatting still goes through money().
     Savings (floor-marked categories like Investments — money relocated, not
-    spent) is its own tile, shown only when present, and is NOT subtracted
+    spent) is its own figure, shown only when present, and is NOT subtracted
     from Net: Net = income - spent answers "did ordinary spending stay under
-    income," independent of how much also went to savings that month."""
+    income," independent of how much also went to savings that month.
+
+    Spent is the document's ONE accent figure (`.focal`). A negative Net takes
+    the same ⚠ mark the over-budget rows use rather than a red — one exception
+    mark used consistently, instead of a second color."""
     spent = int(summary["spend_total_cents"])
     income = int(summary["income_cents"])
     savings = int(summary.get("savings_total_cents") or 0)
     net = income - spent
-    net_color = _CRITICAL if net < 0 else _GOOD
-    tiles = [("Spent", money(spent), "inherit")]
+    # (label, value, focal, marked)
+    tiles = [("Spent", money(spent), True, False)]
     if savings:
-        tiles.append(("Savings", money(savings), "inherit"))
+        tiles.append(("Savings", money(savings), False, False))
     tiles += [
-        ("Income", money(income), "inherit"),
-        ("Net", money(net), net_color),
+        ("Income", money(income), False, False),
+        ("Net", money(net), False, net < 0),
     ]
     cells = "".join(
-        f'<div class="stat"><div class="label">{_esc(label)}</div>'
-        f'<div class="value" style="color:{color}">{_esc(value)}</div></div>'
-        for label, value, color in tiles)
-    return f'<section class="stat-row">{cells}</section>'
+        f'<div class="stat{" focal" if focal else ""}">'
+        f'<div class="value">{_warn_mark() if marked else ""}{_esc(value)}</div>'
+        f'<div class="label">{_esc(label)}</div></div>'
+        for label, value, focal, marked in tiles)
+    return f'<section class="stat-strip">{cells}</section>'
 
 
 # ── recipe 2: spend vs budget ─────────────────────────────────────────────────
-def _row_color(cat: dict) -> str:
-    """budget-visualizer recipe-2 color rules, verbatim:
-    floor rows: `over` alone decides (pct NEVER selects warning);
-    ceiling rows: over → critical; budgeted and pct >= 80 → warning; else good
-    (no budget / zero-negative spend has no over signal → good)."""
-    if cat.get("floor"):
-        return _CRITICAL if cat.get("over") else _GOOD
-    if cat.get("over"):
-        return _CRITICAL
-    if cat.get("budget_cents") is not None and (cat.get("pct") or 0) >= 80:
-        return _WARNING
-    return _GOOD
+# The old _row_color() encoded budget-visualizer's recipe-2 traffic light
+# (floor: `over` alone decides; ceiling: over → critical, pct >= 80 → warning,
+# else good). Under the strict one-accent brand every bar is ink, so there is
+# no color left to select and the function is gone. The classification it read
+# has not changed meaning: `over` still drives the ⚠ mark, and the 80% warning
+# tier is now carried by the budget tick's position against the bar, which was
+# always the more precise signal anyway.
 
 
 def _in_row_set(cat: dict) -> bool:
@@ -95,9 +103,8 @@ def spend_vs_budget(overview: dict) -> str:
     for c in rows:
         spent = int(c.get("spent_cents") or 0)
         budget = c.get("budget_cents")
-        color = _row_color(c)
         width = round(max(spent, 0) / scale * 100, 2)   # bar floors at zero
-        warn = "⚠ " if c.get("over") else ""
+        warn = _warn_mark() if c.get("over") else ""
         if budget is not None:
             pct = c.get("pct")
             trailing = f"{money(spent)} of {money(int(budget))}"
@@ -111,7 +118,7 @@ def spend_vs_budget(overview: dict) -> str:
         out.append(
             f'<div class="sb-row"><div class="sb-label">{warn}{_esc(c["category"])}</div>'
             f'<div class="sb-track">'
-            f'<span class="sb-fill" style="width:{width}%;background:{color}"></span>'
+            f'<span class="sb-fill" style="width:{width}%"></span>'
             f'{tick}</div>'
             f'<div class="sb-value">{_esc(trailing)}</div></div>')
     out.append("</section>")
@@ -132,8 +139,9 @@ def flags_section(month_anomalies: list[dict], month_recurring: list[dict],
             f'<td class="num">{_esc(money(int(a["amount_cents"])))}</td></tr>'
             for a in month_anomalies)
         parts.append(
-            '<h3>⚡ Unusual charges</h3>'
-            f'<table><thead><tr><th>Date</th><th>Merchant</th><th class="num">Amount</th>'
+            '<h3 class="block-title">Unusual charges</h3>'
+            f'<table class="data"><thead><tr><th>Date</th><th>Merchant</th>'
+            f'<th class="num">Amount</th>'
             f'</tr></thead><tbody>{rows}</tbody></table>')
     if month_recurring:
         rows = "".join(
@@ -142,8 +150,9 @@ def flags_section(month_anomalies: list[dict], month_recurring: list[dict],
             f'<td>{_esc(r["posted_date"])}</td><td class="num">{_esc(r["months"])}</td></tr>'
             for r in month_recurring)
         parts.append(
-            f'<h3>🔁 Subscriptions &amp; recurring bills in {_esc(month)}</h3>'
-            f'<table><thead><tr><th>Merchant</th><th class="num">Amount</th><th>Date</th>'
+            f'<h3 class="block-title">Subscriptions &amp; recurring bills in {_esc(month)}</h3>'
+            f'<table class="data"><thead><tr><th>Merchant</th><th class="num">Amount</th>'
+            f'<th>Date</th>'
             f'<th class="num">Months seen</th></tr></thead><tbody>{rows}</tbody></table>'
             '<p class="caption">Amounts are the month\'s own charge, intentionally '
             'scoped to this report — they can differ from all-time averages.</p>')
@@ -170,8 +179,10 @@ def trend_chart(trend: list[dict], months: int = 12) -> str:
     bars, labels = [], []
     for i, r in enumerate(rows):
         x0 = pad + i * group_w
-        for j, (key, color) in enumerate((("spend_cents", _ACCENT),
-                                          ("income_cents", _GOOD))):
+        # Ink for spend (the subject), mid-ink for income. Both clear 3:1 on
+        # cream; the legend below carries identity, never the hue alone.
+        for j, (key, color) in enumerate((("spend_cents", _INK),
+                                          ("income_cents", _INK_MID))):
             v = max(int(r[key]), 0)
             bh = round(v / peak * (h - 2 * pad), 1)
             x = round(x0 + group_w * 0.15 + j * bar_w, 1)
@@ -180,12 +191,12 @@ def trend_chart(trend: list[dict], months: int = 12) -> str:
         if n <= 12 or i % 2 == 0:
             labels.append(f'<text x="{round(x0 + group_w / 2, 1)}" y="{h - 4}" '
                           f'text-anchor="middle" class="axis">{_esc(r["month"][2:])}</text>')
-    legend = (f'<span class="key"><span class="swatch" style="background:{_ACCENT}"></span>'
-              f'Spent</span><span class="key"><span class="swatch" '
-              f'style="background:{_GOOD}"></span>Income</span>')
-    return ('<section class="trend"><h3>📈 Trend</h3>'
+    legend = (f'<span class="key"><i style="background:{_INK}"></i>'
+              f'Spent</span><span class="key">'
+              f'<i style="background:{_INK_MID}"></i>Income</span>')
+    return ('<section class="trend"><h3 class="block-title">Trend</h3>'
             f'<div class="legend">{legend}</div>'
             f'<svg viewBox="0 0 {w} {h}" role="img" aria-label="monthly spend and income">'
             f'<line x1="{pad}" y1="{h - pad}" x2="{w - pad}" y2="{h - pad}" '
-            f'stroke="{_TRACK}" stroke-width="1"/>'
+            f'stroke="{_DIM}" stroke-width="1"/>'
             + "".join(bars) + "".join(labels) + "</svg></section>")
