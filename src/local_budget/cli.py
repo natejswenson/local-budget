@@ -678,6 +678,26 @@ def amazon_backfill(from_year: int | None, to_year: int | None,
                    f"have no transaction record to match on")
 
 
+@amazon.command("report")
+@click.option("--since", default=None, help="YYYY-MM-DD (default: all history)")
+@click.option("--until", default=None, help="YYYY-MM-DD")
+def amazon_report(since: str | None, until: str | None) -> None:
+    """Render a PRESS-branded PDF breaking down what was bought at Amazon.
+
+    Deliberately separate from the monthly budget report: that page is a fixed
+    one-pager about a month, and hundreds of product titles would swamp it.
+    """
+    from .connectors.amazon import report as az_report
+    db.init_schema()
+    try:
+        r = az_report.render(since, until)
+    except Exception as e:
+        raise click.ClickException(str(e)) from e
+    click.echo(f"  ✓ {r['items']} items across {r['orders']} orders "
+               f"({dollars(r["spent_cents"])})")
+    click.echo(f"  ✓ saved to {r['path']}")
+
+
 @amazon.command("status")
 @click.option("--month", default=None, help="YYYY-MM (default: all time)")
 def amazon_status(month: str | None) -> None:
