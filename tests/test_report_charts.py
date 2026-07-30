@@ -63,8 +63,8 @@ def test_stat_row_savings_tile_shown_and_not_subtracted_from_net():
     out = charts.stat_row({"spend_total_cents": 250000, "savings_total_cents": 1000000,
                            "income_cents": 600000})
     assert "Savings" in out and "$10,000.00" in out
-    # Net = income - spent only; savings is NOT subtracted (Spent 2627.23,
-    # Income 6457.27 -> Net 3830.04, positive despite the $13k also moved).
+    # Net = income - spent only; savings is NOT subtracted (Spent 2500.00,
+    # Income 6000.00 -> Net 3500.00, positive despite the $10k also moved).
     assert "$3,500.00" in out and brand.WARN not in out
 
 
