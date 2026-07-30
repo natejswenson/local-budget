@@ -333,6 +333,39 @@ def test_cookie_jar_keeps_only_amazon_cookies_and_is_0600(tmp_path, monkeypatch)
     assert oct(browser_login.cookie_path().stat().st_mode)[-3:] == "600"
 
 
+def test_restored_session_is_marked_authenticated(tmp_path, monkeypatch):
+    """Found by the first live sync, not by any offline test.
+
+    A restored jar loads the cookies but leaves `is_authenticated` False, and
+    every fetch is gated on that flag — so the connector reported "Call
+    AmazonSession.login() to authenticate first" while holding a perfectly good
+    session. The library's own login() sets the flag on exactly this condition.
+    """
+    from local_budget.connectors.amazon import session as az
+    _isolate_amazon_dir(tmp_path, monkeypatch)
+    az.cookie_path().write_text('{"x-main": "abc123"}')
+
+    built = {}
+
+    class FakeSession:
+        def __init__(self, user, pw, otp_secret_key=None, config=None):
+            self.is_authenticated = False
+            self.logged_in = False
+            built["s"] = self
+
+        def auth_cookies_stored(self):
+            return True
+
+        def login(self):
+            self.logged_in = True
+
+    import amazonorders.session as azlib
+    monkeypatch.setattr(azlib, "AmazonSession", FakeSession)
+    s = az.build_session()
+    assert s.is_authenticated is True, "restored session must be usable"
+    assert s.logged_in is False, "a valid jar must not trigger a fresh sign-in"
+
+
 def test_capturing_a_session_without_x_main_is_refused(tmp_path, monkeypatch):
     from local_budget.connectors.amazon import browser_login
     from local_budget.connectors.amazon.session import AmazonAuthError
