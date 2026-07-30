@@ -812,5 +812,61 @@ def amazon_unmatched(month: str | None) -> None:
                    f"{dollars(r['amount_cents']):>10}  {r['merchant_norm']}")
 
 
+# ── walmart connector ────────────────────────────────────────────────────────
+@main.group()
+def walmart() -> None:
+    """Pull Walmart order + item detail and reconcile it against the ledger.
+
+    Same idea as `budget amazon`, and this ledger carries roughly twice as many
+    Walmart dollars. Walmart publishes no consumer order API, so this reads your
+    own order history through a browser session you capture once with
+    `budget walmart login`. Your data, your account — but Walmart's terms
+    prohibit automated extraction, and a page redesign can break it.
+
+    No password is ever stored: Walmart sign-in ends in a one-time code that no
+    stored secret can answer, so the session itself is the only credential.
+    """
+
+
+@walmart.command("login")
+@click.option("--timeout", default=300, show_default=True,
+              help="seconds to wait for you to finish signing in")
+def walmart_login(timeout: int) -> None:
+    """Sign in through a browser window and cache the session (0600)."""
+    from .connectors.walmart import browser_login
+    db.init_schema()
+    try:
+        r = browser_login.login(timeout=timeout, echo=click.echo)
+    except Exception as e:
+        raise click.ClickException(str(e)) from e
+    click.echo(f"  ✓ session cached at {r['path']} (0600)")
+    click.echo("    now run: budget walmart capture")
+
+
+@walmart.command("capture")
+@click.option("--headed", is_flag=True,
+              help="show the browser window (try this if headless is challenged)")
+def walmart_capture(headed: bool) -> None:
+    """Dump what the order pages actually serve, for parser development.
+
+    Diagnostic only — nothing it writes is ever read by the connector. Output
+    lands in data/walmart/capture/, which is gitignored: it is real order
+    content.
+    """
+    from .connectors.walmart import capture as wm_capture, session as wm_session
+    db.init_schema()
+    try:
+        m = wm_capture.run(headless=not headed, echo=click.echo)
+    except Exception as e:
+        raise click.ClickException(str(e)) from e
+    click.echo(f"  ✓ captured {'headed' if headed else 'headless'} — "
+               f"{len(m['pages'])} pages, {len(m['responses'])} JSON responses")
+    for p in m["pages"]:
+        keys = ", ".join(f"{k} ({v:,}b)" for k, v in p["inline_keys"].items()) or "none"
+        click.echo(f"    {p['label']:<13} {p['html_bytes']:>9,}b html · inline: {keys}")
+    click.echo(f"    order links on the list page: {m['order_links']}")
+    click.echo(f"  ✓ written to {wm_session.capture_dir()}")
+
+
 if __name__ == "__main__":
     main()
