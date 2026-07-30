@@ -219,10 +219,27 @@ def add_category(name: str) -> None:
 
 @main.command("report-pdf")
 @click.argument("period")
-def report_pdf(period: str) -> None:
+@click.option("--no-sync", is_flag=True,
+              help="skip the Amazon refresh and render from stored data")
+def report_pdf(period: str, no_sync: bool) -> None:
     """Render the visual report PDF for PERIOD (YYYY-MM) — the no-MCP path to
-    the same deterministic renderer the render_report tool uses."""
+    the same deterministic renderer the render_report tool uses.
+
+    Refreshes Amazon item data first when it would help: current or previous
+    month, a saved session, and nothing synced in the last 12 hours. The
+    refresh can never fail the report — a stale scraper cookie is not a reason
+    to be unable to render your month.
+    """
     from .report import render as report_render
+    if not no_sync:
+        from .connectors.amazon import autosync
+        r = autosync.maybe_sync(period)
+        if r["status"] == "synced":
+            click.echo(f"  ✓ amazon refreshed — {r['detail']}")
+        elif r["status"] in ("no-session", "failed"):
+            # Surfaced, never fatal. Silence here would let item data quietly
+            # rot for months behind a report that still looks complete.
+            click.echo(f"  ! amazon not refreshed — {r['detail']}")
     try:
         out = report_render.render_report(period)
     except (ValueError, report_render.ChromeNotFoundError) as e:
