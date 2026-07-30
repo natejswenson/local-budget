@@ -538,6 +538,50 @@ async def budget_overview(args: dict) -> dict:
     return {"data": data, "rendered": rendered}
 
 
+@_with_ro_conn
+async def amazon_breakdown(args: dict, conn) -> dict:
+    """Item lines behind matched Amazon charges. Read-only for the agent: the
+    `amazon_*` tables are absent from `_AGENT_WRITE_TABLES`, so they are
+    imported facts on the same footing as transactions."""
+    from ..connectors.amazon import match as az_match
+    month = _month_or_current(args.get("month"))
+    items = az_match.breakdown(conn, month)
+    cov = az_match.coverage(conn, month)
+    if not items:
+        return {"data": {"month": month, "items": [], "coverage": cov},
+                "rendered": f"## Amazon items — {month}\n\nNo matched Amazon items. "
+                            "Run `budget amazon sync` to pull order detail."}
+    rows = [{"Date": i["posted_date"],
+             "Amount": render.money((i["unit_price_cents"] or 0) * (i["quantity"] or 1)),
+             "Qty": i["quantity"] or 1,
+             "Item": (i["title"] or "—")[:60]}
+            for i in items]
+    rendered = f"## Amazon items — {month}\n" + render.table(
+        rows, [("Date", "Date"), ("Amount", "Amount"), ("Qty", "Qty"), ("Item", "Item")])
+    if cov["coverage_pct"] < 100:
+        rendered += (f"\n\n⚠ {cov['coverage_pct']}% of Amazon spend is explained "
+                     f"({render.money(cov['matched_cents'])} of "
+                     f"{render.money(cov['total_cents'])}) — the rest has no item detail.")
+    return {"data": {"month": month, "items": items, "coverage": cov}, "rendered": rendered}
+
+
+@_with_ro_conn
+async def amazon_coverage(args: dict, conn) -> dict:
+    """The honesty check on any Amazon answer: what fraction of the dollars
+    actually reconciled. Measured in dollars, not transaction count."""
+    from ..connectors.amazon import match as az_match
+    month = _month_or_current(args.get("month"))
+    cov = az_match.coverage(conn, month)
+    rendered = (f"## Amazon coverage — {month}\n\n"
+                # coverage() already returns POSITIVE outflow magnitudes —
+                # negating here rendered spend as a negative.
+                f"- **{cov['coverage_pct']}%** of Amazon spend has item detail\n"
+                f"- {render.money(cov['matched_cents'])} of "
+                f"{render.money(cov['total_cents'])}\n"
+                f"- {cov['matched_txns']} of {cov['total_txns']} charges explained")
+    return {"data": cov, "rendered": rendered}
+
+
 async def income_by_source(args: dict) -> dict:
     data = reports.income_by_source(args.get("month"))
     rows = [{"Source": r["source"], "Amount": render.money(r["total_cents"]), "#": r["count"]} for r in data]
@@ -730,6 +774,14 @@ TOOL_SPECS: list[ToolSpec] = [
                    "subcategory": {"type": "string"}, "confirm_random": {"type": "boolean"}},
                   ["txn_id", "category"]),
              set_txn_category),
+    ToolSpec("amazon_breakdown", "What was actually bought behind the Amazon charges in a "
+             "month — item titles, quantities and line totals. Read-only; needs "
+             "`budget amazon sync` to have run.",
+             _obj({"month": {"type": "string"}}), amazon_breakdown),
+    ToolSpec("amazon_coverage", "How much Amazon spend has item detail behind it, in DOLLARS. "
+             "Check this before trusting an Amazon breakdown — a low number means most of the "
+             "spend is still unexplained.",
+             _obj({"month": {"type": "string"}}), amazon_coverage),
     ToolSpec("add_custom_category", "Add a user-defined spend category.",
              _obj({"name": {"type": "string"}}, ["name"]), add_custom_category),
     ToolSpec("remove_category", "Remove a spend category by MERGING it into another (re-points its "
