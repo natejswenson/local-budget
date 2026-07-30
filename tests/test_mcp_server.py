@@ -28,7 +28,7 @@ _EXPECTED_TOOLS = {
     # read
     "get_month_summary", "get_category_breakdown", "query_transactions",
     "top_merchants", "compare_periods", "recurring_charges", "find_anomalies",
-    "amazon_breakdown", "amazon_coverage",
+    "amazon_breakdown", "amazon_coverage", "propose_split", "apply_split",
     "run_sql", "save_user_note", "list_user_notes", "delete_user_note",
     # write (Phase 3)
     "set_merchant_category", "set_txn_category", "add_custom_category", "remove_category",
