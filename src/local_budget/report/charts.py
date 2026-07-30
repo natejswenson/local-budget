@@ -84,33 +84,63 @@ def _in_row_set(cat: dict) -> bool:
     return int(cat.get("spent_cents") or 0) > 0
 
 
+def _scale(rows: list[dict]) -> int:
+    """The shared bar scale, set by CEILING rows only.
+
+    Floor rows are savings targets — money relocated, not spent — and they are
+    routinely an order of magnitude larger than any spending category. A single
+    $13,000 investment transfer against a $3,000 target was setting the scale
+    for the whole chart and crushing all sixteen real spending rows to a
+    three-pixel stub. They still render (clamped, with a clip mark and their
+    exact figures in the value column), and the stat strip reports the savings
+    total separately.
+
+    Falls back to every row when there are no ceiling rows, so a
+    savings-only month still draws bars instead of dividing by the `or 1`.
+    """
+    def extents(rs: list[dict]) -> list[int]:
+        return ([int(r.get("spent_cents") or 0) for r in rs]
+                + [int(r["budget_cents"]) for r in rs
+                   if r.get("budget_cents") is not None])
+
+    ceiling = [r for r in rows if not r.get("floor")]
+    return max(extents(ceiling) or extents(rows) or [0]) or 1
+
+
 def spend_vs_budget(overview: dict) -> str:
     """One row per category from reports.budget_overview: bar = spend, thin
     tick at the budget position, one shared scale across all rows (a big
-    barely-touched budget's tick must not clip)."""
+    barely-touched budget's tick must not clip).
+
+    The scale comes from ceiling rows only (see `_scale`). Anything past it —
+    only ever a floor row — clamps to a full bar and takes a `»` clip mark, so
+    a clamped bar is never mistaken for one that merely reached its budget.
+    """
     rows = sorted((c for c in overview["categories"] if _in_row_set(c)),
                   key=lambda c: (-int(c.get("spent_cents") or 0), c["category"]))
     if not rows:
         return ('<section class="spend-budget">'
                 '<p class="empty">no spending to show</p></section>')
 
-    scale = max(
-        [int(r.get("spent_cents") or 0) for r in rows]
-        + [int(r["budget_cents"]) for r in rows if r.get("budget_cents") is not None]
-    ) or 1
+    scale = _scale(rows)
 
     out = ['<section class="spend-budget">']
     for c in rows:
         spent = int(c.get("spent_cents") or 0)
-        budget = c.get("budget_cents")
-        width = round(max(spent, 0) / scale * 100, 2)   # bar floors at zero
+        bar_cents = max(spent, 0)                        # bar floors at zero;
+        budget = c.get("budget_cents")                   # the text keeps the sign
+        width = min(round(bar_cents / scale * 100, 2), 100.0)
+        # Only the bar overflowing needs the mark. A tick past the scale is
+        # clamped too, but a budget line pinned at the end reads correctly as
+        # "off the top" without further annotation.
+        clip = '<span class="clip">»</span>' if bar_cents > scale else ""
         warn = _warn_mark() if c.get("over") else ""
         if budget is not None:
             pct = c.get("pct")
             trailing = f"{money(spent)} of {money(int(budget))}"
             if pct is not None:
                 trailing += f" · {pct}%"
-            tick_left = round(int(budget) / scale * 100, 2)
+            tick_left = min(round(int(budget) / scale * 100, 2), 100.0)
             tick = f'<span class="tick" style="left:{tick_left}%"></span>'
         else:
             trailing = money(spent)
@@ -119,7 +149,7 @@ def spend_vs_budget(overview: dict) -> str:
             f'<div class="sb-row"><div class="sb-label">{warn}{_esc(c["category"])}</div>'
             f'<div class="sb-track">'
             f'<span class="sb-fill" style="width:{width}%"></span>'
-            f'{tick}</div>'
+            f'{tick}{clip}</div>'
             f'<div class="sb-value">{_esc(trailing)}</div></div>')
     out.append("</section>")
     return "".join(out)

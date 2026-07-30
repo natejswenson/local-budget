@@ -271,6 +271,20 @@ span.sb-fill {{ position: absolute; left: 0; top: 0; bottom: 0; background: var(
   display: block; }}
 span.tick {{ position: absolute; top: -3px; bottom: -3px; width: 2px;
   background: var(--ink); display: block; }}
+/* A clamped bar. Without this a floor row pinned at 100% reads as "exactly at
+   budget" when it is in fact several times past the chart's scale. Ink, not
+   accent — it is structure, not the document's one loud moment. */
+span.clip {{
+  position: absolute;
+  right: -0.72rem;
+  top: 50%;
+  transform: translateY(-50%);
+  font-family: {f["mono_stack"]};
+  font-size: 0.62rem;
+  font-weight: 700;
+  color: var(--ink);
+  line-height: 1;
+}}
 div.sb-value {{
   font-family: {f["mono_stack"]};
   font-size: 0.68rem;
