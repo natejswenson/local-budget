@@ -45,6 +45,11 @@ POLITE_DELAY_SECONDS = 5.0
 #: Hard stop on paging, so a cursor that stops advancing cannot loop forever.
 MAX_PAGES = 80
 
+#: Half-second ticks to wait for the app's own response after clicking Next.
+#: 10s proved too short on a real run — the list re-renders before the fetch
+#: resolves — and paging silently stopped at page two.
+NEXT_PAGE_WAIT_TICKS = 60
+
 
 class WalmartFetchError(RuntimeError):
     """The remote shape changed, or the page never produced what we asked for."""
@@ -82,6 +87,9 @@ class Fetcher:
         self._page = page
         self._delay = delay
         self._responses: list[dict] = []
+        #: Why the last `order_list` stopped paging, for callers that need to
+        #: tell "that was everything" from "we lost the thread".
+        self.paging_stopped: str | None = None
         page.on("response", self._on_response)
 
     def _on_response(self, resp) -> None:
@@ -124,6 +132,7 @@ class Fetcher:
         seen: dict[str, dict] = {}
         pages = [first]
         self._responses.clear()
+        self.paging_stopped = None
 
         for page_no in range(MAX_PAGES):
             batch = parse.orders_from_list_payload(pages[-1])
@@ -139,44 +148,56 @@ class Fetcher:
             if not batch:
                 break
 
-            got = self._next_page()
+            got, why = self._next_page()
             if got is None:
+                # Say WHY paging stopped. Silence here is indistinguishable from
+                # "that was all your history", and it is not: a real run stopped
+                # after two pages and reported 3.5% coverage as though the
+                # account only had ten orders.
+                say(f"    stopped paging after page {page_no + 1}: {why}")
+                self.paging_stopped = why
                 break
             pages.append(got)
             time.sleep(self._delay)
 
         return list(seen.values())
 
-    def _next_page(self) -> dict | None:
-        """Click through to the next page and return what the app fetched.
+    def _next_page(self) -> tuple[dict | None, str]:
+        """Click through to the next page. Returns ``(payload, reason)``.
 
-        None when there is no next page. The button sits at the foot of a long
-        list, so it is scrolled to first — left alone it stays attached but not
-        visible, and every wait on it times out.
+        `payload` is None at the end of history AND when something went wrong,
+        which is why the reason travels with it — the two are the same value and
+        wildly different facts.
+
+        The button sits at the foot of a long list, so it is scrolled to first:
+        left alone it stays attached but not visible, and every wait on it times
+        out.
         """
         page = self._page
         page.mouse.wheel(0, 30000)
-        page.wait_for_timeout(600)
+        page.wait_for_timeout(1000)
         btn = page.locator(NEXT_PAGE)
         if not btn.count():
-            return None
+            return None, "no Next control on the page (end of history)"
         try:
             btn.first.scroll_into_view_if_needed()
             if btn.first.is_disabled():
-                return None
+                return None, "Next is disabled (end of history)"
             before = len(self._responses)
             btn.first.click()
-        except Exception:
-            return None
+        except Exception as e:                                 # noqa: BLE001
+            return None, f"could not click Next: {type(e).__name__}: {e}"
 
-        for _ in range(20):
+        # Generous: the app re-renders a long list before its fetch resolves,
+        # and this runs at a deliberately unhurried pace anyway.
+        for _ in range(NEXT_PAGE_WAIT_TICKS):
             page.wait_for_timeout(500)
             if len(self._responses) > before:
-                return self._responses[-1]
-        # The click landed but nothing came back. Stopping here loses the tail
-        # of history, which `backfill` reports; inventing a result would lose it
-        # silently.
-        return None
+                return self._responses[-1], "ok"
+        # The click landed but nothing came back. Stopping loses the tail of
+        # history; inventing a result would lose it silently.
+        return None, ("clicked Next but no purchase-history response arrived "
+                      f"within {NEXT_PAGE_WAIT_TICKS // 2}s")
 
     def order_detail(self, order_number: str) -> dict:
         """One order, with its item prices."""
