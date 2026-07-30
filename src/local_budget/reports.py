@@ -157,7 +157,7 @@ def _posted_by_category(conn: sqlite3.Connection, month: str) -> dict[str, int]:
     """Signed cent totals per category for posted rows in scope."""
     frag, params = _scope(month)
     rows = conn.execute(
-        f"SELECT category, SUM(amount_cents) AS total FROM transactions "
+        f"SELECT category, SUM(amount_cents) AS total FROM effective_txns "
         f"WHERE status = 'posted'{frag} GROUP BY category",
         params,
     ).fetchall()
@@ -202,7 +202,7 @@ def monthly_trend(conn: sqlite3.Connection, limit: int = 24) -> list[dict]:
         f"    AND category NOT IN ({placeholders}) "
         f"    THEN -amount_cents ELSE 0 END) AS spent, "
         f"SUM(CASE WHEN category = ? THEN amount_cents ELSE 0 END) AS income "
-        f"FROM transactions WHERE status = 'posted' "
+        f"FROM effective_txns WHERE status = 'posted' "
         f"GROUP BY month ORDER BY month DESC LIMIT ?",
         (*exclude, categories.INCOME, limit),
     ).fetchall()
@@ -328,8 +328,8 @@ def top_merchants(conn: sqlite3.Connection, month: str, limit: int = 8) -> list[
     frag, params = _scope(month)
     rows = conn.execute(
         f"SELECT COALESCE(canonical_merchant, merchant_norm) AS merchant, "
-        f"SUM(-amount_cents) AS spent, COUNT(*) AS n "
-        f"FROM transactions WHERE status = 'posted'{frag} "
+        f"SUM(-amount_cents) AS spent, COUNT(DISTINCT txn_id) AS n "
+        f"FROM effective_txns WHERE status = 'posted'{frag} "
         f"AND amount_cents < 0 GROUP BY merchant ORDER BY spent DESC LIMIT ?",
         (*params, limit),
     ).fetchall()
@@ -349,12 +349,12 @@ def budget_status(conn: sqlite3.Connection, month: str) -> list[dict]:
     for (category, subcategory), limit_cents in budgets_mod.active_limits(conn).items():   # current limit, all scopes
         if subcategory is None:
             row = conn.execute(
-                f"SELECT COALESCE(SUM(-amount_cents),0) AS s FROM transactions "
+                f"SELECT COALESCE(SUM(-amount_cents),0) AS s FROM effective_txns "
                 f"WHERE status='posted'{frag} AND category=?",
                 (*params, category)).fetchone()
         else:
             row = conn.execute(
-                f"SELECT COALESCE(SUM(-amount_cents),0) AS s FROM transactions "
+                f"SELECT COALESCE(SUM(-amount_cents),0) AS s FROM effective_txns "
                 f"WHERE status='posted'{frag} AND category=? AND subcategory=?",
                 (*params, category, subcategory)).fetchone()
         actual = int(row["s"])                          # un-averaged NET window total (matches Overview)
@@ -506,7 +506,7 @@ def _avg3_by_category(conn: sqlite3.Connection) -> dict[str, int]:
     start, end = _full_months_window(3)
     rows = conn.execute(
         "SELECT category, SUM(-amount_cents) AS spent, "
-        "COUNT(DISTINCT substr(posted_date,1,7)) AS m FROM transactions "
+        "COUNT(DISTINCT substr(posted_date,1,7)) AS m FROM effective_txns "
         "WHERE status='posted' AND amount_cents<0 AND substr(posted_date,1,7) BETWEEN ? AND ? "
         "GROUP BY category", (start, end)).fetchall()
     return {r["category"]: round(int(r["spent"]) / max(1, int(r["m"]))) for r in rows}
@@ -562,12 +562,12 @@ def budget_overview(month: str | None = None) -> dict:
         # does on the Overview tab and its drill-down — the two screens must agree.
         frag, params, factor = _budget_scope(conn, month)
         cat_rows = conn.execute(
-            f"SELECT category, COALESCE(SUM(-amount_cents),0) AS s FROM transactions "
+            f"SELECT category, COALESCE(SUM(-amount_cents),0) AS s FROM effective_txns "
             f"WHERE status='posted'{frag} GROUP BY category", params).fetchall()
         cat_spend = {r["category"]: int(r["s"]) for r in cat_rows}
         sub_rows = conn.execute(
             f"SELECT category, subcategory, COALESCE(SUM(-amount_cents),0) AS s "
-            f"FROM transactions WHERE status='posted'{frag} "
+            f"FROM effective_txns WHERE status='posted'{frag} "
             f"AND subcategory IS NOT NULL GROUP BY category, subcategory", params).fetchall()
         sub_spend = {(r["category"], r["subcategory"]): int(r["s"]) for r in sub_rows}
         # Income reality-check stays MONTHLY (per-active-month avg over the literal
@@ -679,9 +679,9 @@ def subcategory_breakdown(category: str, month: str | None = None) -> list[dict]
     with db.connect() as conn:
         frag, params = _scope(month)
         rows = conn.execute(
-            f"SELECT subcategory, SUM(-amount_cents) AS spent, COUNT(*) AS n, "
+            f"SELECT subcategory, SUM(-amount_cents) AS spent, COUNT(DISTINCT txn_id) AS n, "
             f"COUNT(DISTINCT substr(posted_date,1,7)) AS months "
-            f"FROM transactions WHERE status='posted'{frag} AND category=? AND amount_cents<0 "
+            f"FROM effective_txns WHERE status='posted'{frag} AND category=? AND amount_cents<0 "
             f"GROUP BY subcategory ORDER BY spent DESC",
             (*params, category)).fetchall()
         # Authoritative active sub-limits (one row per key, same-day-edit safe) —
