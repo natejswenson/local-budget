@@ -331,7 +331,13 @@ _AGENT_WRITE_TABLES = {"category_rules", "budgets", "settings"}
 _AGENT_READ_DENY = {("transactions", "raw_ofx"), ("transactions", "payee"),
                     ("transactions", "memo"), ("accounts", "acct_hash"),
                     ("inbox_files", "filename"), ("import_runs", "source_name"),
-                    ("import_runs", "error_message")}
+                    ("import_runs", "error_message"),
+                    # Same reasoning as import_runs.error_message: a sync
+                    # failure captures str(e) from ANY exception, and a sqlite
+                    # error embeds the values it was binding — product titles,
+                    # here. The CLI (full access) still prints it in
+                    # `budget amazon status`; the agent has no need for it.
+                    ("amazon_sync_runs", "error_message")}
 
 
 def _agent_authorizer(write: bool):
