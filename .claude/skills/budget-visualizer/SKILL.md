@@ -17,15 +17,18 @@ Visual reports are rendered by the **deterministic renderer**
 owns the request (normally `budget-monthly-brief`) calls
 `render_report(period, narrative?)` after user confirmation. The renderer:
 
-- builds the fixed page — stat row → spend-vs-budget chart → monthly trend →
-  flags — directly from `reports.py`/`detect.py` data, so floor/ceiling
-  coloring, the shared bar scale, the anomaly month-filter, the recurring
-  cross-reference (aliases, bill-like allowlist), and money formatting are all
-  computed once, server-side, and covered by tests
+- builds the fixed page — masthead → stat strip → spend-vs-budget chart →
+  monthly trend → flags — directly from `reports.py`/`detect.py` data, so the
+  over/floor classification, the shared bar scale, the anomaly month-filter,
+  the recurring cross-reference (aliases, bill-like allowlist), and money
+  formatting are all computed once, server-side, and covered by tests
   (`tests/test_report_charts.py`, `tests/test_report_flags.py`);
-- colors from the shared token file `src/local_budget/web/static/palette.css`
-  (`--report-*` for the PDF; the dashboard links the same file) — one source
-  of color truth, drift-guarded by `tests/test_report_palette.py`;
+- renders in **PRESS** — the warm-paper editorial brand shared with
+  local-fitness, city-report, devlog, ghostwriter and the résumé. Owned by
+  `src/local_budget/report/brand.py` (paper `#F5F0E6`, ink `#181510`, dim
+  `#6E675C`, accent `#E8501F`), overridable via `BUDGET_BRAND_FILE`, and
+  guarded by `tests/test_report_brand.py`. `web/static/palette.css` is the
+  DASHBOARD's colors only — the PDF no longer reads it;
 - writes `reports/budget-report-<period>.pdf` (gitignored dir, 0700/0600) via
   headless Chrome discovered automatically (`LOCAL_BUDGET_CHROME` overrides).
 
@@ -125,19 +128,22 @@ exactly these rules; when in doubt, read `report/charts.py`/`flags.py`.
    gathered tool's `rendered` block is still printed verbatim.
 2. **Page.** One HTML file, fixed light theme, tokens on `:root` (never a
    wrapper div — descendants of `body` can't see wrapper-scoped tokens).
-   Palette from `palette.css`: accent `--report-accent`, status tiers
-   `--report-good`/`--report-warning`/`--report-critical`, track
-   `--report-gridline`. Sections: stat row (net: critical when negative, else
-   good) → spend-vs-budget → flags.
+   PRESS tokens from `report/brand.py`: `--paper` `--ink` `--dim` `--accent`
+   `--ink-mid`. Sections: masthead → stat strip → spend-vs-budget → flags.
+   **The accent is spent at most twice** — the stamp and the one headline
+   figure — plus the overspend bar segment. Nothing else is orange.
 3. **Spend-vs-budget rules.** Row set: positive spend only, EXCEPT a floor row
    (`floor == true` in `budget_overview`'s payload — never from memory) with
-   `over == true`, which always renders (bar floors at zero; tick + color +
-   trailing text still show). Color: floor rows by `over` alone (over →
-   critical, else good — pct NEVER selects warning for floor); ceiling rows:
-   `over` → critical, else pct ≥ 80 → warning, else good. One shared scale =
-   max(all spends, all budgets) so ticks never clip. Trailing text
-   "$spent of $budget · pct%" (or "$spent") extracted from rendered blocks.
-   Sort by spend desc, ties alphabetical. Empty set → "no spending to show".
+   `over == true`, which always renders (bar floors at zero; tick + mark +
+   trailing text still show). **Every bar is ink** — there is no traffic
+   light. Over-budget is carried by a `⚠` mark and by the accent segment past
+   the budget tick, so the orange is the SIZE of the overspend. Floor rows are
+   never split; exceeding a savings target is the goal, not an overrun. Scale
+   = max over CEILING rows only, so a $13k investment transfer cannot crush
+   every spending row to a stub; anything past it clamps with a `»` mark.
+   Trailing text "$spent of $budget · pct%" (or "$spent") extracted from
+   rendered blocks. Sort by spend desc, ties alphabetical. Empty set → "no
+   spending to show".
 4. **Flags rules.** Anomalies: filter to the month, drop any merchant present
    in `recurring_charges`' full list. Recurring: exact-merchant match only
    (aliases in `report/flags.py:MERCHANT_ALIASES`), `merchant_norm != UNKNOWN`,
