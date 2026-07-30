@@ -247,6 +247,119 @@ CREATE TABLE IF NOT EXISTS amazon_matches (
     UNIQUE (txn_id)
 );
 
+-- ── Walmart connector ───────────────────────────────────────────────────────
+-- Same job as the Amazon block above, against a bigger number: this ledger
+-- carries ~$27.9k of Walmart charges to ~$15.4k of Amazon. Same footing too —
+-- IMPORTED FACTS, written by the deterministic core through connect(), absent
+-- from _AGENT_WRITE_TABLES so every agent write is denied.
+--
+-- Deliberately NOT stored, though the pages expose them: delivery address,
+-- recipient name, driver/tracking detail, card last-4. None are needed to
+-- answer "what did I buy".
+--
+-- ⚠ The SAME TWO SIGN CONVENTIONS as the Amazon block, for the same reasons:
+--   walmart_charges.amount_cents        SIGNED like the ledger (charge < 0).
+--   walmart_orders.* / walmart_items.*  POSITIVE magnitudes — prices, not
+--                                       postings.
+--
+-- ⚠ AND ONE THING AMAZON DOES NOT HAVE. Amazon publishes its own list of card
+-- charges at exactly the granularity the bank posts them. Walmart publishes
+-- ORDERS. An order still settles as one or several charges, so walmart_charges
+-- is the reconciliation key either way — read from the order's payment lines
+-- when they exist, and otherwise SYNTHESIZED from the order total with
+-- `derived = 1`. That flag is load-bearing: it is the difference between an
+-- observation and an inference, and a report that cannot tell them apart is
+-- quietly overstating what it knows.
+
+CREATE TABLE IF NOT EXISTS walmart_sync_runs (
+    sync_run_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at       TEXT NOT NULL,
+    completed_at     TEXT,
+    status           TEXT NOT NULL,       -- success | failed
+    scope            TEXT,                -- e.g. 'days=60' / 'backfill'
+    orders_seen      INTEGER,
+    orders_upserted  INTEGER,
+    charges_seen     INTEGER,
+    charges_upserted INTEGER,
+    error_message    TEXT
+);
+
+CREATE TABLE IF NOT EXISTS walmart_orders (
+    order_number      TEXT PRIMARY KEY,
+    order_placed_date TEXT NOT NULL,
+    grand_total_cents INTEGER,
+    subtotal_cents    INTEGER,
+    tax_cents         INTEGER,
+    shipping_cents    INTEGER,
+    savings_cents     INTEGER,
+    refund_total_cents INTEGER,
+    payment_method    TEXT,
+    item_count        INTEGER,
+    -- 'online' | 'in-store' | NULL. Walmart mixes both into one history, and
+    -- they reconcile against different merchant strings (WALMART.COM vs
+    -- WM SUPERC…). Keeping the distinction is what lets coverage report the
+    -- two honestly instead of averaging a good number with a bad one.
+    channel           TEXT,
+    cancelled         INTEGER NOT NULL DEFAULT 0,
+    -- Has the per-order detail page been fetched? Backfill resumes on THIS, not
+    -- on "does it have items": a genuinely empty order (fully cancelled) has no
+    -- items and would otherwise be re-fetched on every run, forever.
+    detail_fetched    INTEGER NOT NULL DEFAULT 0,
+    fetched_at        TEXT NOT NULL,
+    sync_run_id       INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_wm_order_date ON walmart_orders(order_placed_date);
+
+CREATE TABLE IF NOT EXISTS walmart_items (
+    item_id          INTEGER PRIMARY KEY,
+    order_number     TEXT NOT NULL REFERENCES walmart_orders(order_number),
+    line_no          INTEGER NOT NULL,
+    product_id       TEXT,                -- Walmart item number, the ASIN analogue
+    title            TEXT,
+    quantity         INTEGER,
+    unit_price_cents INTEGER,
+    seller           TEXT,                -- Walmart, or a marketplace seller
+    -- Walmart's own product taxonomy, when the page carries it. Amazon exposes
+    -- nothing equivalent, which is why its report has to guess a bucket from
+    -- keywords in the title and say so on its face. If this is populated, the
+    -- Walmart report can state a fact instead of a reading. NULL is fine and
+    -- expected; the report falls back to the same keyword heuristic.
+    category         TEXT,
+    status           TEXT,                -- delivered | cancelled | substituted…
+    UNIQUE (order_number, line_no)
+);
+CREATE INDEX IF NOT EXISTS idx_wm_item_order ON walmart_items(order_number);
+
+CREATE TABLE IF NOT EXISTS walmart_charges (
+    walmart_charge_id INTEGER PRIMARY KEY,
+    order_number      TEXT REFERENCES walmart_orders(order_number),
+    charged_date      TEXT NOT NULL,
+    amount_cents      INTEGER NOT NULL,   -- SIGNED: charge negative, refund positive
+    is_refund         INTEGER NOT NULL DEFAULT 0,
+    payment_method    TEXT,
+    -- 1 = synthesized from the order total because the page showed no payment
+    -- line. Reported, never hidden: a derived charge is a guess about WHEN the
+    -- card was hit, and a split-shipment order will have exactly one of these
+    -- standing in for two or three real ones.
+    derived           INTEGER NOT NULL DEFAULT 0,
+    fetched_at        TEXT NOT NULL,
+    sync_run_id       INTEGER,
+    -- A charge is identified by what it is, not by row order: re-syncing an
+    -- overlapping window must update, never duplicate.
+    UNIQUE (order_number, charged_date, amount_cents, payment_method)
+);
+CREATE INDEX IF NOT EXISTS idx_wm_charge_date ON walmart_charges(charged_date);
+
+CREATE TABLE IF NOT EXISTS walmart_matches (
+    walmart_charge_id INTEGER PRIMARY KEY REFERENCES walmart_charges(walmart_charge_id),
+    txn_id            INTEGER NOT NULL REFERENCES transactions(txn_id),
+    confidence        TEXT NOT NULL,      -- exact | windowed | manual
+    method            TEXT,
+    matched_at        TEXT NOT NULL,
+    -- One bank charge maps to at most one Walmart charge and vice versa.
+    UNIQUE (txn_id)
+);
+
 -- ── transaction splits ──────────────────────────────────────────────────────
 -- One bank charge, several categories. A mixed order — groceries, a school
 -- supply and a household item in one box — otherwise counts entirely against
@@ -267,8 +380,8 @@ CREATE TABLE IF NOT EXISTS txn_splits (
     amount_cents INTEGER NOT NULL,        -- signed, ledger convention
     category     TEXT    NOT NULL,
     subcategory  TEXT,
-    source       TEXT    NOT NULL,        -- 'amazon' | 'manual'
-    item_ref     TEXT,                    -- ASIN, when derived from an order line
+    source       TEXT    NOT NULL,        -- 'amazon' | 'walmart' | 'manual'
+    item_ref     TEXT,                    -- ASIN / Walmart item number, from an order line
     note         TEXT,
     created_at   TEXT    NOT NULL
 );
@@ -391,7 +504,8 @@ _AGENT_READ_DENY = {("transactions", "raw_ofx"), ("transactions", "payee"),
                     # error embeds the values it was binding — product titles,
                     # here. The CLI (full access) still prints it in
                     # `budget amazon status`; the agent has no need for it.
-                    ("amazon_sync_runs", "error_message")}
+                    ("amazon_sync_runs", "error_message"),
+                    ("walmart_sync_runs", "error_message")}
 
 
 def _agent_authorizer(write: bool):
