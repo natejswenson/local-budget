@@ -103,11 +103,14 @@ def test_walmarts_own_category_is_preferred_over_the_keyword_guess(conn):
 
 
 def test_the_keyword_heuristic_fills_the_gap_when_walmart_publishes_nothing(conn):
+    """With no published category the shared keyword table decides, and its
+    buckets are the ledger's own category names — "Groceries", not a taxonomy
+    of the report's own invention."""
     _order(conn, "O", "2026-07-01", [("P", "Dog food 24lb", 4299, 1, "W", None)])
     _charge(conn, 1, "2026-07-01", -4299)
     _match(conn, "O", 1)
     d = report.gather(conn)
-    assert dict(d["by_kind"]) == {"Pets & backyard": 4299}
+    assert dict(d["by_kind"]) == {"Groceries": 4299}
     assert d["kinds_from_source"] == 0
 
 
