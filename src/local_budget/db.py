@@ -315,6 +315,14 @@ CREATE TABLE IF NOT EXISTS walmart_orders (
     -- on "does it have items": a genuinely empty order (fully cancelled) has no
     -- items and would otherwise be re-fetched on every run, forever.
     detail_fetched    INTEGER NOT NULL DEFAULT 0,
+    -- What this order's item lines actually sum to. Recorded rather than
+    -- assumed equal to subtotal_cents, because they routinely are not: the
+    -- sources restate prices at checkout without restating the lines. Keeping
+    -- the two side by side lets a reader see the gap instead of inheriting it.
+    item_sum_cents    INTEGER,
+    -- 'scrape' (walmart.com pages) | 'xlsx' (a purchase-history export). Which
+    -- path put the row here, so a disagreement between them is answerable.
+    source            TEXT,
     fetched_at        TEXT NOT NULL,
     sync_run_id       INTEGER
 );
@@ -326,7 +334,10 @@ CREATE TABLE IF NOT EXISTS walmart_items (
     line_no          INTEGER NOT NULL,
     product_id       TEXT,                -- Walmart item number, the ASIN analogue
     title            TEXT,
-    quantity         INTEGER,
+    -- REAL, not INTEGER: weighed goods arrive as fractions — half a pound of
+    -- deli turkey is `0.514`. An integer reading of that is 0, a line that keeps
+    -- its price and loses its quantity.
+    quantity         REAL,
     -- What the LINE cost, quantity already included — Walmart publishes
     -- `linePrice`, not a unit price. Verified: two bags of peanuts is one line
     -- reading $14.50, four ears of corn one line reading $1.00. Storing that as
@@ -416,6 +427,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
     ADD COLUMN, so we check pragma first."""
     def cols(table: str) -> set[str]:
         return {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+    def has_table(name: str) -> bool:
+        return conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (name,)).fetchone() is not None
+
     if "subcategory" not in cols("transactions"):
         conn.execute("ALTER TABLE transactions ADD COLUMN subcategory TEXT")
     if "subcategory" not in cols("category_rules"):
@@ -441,6 +458,15 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # agent.db sanitized projection (keeps the frozen TXN_COLUMNS / I13 unchanged).
     if "canonical_merchant" not in cols("transactions"):
         conn.execute("ALTER TABLE transactions ADD COLUMN canonical_merchant TEXT")
+    # What an order's item lines actually sum to, and which connector path wrote
+    # the row ('scrape' | 'xlsx'). Both added once the spreadsheet-import path
+    # existed: two sources for one table make provenance load-bearing, and the
+    # item sum is what makes their disagreement visible rather than inherited.
+    if has_table("walmart_orders"):
+        if "item_sum_cents" not in cols("walmart_orders"):
+            conn.execute("ALTER TABLE walmart_orders ADD COLUMN item_sum_cents INTEGER")
+        if "source" not in cols("walmart_orders"):
+            conn.execute("ALTER TABLE walmart_orders ADD COLUMN source TEXT")
 
 
 def get_db_path() -> Path:

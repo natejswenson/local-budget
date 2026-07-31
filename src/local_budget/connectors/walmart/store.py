@@ -89,6 +89,35 @@ def finish_run(conn: sqlite3.Connection, run_id: int, *, status: str,
          orders_upserted, items_seen, items_upserted, error, run_id))
 
 
+def _quantity(value):
+    """A line quantity, keeping fractions.
+
+    Weighed goods are sold in fractions and the sources say so — half a pound of
+    deli turkey arrives as `0.514`. This used to coerce to `int`, which read that
+    as ZERO: the line kept its price and lost its quantity, so a report could
+    show $5.58 of nothing. Whole numbers still store as ints so the common case
+    reads `2`, not `2.0`.
+    """
+    if value in (None, ""):
+        return 1
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return 1
+    return int(n) if n == int(n) else n
+
+
+def item_sum_cents(items: list) -> int:
+    """What an order's lines come to, computed before anything is written.
+
+    Separate from `_store_items` because of ordering: `walmart_items` has a
+    foreign key onto `walmart_orders`, so the lines cannot be inserted until the
+    order row exists — but the order row wants this figure as it is written.
+    Arithmetic first, then one insert, then the lines.
+    """
+    return sum(to_cents(i.get("line_price"), strict=False) or 0 for i in items or [])
+
+
 def _store_items(conn: sqlite3.Connection, order_number: str, items: list) -> int:
     """Replace an order's item lines. Returns how many were written.
 
@@ -100,6 +129,9 @@ def _store_items(conn: sqlite3.Connection, order_number: str, items: list) -> in
     a line total — two bags of peanuts is one line reading $14.50 — and turning
     that back into a unit price would invent precision the source never had, and
     lose a cent to rounding on every odd-quantity line.
+
+    Must run AFTER the order row is inserted — the table has a foreign key onto
+    it. `item_sum_cents` exists so the order row can still carry the total.
     """
     conn.execute("DELETE FROM walmart_items WHERE order_number = ?", (order_number,))
     n = 0
@@ -109,7 +141,7 @@ def _store_items(conn: sqlite3.Connection, order_number: str, items: list) -> in
             " quantity, line_price_cents, seller, category, status) "
             "VALUES (?,?,?,?,?,?,?,?,?)",
             (order_number, i, it.get("product_id"), it.get("title"),
-             int(it.get("quantity") or 1),
+             _quantity(it.get("quantity")),
              to_cents(it.get("line_price"), strict=False),
              it.get("seller"), it.get("category"), it.get("status")))
         n += 1
@@ -135,12 +167,17 @@ def store_orders(conn: sqlite3.Connection, orders: list, run_id: int) -> dict:
         if not num:
             continue                       # a row we could not identify is not a fact
         has_detail = 1 if o.get("detail_fetched") else 0
+        # Summed before the insert (the order row carries it), written after it
+        # (the item table has a foreign key onto that row). A list-only pass
+        # knows neither and must leave both alone — see below.
+        item_sum = item_sum_cents(o.get("items")) if has_detail else None
         conn.execute(
             "INSERT INTO walmart_orders (order_number, order_placed_date, "
             " grand_total_cents, subtotal_cents, tax_cents, shipping_cents, "
             " savings_cents, refund_total_cents, payment_method, item_count, "
-            " channel, cancelled, detail_fetched, fetched_at, sync_run_id) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            " channel, cancelled, detail_fetched, item_sum_cents, source, "
+            " fetched_at, sync_run_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(order_number) DO UPDATE SET "
             # Present on both pages, so the newer read wins outright.
             " order_placed_date=excluded.order_placed_date,"
@@ -161,6 +198,11 @@ def store_orders(conn: sqlite3.Connection, orders: list, run_id: int) -> dict:
             " item_count=COALESCE(excluded.item_count, item_count),"
             " channel=COALESCE(excluded.channel, channel),"
             " detail_fetched=MAX(walmart_orders.detail_fetched, excluded.detail_fetched),"
+            # Coalesced for the same reason as the fields above: only a pass that
+            # carried items knows the sum, and a later list-only sync must not
+            # blank what a detail pass established.
+            " item_sum_cents=COALESCE(excluded.item_sum_cents, item_sum_cents),"
+            " source=COALESCE(excluded.source, source),"
             " fetched_at=excluded.fetched_at,"
             " sync_run_id=excluded.sync_run_id",
             (num, _iso(o.get("order_placed_date")),
@@ -171,7 +213,8 @@ def store_orders(conn: sqlite3.Connection, orders: list, run_id: int) -> dict:
              to_cents(o.get("savings"), strict=False),
              to_cents(o.get("refund_total"), strict=False),
              o.get("payment_method"), o.get("item_count"), o.get("channel"),
-             1 if o.get("cancelled") else 0, has_detail, now, run_id))
+             1 if o.get("cancelled") else 0, has_detail, item_sum,
+             o.get("source", "scrape"), now, run_id))
 
         # Only a detail fetch knows the item list. A list-only pass carries no
         # items, and writing that through would DELETE the lines a previous
