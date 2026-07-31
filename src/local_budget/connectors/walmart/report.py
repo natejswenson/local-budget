@@ -1,17 +1,28 @@
-"""A standalone Amazon report — what two years of order detail actually shows.
+"""A standalone Walmart report — what the order detail behind the charges shows.
 
-Deliberately NOT part of the monthly budget PDF. That page is a fixed
-one-pager about a month; six hundred product titles would swamp it while
-answering a question its reader may not have asked. This is the follow-up,
-rendered in the same PRESS brand so the two read as one publication.
+Deliberately NOT part of the monthly budget PDF, for the same reason the Amazon
+one is not: that page is a fixed one-pager about a month, and hundreds of
+product titles would swamp it while answering a question its reader may not have
+asked. This is the follow-up, rendered in the same PRESS brand so the two read
+as one publication.
 
-**On the "kind" grouping.** There is no product category in the source — only
-titles, ASINs and sellers — so the grouping is a keyword heuristic, and the
-report says so on its face. It is kept visible and auditable rather than hidden
-behind a model call: a wrong bucket should be something a reader can spot and
-correct, not something they have to trust. The table itself lives in
-`connectors/kinds.py`, shared with the Walmart report so the same item cannot
-land in two different buckets in two documents.
+**Two things this page carries that the Amazon report does not**, both because
+the source is different rather than because the design is:
+
+* *A channel split.* Walmart mixes online orders and in-store receipts into one
+  history and one merchant on the statement family. They are different spending
+  behaviours with different explanations, and a single bar hides that.
+
+* *A split-settlement note.* A Walmart order routinely settles as several
+  partial bank charges — one real order became five — so "orders" and
+  "charges" on this page do not correspond, and a reader comparing the two
+  counts needs to be told that rather than left to infer it.
+
+**On the "kind" grouping.** Walmart sometimes publishes its own product category
+and often does not. Where it does, this reports it; where it does not, it falls
+back to the shared keyword heuristic in `connectors/kinds.py` — and the caption
+says which mix produced the chart, rather than presenting a guess and a fact in
+the same bar.
 """
 from __future__ import annotations
 
@@ -23,8 +34,8 @@ from pathlib import Path
 
 from ...agent.render import money
 from ...report import brand
-from ..kinds import KINDS, classify   # noqa: F401  (re-exported: the report IS its public surface)
-from .match import MERCHANT_LIKE, horizon
+from ..kinds import classify
+from .match import MERCHANT_LIKE, horizon, split_settlements
 
 
 def gather(conn: sqlite3.Connection, since: str | None = None,
@@ -43,29 +54,34 @@ def gather(conn: sqlite3.Connection, since: str | None = None,
     # shipment — a silent double-count that inflates every total downstream.
     rows = [dict(r) for r in conn.execute(
         f"""WITH matched_orders AS (
-                SELECT a.order_number,
+                SELECT m.order_number,
                        MIN(t.posted_date) AS posted_date,
                        MIN(t.txn_id)      AS txn_id
-                  FROM amazon_matches m
-                  JOIN amazon_transactions a ON a.amazon_txn_id = m.amazon_txn_id
-                  JOIN transactions t        ON t.txn_id = m.txn_id
-                 WHERE a.order_number IS NOT NULL{where}
-              GROUP BY a.order_number)
+                  FROM walmart_matches m
+                  JOIN transactions t ON t.txn_id = m.txn_id
+                 WHERE 1=1{where}
+              GROUP BY m.order_number)
             SELECT mo.posted_date, mo.txn_id, mo.order_number,
-                   i.asin, i.title, i.seller, i.condition,
+                   o.channel, i.product_id, i.title, i.seller,
+                   i.category AS source_category,
                    COALESCE(i.quantity,1) AS qty,
-                   i.unit_price_cents * COALESCE(i.quantity,1) AS line_cents
+                   i.line_price_cents AS line_cents
               FROM matched_orders mo
-              JOIN amazon_items i ON i.order_number = mo.order_number""", params)]
+              JOIN walmart_orders o ON o.order_number = mo.order_number
+              JOIN walmart_items i  ON i.order_number = mo.order_number
+             -- Never bought, so never spend. Cancelled lines stay in the table
+             -- as history but must not reach a category total.
+             WHERE (i.status IS NULL OR LOWER(i.status) NOT IN
+                    ('canceled','cancelled','unavailable'))""", params)]
 
     charges = conn.execute(
         f"""SELECT COUNT(*) n, COALESCE(-SUM(t.amount_cents),0) c
-              FROM amazon_matches m JOIN transactions t ON t.txn_id = m.txn_id
+              FROM walmart_matches m JOIN transactions t ON t.txn_id = m.txn_id
              WHERE 1=1{where}""", params).fetchone()
 
     # Coverage must be scoped to the SAME window as the rest of the page.
-    # Reporting the all-time figure on a two-month report describes a
-    # different document than the one the reader is holding.
+    # Reporting the all-time figure on a two-month report describes a different
+    # document than the one the reader is holding.
     like = " OR ".join("t.merchant_norm LIKE ?" for _ in MERCHANT_LIKE)
     scoped = conn.execute(
         f"""SELECT COUNT(*) n, COALESCE(-SUM(t.amount_cents),0) c
@@ -76,19 +92,29 @@ def gather(conn: sqlite3.Connection, since: str | None = None,
     by_kind: Counter = Counter()
     by_month: Counter = Counter()
     by_seller: Counter = Counter()
-    per_asin: dict = defaultdict(lambda: {"n": 0, "cents": 0, "title": ""})
+    by_channel: Counter = Counter()
+    per_product: dict = defaultdict(lambda: {"n": 0, "cents": 0, "title": ""})
+    from_source = 0
     for r in rows:
-        r["kind"] = classify(r["title"])
+        # Walmart's own shelf category wins where it exists; the keyword table
+        # only fills the gap. Counting which is which is what lets the caption
+        # be honest instead of hedging about the whole chart.
+        if r["source_category"]:
+            r["kind"] = r["source_category"]
+            from_source += 1
+        else:
+            r["kind"] = classify(r["title"])
         by_kind[r["kind"]] += r["line_cents"]
         by_month[r["posted_date"][:7]] += r["line_cents"]
+        by_channel[r["channel"] or "unknown"] += r["line_cents"]
         if r["seller"]:
             by_seller[r["seller"]] += r["line_cents"]
-        a = per_asin[r["asin"] or r["title"]]
+        a = per_product[r["product_id"] or r["title"]]
         a["n"] += 1
         a["cents"] += r["line_cents"]
         a["title"] = r["title"] or "—"
 
-    repeats = sorted((v for v in per_asin.values() if v["n"] > 1),
+    repeats = sorted((v for v in per_product.values() if v["n"] > 1),
                      key=lambda v: -v["cents"])
     biggest = sorted(rows, key=lambda r: -r["line_cents"])[:12]
 
@@ -97,17 +123,20 @@ def gather(conn: sqlite3.Connection, since: str | None = None,
         "line_total": sum(r["line_cents"] for r in rows),
         "charge_total": int(charges["c"]), "charge_count": int(charges["n"]),
         "orders": len({r["order_number"] for r in rows}),
-        "items": len(rows), "asins": len(per_asin),
+        "items": len(rows), "products": len(per_product),
         "span": (min((r["posted_date"] for r in rows), default="—"),
                  max((r["posted_date"] for r in rows), default="—")),
         "by_kind": by_kind.most_common(),
         "by_month": sorted(by_month.items()),
+        "by_channel": by_channel.most_common(),
         "by_seller": by_seller.most_common(10),
+        "kinds_from_source": from_source,
         "repeats": repeats[:12],
         "biggest": biggest,
         "scoped_total_cents": int(scoped["c"]), "scoped_charges": int(scoped["n"]),
         "scoped_pct": (round(int(charges["c"]) / int(scoped["c"]) * 100, 1)
                        if scoped["c"] else 0.0),
+        "settlements": split_settlements(conn),
         "horizon": horizon(conn), "is_scoped": bool(since or until),
     }
 
@@ -119,12 +148,12 @@ def _esc(s: object) -> str:
 def _safe(stem: str) -> str:
     """Filename stem reduced to characters that cannot escape the reports dir.
     `since`/`until` reach this from the command line."""
-    return "".join(c for c in stem if c.isalnum() or c in "-_") or "amazon"
+    return "".join(c for c in stem if c.isalnum() or c in "-_") or "walmart"
 
 
 def _clip(text: str | None, n: int) -> str:
     """Truncate at a word boundary with an ellipsis. A hard slice cuts titles
-    mid-word ("Memory Foam Floor Chair – Ideal f"), which reads as corruption
+    mid-word ("Mainstays 5-Shelf Bookcase, Blac"), which reads as corruption
     rather than as an abbreviation."""
     t = (text or "—").strip()
     if len(t) <= n:
@@ -153,7 +182,7 @@ def _bars(pairs: list[tuple[str, int]], *, accent_last: bool = False) -> str:
 def _table(headers: list[str], rows: list[list[str]], nums: set[int],
            empty: str = "nothing to show") -> str:
     if not rows:
-        return f'<p class="empty">{_esc(empty)}</p>' 
+        return f'<p class="empty">{_esc(empty)}</p>'
     th = "".join(f'<th{" class=\"num\"" if i in nums else ""}>{_esc(h)}</th>'
                  for i, h in enumerate(headers))
     body = "".join(
@@ -163,9 +192,30 @@ def _table(headers: list[str], rows: list[list[str]], nums: set[int],
     return f'<table class="data"><thead><tr>{th}</tr></thead><tbody>{body}</tbody></table>'
 
 
+def kind_caption(d: dict) -> str:
+    """Say where the grouping came from, in the mix it actually came in.
+
+    All three cases are different claims about the chart above, and printing the
+    same hedge for all of them would be either a lie or a needless apology.
+    """
+    n, src = d["items"], d["kinds_from_source"]
+    if not n:
+        return ""
+    if src == n:
+        return ("Groups are Walmart's own product categories, as published on "
+                "the order.")
+    if src == 0:
+        return ("Groups are inferred from product titles by keyword — these "
+                "orders carried no product category. Treat them as a reading of "
+                "the data, not a fact in it.")
+    return (f"{src} of {n} lines are grouped by Walmart's own product category; "
+            f"the remaining {n - src} are inferred from the title by keyword and "
+            f"are a reading of the data rather than a fact in it.")
+
+
 def build_html(d: dict, theme: dict) -> str:
     lo, hi = d["span"]
-    hz = d["horizon"]
+    hz, st = d["horizon"], d["settlements"]
     ident = theme["identity"]
 
     stats = "".join(
@@ -175,7 +225,7 @@ def build_html(d: dict, theme: dict) -> str:
             ("Spent", money(d["charge_total"]), True),
             ("Orders", f'{d["orders"]:,}', False),
             ("Items", f'{d["items"]:,}', False),
-            ("Distinct products", f'{d["asins"]:,}', False),
+            ("Distinct products", f'{d["products"]:,}', False),
         ])
 
     biggest_rows = [[r["posted_date"], money(r["line_cents"]),
@@ -188,28 +238,43 @@ def build_html(d: dict, theme: dict) -> str:
     if d["line_total"] != d["charge_total"]:
         note = (f'<p class="caption">Items list at {money(d["line_total"])}; '
                 f'{money(d["charge_total"])} was charged. Item prices are before '
-                f'discounts, promotions and gift cards, and tax pushes the other '
-                f'way — the two are different figures, not an error.</p>')
+                f'rollbacks, promotions and any Walmart Cash applied, and tax '
+                f'pushes the other way — the two are different figures, not an '
+                f'error.</p>')
+
+    # Orders and charges do not correspond here, and the two counts sit a few
+    # lines apart on this page. Left unsaid, a reader reconciles them and
+    # concludes the report is wrong.
+    settle_note = ""
+    if st["split_orders"]:
+        settle_note = (
+            f' · {st["split_orders"]} of {st["orders"]} orders settled as more '
+            f'than one charge (up to {st["max_parts"]})')
 
     return (
         '<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
-        '<title>Amazon purchases</title>'
+        '<title>Walmart purchases</title>'
         f'<style>{brand.stylesheet(theme)}{template_css()}</style></head><body><main>'
         '<header class="masthead"><div class="masthead-row">'
         f'<span class="stamp">{_esc(ident["stamp"])}</span>'
-        f'<span class="eyebrow">LOCAL BUDGET · AMAZON PURCHASES · '
+        f'<span class="eyebrow">LOCAL BUDGET · WALMART PURCHASES · '
         f'{_esc(date.today().isoformat())}</span>'
         f'<span class="byline">{_esc(ident["byline"])}</span></div>'
-        f'<h1>Amazon</h1>'
+        f'<h1>Walmart</h1>'
         f'<p class="standfirst">{_esc(lo)} to {_esc(hi)} — every order that '
         f'reconciled to a charge on the statement, itemised.</p></header>'
         f'<section class="stat-strip">{stats}</section>'
 
         '<h3 class="block-title">What it was</h3>'
         f'<section>{_bars(d["by_kind"])}</section>'
-        '<p class="caption">Groups are inferred from product titles by keyword — '
-        'the source carries no product category. Treat them as a reading of the '
-        'data, not a fact in it.</p>'
+        f'<p class="caption">{_esc(kind_caption(d))}</p>'
+
+        '<h3 class="block-title">Where</h3>'
+        f'<section class="channel">{_bars(d["by_channel"])}</section>'
+        '<p class="caption">Online orders and in-store receipts reach this '
+        'ledger as different merchants and reconcile separately. Walmart only '
+        'holds an in-store receipt when the card used is linked to the '
+        'account.</p>'
 
         '<h3 class="block-title">When</h3>'
         f'<section>{_bars(d["by_month"], accent_last=True)}</section>'
@@ -225,14 +290,15 @@ def build_html(d: dict, theme: dict) -> str:
         f'{note}'
 
         f'<footer class="provenance">'
-        f'{d["charge_count"]} of {d["scoped_charges"]} Amazon charges in this '
+        f'{d["charge_count"]} of {d["scoped_charges"]} Walmart charges in this '
         f'period reconciled · {d["scoped_pct"]}% of the '
         f'{money(d["scoped_total_cents"])} charged has item detail'
+        f'{settle_note}'
         # The horizon is a property of the whole dataset, so it only belongs on
         # an all-history report — on a scoped one it describes something else.
         + ((f' · item detail reaches back to {_esc(hz["earliest"])}'
             if hz["earliest"] else '')
-           + (f'; {hz["pre_count"]} older charges predate any transaction record'
+           + (f'; {hz["pre_count"]} older charges predate any order record'
               if hz["has_backlog"] else '')
            if not d["is_scoped"] else '')
         + '</footer></main></body></html>')
@@ -242,7 +308,7 @@ def build_html(d: dict, theme: dict) -> str:
 #: Kept as a real .css file rather than a Python string so it can be edited and
 #: re-rendered without touching code — the same reason the dashboard's colours
 #: live in web/static/palette.css instead of a literal.
-TEMPLATE_CSS = Path(__file__).resolve().parent / "assets" / "amazon-report.css"
+TEMPLATE_CSS = Path(__file__).resolve().parent / "assets" / "walmart-report.css"
 
 
 def template_css() -> str:
@@ -265,15 +331,15 @@ def render(since: str | None = None, until: str | None = None,
     with db.connect() as conn:
         d = gather(conn, since, until)
     if not d["rows"]:
-        raise ValueError("no reconciled Amazon items in that range — "
-                         "run `budget amazon backfill` first")
+        raise ValueError("no reconciled Walmart items in that range — run "
+                         "`budget walmart import <file.xlsx>` first")
     html = build_html(d, brand.load_theme())
     base = (out_dir or paths.reports_dir()).resolve()
     # The filename carries the scope. With a fixed name, rendering a two-month
     # view silently overwrites the all-history one — same path, wholly different
     # document, and no way to tell them apart afterwards.
     lo, hi = d["span"]
-    stem = "amazon-purchases" if not (since or until) else f"amazon-{lo}_{hi}"
+    stem = "walmart-purchases" if not (since or until) else f"walmart-{lo}_{hi}"
     out = (base / f"{_safe(stem)}.pdf").resolve()
     if not out.is_relative_to(base):
         raise ValueError("invalid output path")

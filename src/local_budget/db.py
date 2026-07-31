@@ -247,6 +247,131 @@ CREATE TABLE IF NOT EXISTS amazon_matches (
     UNIQUE (txn_id)
 );
 
+-- ── Walmart connector ───────────────────────────────────────────────────────
+-- Same job as the Amazon block above, against a bigger number: this ledger
+-- carries $XX.Xk of Walmart charges to $YY.Yk of Amazon. Same footing too —
+-- IMPORTED FACTS, written by the deterministic core through connect(), absent
+-- from _AGENT_WRITE_TABLES so every agent write is denied.
+--
+-- Deliberately NOT stored, though the pages expose them: delivery address,
+-- recipient name, driver/tracking detail, card last-4. None are needed to
+-- answer "what did I buy".
+--
+-- ⚠ The SAME TWO SIGN CONVENTIONS as the Amazon block, for the same reasons:
+--   walmart_charges.amount_cents        SIGNED like the ledger (charge < 0).
+--   walmart_orders.* / walmart_items.*  POSITIVE magnitudes — prices, not
+--                                       postings.
+--
+-- ⚠ AND ONE THING AMAZON DOES NOT HAVE: an order does not map to a charge.
+--
+-- Amazon publishes its own list of card charges at exactly the granularity the
+-- bank posts them. Walmart publishes ORDERS, and an order routinely settles as
+-- SEVERAL partial charges that sum to its total. A pattern seen in a real ledger:
+--
+--     day 1   $100.00  ->  one bank row
+--     day 8   $150.00  ->  two:   $20.00 + $130.00
+--     day 20  $200.00  ->  five:  $25.00 + $5.00 + $10.00 + $50.00 + $110.00
+--
+-- Walmart exposes no per-charge record to reconcile against — the order page's
+-- "Charge history" is an empty banner whose contents load separately. So the
+-- relationship is ORDER ↔ SET OF BANK ROWS, and that is what walmart_matches
+-- stores: many rows per order, at most one order per bank row.
+--
+-- An earlier version of this schema synthesized one charge row per order from
+-- its total. It would have matched the first case above and silently failed the
+-- other two — the larger, more interesting orders.
+
+CREATE TABLE IF NOT EXISTS walmart_sync_runs (
+    sync_run_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at       TEXT NOT NULL,
+    completed_at     TEXT,
+    status           TEXT NOT NULL,       -- success | failed
+    scope            TEXT,                -- e.g. 'days=60' / 'backfill'
+    orders_seen      INTEGER,
+    orders_upserted  INTEGER,
+    items_seen       INTEGER,
+    items_upserted   INTEGER,
+    error_message    TEXT
+);
+
+CREATE TABLE IF NOT EXISTS walmart_orders (
+    order_number      TEXT PRIMARY KEY,
+    order_placed_date TEXT NOT NULL,
+    grand_total_cents INTEGER,
+    subtotal_cents    INTEGER,
+    tax_cents         INTEGER,
+    shipping_cents    INTEGER,
+    savings_cents     INTEGER,
+    refund_total_cents INTEGER,
+    payment_method    TEXT,
+    item_count        INTEGER,
+    -- 'online' | 'in-store' | NULL. Walmart mixes both into one history, and
+    -- they reconcile against different merchant strings (WALMART.COM vs
+    -- WM SUPERC…). Keeping the distinction is what lets coverage report the
+    -- two honestly instead of averaging a good number with a bad one.
+    channel           TEXT,
+    cancelled         INTEGER NOT NULL DEFAULT 0,
+    -- Has the per-order detail page been fetched? Backfill resumes on THIS, not
+    -- on "does it have items": a genuinely empty order (fully cancelled) has no
+    -- items and would otherwise be re-fetched on every run, forever.
+    detail_fetched    INTEGER NOT NULL DEFAULT 0,
+    -- What this order's item lines actually sum to. Recorded rather than
+    -- assumed equal to subtotal_cents, because they routinely are not: the
+    -- sources restate prices at checkout without restating the lines. Keeping
+    -- the two side by side lets a reader see the gap instead of inheriting it.
+    item_sum_cents    INTEGER,
+    -- 'xlsx' (a purchase-history export) for everything written now. 'scrape'
+    -- survives only on rows a retired browser-scraping path wrote before the
+    -- import replaced it — kept rather than rewritten, because which path
+    -- produced a row is a fact about the row, not a fact about today's code.
+    source            TEXT,
+    fetched_at        TEXT NOT NULL,
+    sync_run_id       INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_wm_order_date ON walmart_orders(order_placed_date);
+
+CREATE TABLE IF NOT EXISTS walmart_items (
+    item_id          INTEGER PRIMARY KEY,
+    order_number     TEXT NOT NULL REFERENCES walmart_orders(order_number),
+    line_no          INTEGER NOT NULL,
+    product_id       TEXT,                -- Walmart item number, the ASIN analogue
+    title            TEXT,
+    -- REAL, not INTEGER: weighed goods arrive as fractions — half a pound of
+    -- deli turkey is `0.514`. An integer reading of that is 0, a line that keeps
+    -- its price and loses its quantity.
+    quantity         REAL,
+    -- What the LINE cost, quantity already included — Walmart publishes
+    -- `linePrice`, not a unit price. Verified: two bags of peanuts is one line
+    -- reading $14.50, four ears of corn one line reading $2.00. Storing that as
+    -- a unit price and multiplying by quantity, as the Amazon connector does
+    -- with its own source, would have doubled and quadrupled those lines.
+    line_price_cents INTEGER,
+    seller           TEXT,                -- Walmart, or a marketplace seller
+    -- Walmart's own product taxonomy, when the page carries it. Amazon exposes
+    -- nothing equivalent, which is why its report has to guess a bucket from
+    -- keywords in the title and say so on its face. If this is populated, the
+    -- Walmart report can state a fact instead of a reading. NULL is fine and
+    -- expected; the report falls back to the same keyword heuristic.
+    category         TEXT,
+    status           TEXT,                -- delivered | cancelled | substituted…
+    UNIQUE (order_number, line_no)
+);
+CREATE INDEX IF NOT EXISTS idx_wm_item_order ON walmart_items(order_number);
+
+CREATE TABLE IF NOT EXISTS walmart_matches (
+    match_id     INTEGER PRIMARY KEY,
+    order_number TEXT NOT NULL REFERENCES walmart_orders(order_number),
+    txn_id       INTEGER NOT NULL REFERENCES transactions(txn_id),
+    confidence   TEXT NOT NULL,           -- exact | split | manual
+    method       TEXT,                    -- 'single+0d' | 'sum-of-5+3d' | 'confirmed'
+    matched_at   TEXT NOT NULL,
+    -- MANY rows per order (a split settlement), but a bank row explains at most
+    -- one order. Without this a single charge could be claimed by two orders of
+    -- overlapping totals and both would look reconciled.
+    UNIQUE (txn_id)
+);
+CREATE INDEX IF NOT EXISTS idx_wm_match_order ON walmart_matches(order_number);
+
 -- ── transaction splits ──────────────────────────────────────────────────────
 -- One bank charge, several categories. A mixed order — groceries, a school
 -- supply and a household item in one box — otherwise counts entirely against
@@ -267,8 +392,8 @@ CREATE TABLE IF NOT EXISTS txn_splits (
     amount_cents INTEGER NOT NULL,        -- signed, ledger convention
     category     TEXT    NOT NULL,
     subcategory  TEXT,
-    source       TEXT    NOT NULL,        -- 'amazon' | 'manual'
-    item_ref     TEXT,                    -- ASIN, when derived from an order line
+    source       TEXT    NOT NULL,        -- 'amazon' | 'walmart' | 'manual'
+    item_ref     TEXT,                    -- ASIN / Walmart item number, from an order line
     note         TEXT,
     created_at   TEXT    NOT NULL
 );
@@ -304,6 +429,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
     ADD COLUMN, so we check pragma first."""
     def cols(table: str) -> set[str]:
         return {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+    def has_table(name: str) -> bool:
+        return conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (name,)).fetchone() is not None
+
     if "subcategory" not in cols("transactions"):
         conn.execute("ALTER TABLE transactions ADD COLUMN subcategory TEXT")
     if "subcategory" not in cols("category_rules"):
@@ -329,6 +460,22 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # agent.db sanitized projection (keeps the frozen TXN_COLUMNS / I13 unchanged).
     if "canonical_merchant" not in cols("transactions"):
         conn.execute("ALTER TABLE transactions ADD COLUMN canonical_merchant TEXT")
+    # What an order's item lines actually sum to, and which connector path wrote
+    # the row ('scrape' | 'xlsx'). Both added once the spreadsheet-import path
+    # existed: two sources for one table make provenance load-bearing, and the
+    # item sum is what makes their disagreement visible rather than inherited.
+    if has_table("walmart_orders"):
+        if "item_sum_cents" not in cols("walmart_orders"):
+            conn.execute("ALTER TABLE walmart_orders ADD COLUMN item_sum_cents INTEGER")
+        if "source" not in cols("walmart_orders"):
+            conn.execute("ALTER TABLE walmart_orders ADD COLUMN source TEXT")
+        # Retire card last-4s already stored. The schema block above has always
+        # promised this connector does not keep them, but the importer read the
+        # export's `Payment Method` column ("Visa ending in 1840") and the
+        # upsert COALESCEs — so simply not reading it any more would preserve
+        # every value already written. Nothing consumes the column.
+        conn.execute("UPDATE walmart_orders SET payment_method = NULL "
+                     " WHERE payment_method IS NOT NULL")
 
 
 def get_db_path() -> Path:
@@ -391,7 +538,21 @@ _AGENT_READ_DENY = {("transactions", "raw_ofx"), ("transactions", "payee"),
                     # error embeds the values it was binding — product titles,
                     # here. The CLI (full access) still prints it in
                     # `budget amazon status`; the agent has no need for it.
-                    ("amazon_sync_runs", "error_message")}
+                    ("amazon_sync_runs", "error_message"),
+                    ("walmart_sync_runs", "error_message"),
+                    # A run's scope carries the imported FILE's basename, and a
+                    # download is routinely named after its owner and account
+                    # ("Nate_Swenson_4111_orders.xlsx"). Denied for exactly the
+                    # reason import_runs.source_name and inbox_files.filename
+                    # are — the CLI still prints it in `budget walmart status`.
+                    ("walmart_sync_runs", "scope"),
+                    # Card last-4. The connectors store what their sources hand
+                    # over, but `sanitize.redact_account_numbers` only masks
+                    # runs of 7+ digits, so a 4-digit fragment would reach the
+                    # agent through run_sql untouched. Nothing reads these.
+                    ("walmart_orders", "payment_method"),
+                    ("amazon_orders", "payment_method"),
+                    ("amazon_transactions", "payment_method")}
 
 
 def _agent_authorizer(write: bool):
@@ -457,8 +618,48 @@ def agent_connect(db_path: Path | None = None, write: bool = False) -> Iterator[
             paths.harden_db_files(path)
 
 
+def _drop_stale_walmart_tables(conn: sqlite3.Connection) -> None:
+    """Recreate Walmart tables whose shape changed — but ONLY while empty.
+
+    The Walmart connector's model changed before it ever stored a row: Walmart
+    publishes no per-charge record, so `walmart_charges` was replaced by
+    order-to-many-bank-rows matching, and `unit_price_cents` by
+    `line_price_cents` (the source publishes a line total). Any database that
+    ran `init_schema` in between has the old empty tables, and
+    `CREATE TABLE IF NOT EXISTS` will not reshape them.
+
+    The emptiness check is the safety rail, and it is not a formality: a
+    populated table means an assumption here is wrong, and dropping it would
+    destroy imported facts. So it is left alone and the schema mismatch surfaces
+    as a loud error later instead.
+
+    Runs BEFORE the schema script, so the DDL immediately recreates what it
+    drops.
+    """
+    def has_table(name: str) -> bool:
+        return conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (name,)).fetchone() is not None
+
+    def is_empty(name: str) -> bool:
+        return not conn.execute(f"SELECT 1 FROM {name} LIMIT 1").fetchone()
+
+    stale = [("walmart_charges", None),
+             ("walmart_matches", "order_number"),
+             ("walmart_items", "line_price_cents"),
+             ("walmart_sync_runs", "items_seen")]
+    for name, required_col in stale:
+        if not has_table(name):
+            continue
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({name})")}
+        outdated = required_col is None or required_col not in cols
+        if outdated and is_empty(name):
+            conn.execute(f"DROP TABLE {name}")
+
+
 def init_schema(db_path: Path | None = None) -> None:
     with connect(db_path) as conn:
+        _drop_stale_walmart_tables(conn)
         conn.executescript(SCHEMA)
         _migrate(conn)
         from . import merchants   # lazy: avoid import cycle (merchants imports db)

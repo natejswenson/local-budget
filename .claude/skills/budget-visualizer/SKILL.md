@@ -105,6 +105,49 @@ expired the report still renders and the CLI prints a note. If coverage looks
 stale or a period was never synced, the fix is `budget amazon sync`, which the
 user runs; do not attempt it as a side effect of a question.
 
+## Walmart follow-ups
+
+Everything above applies, with the same tools one name over:
+
+- `walmart_breakdown(month)` — item titles, quantities, line totals, and
+  whether each was bought online or in store.
+- `walmart_coverage(month)` — **check this before trusting a breakdown.**
+
+Offer it on the same trigger: a Walmart-heavy category over budget, or an
+anomaly on a `WALMART`/`WAL MART`/`WM SUPERC` merchant. Group before you print,
+label the grouping as your judgment, and make the group totals sum to the
+printed line total — all three rules carry over unchanged.
+
+Three things are different, and each changes what you may claim:
+
+- **Walmart sometimes publishes its own product category.** Where the `Where`
+  and item data carry one, the grouping is Walmart's fact rather than your
+  reading, and you may say so. Where it does not, it is a keyword inference
+  exactly as with Amazon. Do not describe a mixed set as though it were all
+  one or all the other.
+
+- **Online and in-store reconcile separately, and the tool reports them
+  separately.** In-store coverage is often much lower, because Walmart only
+  holds an in-store receipt when the card used is linked to the account — that
+  is a property of the account, not a data problem, and not something a sync
+  will fix. Quote the two figures rather than the average, and never present
+  in-store spend as unexplained-therefore-suspicious.
+
+- **Some charges carry an inferred settle date.** Walmart publishes orders, not
+  card charges, so where the order page showed no payment line the charge is
+  dated from the order. The items are real; the date is derived. When
+  `walmart_coverage` prints that disclosure, keep it — and do not build an
+  argument about *when* money was spent on a set that includes derived charges.
+
+Sam's Club is **not** Walmart here. It is a separate site with a separate
+login, so `SAMS CLUB`/`SAMSCLUB` charges are outside these tools entirely and
+appear in neither the numerator nor the denominator. If a user asks about
+Sam's Club spend, answer from the ordinary transaction tools and say the item
+detail does not exist rather than reporting it as unexplained Walmart spend.
+
+The fix for stale or missing data is `budget walmart sync`, or
+`budget walmart backfill` for older charges — both of which the user runs.
+
 ## Displayed figures are extracted, never recomputed
 
 Wherever a skill DOES place a figure in prose or narrative: use the dollar
