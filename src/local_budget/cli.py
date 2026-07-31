@@ -986,6 +986,61 @@ def walmart_backfill(since: str | None, limit: int | None, headed: bool,
                    f"have no order record to match on")
 
 
+@walmart.command("import")
+@click.argument("path", type=click.Path(exists=True, dir_okay=False))
+@click.option("--dry-run", is_flag=True, help="show what would be written")
+def walmart_import(path: str, dry_run: bool) -> None:
+    """Load a purchase-history spreadsheet export (.xlsx).
+
+    The backfill path that does not touch Walmart. `sync` and `backfill` walk
+    the site, which works for the last handful of orders and gets challenged
+    long before it reaches last year; an export from an already-signed-in
+    browser carries the same orders with no bot-detection surface at all.
+
+    Safe to run over data you already have: orders upsert by number, so this
+    fills in what is missing and leaves existing matches intact.
+    """
+    from .connectors.walmart import import_xlsx as wm_import
+    from .connectors.walmart.parse import WalmartParseError
+    db.init_schema()
+
+    if dry_run:
+        try:
+            s = wm_import.summarize(wm_import.load(path))
+        except WalmartParseError as e:
+            raise click.ClickException(str(e)) from e
+        click.echo(f"  orders:    {s['orders']} ({s['since']} → {s['until']})")
+        click.echo(f"  items:     {s['items']}")
+        click.echo("  channels:  "
+                   + ", ".join(f"{k} {v}" for k, v in sorted(s["channels"].items())))
+        click.echo(f"  lines tie to subtotal: {s['reconciling']}/{s['comparable']}")
+        click.echo("\n  (dry run — nothing written)")
+        return
+
+    try:
+        r = wm_import.run_import(path, on_progress=click.echo)
+    except WalmartParseError as e:
+        raise click.ClickException(str(e)) from e
+    s, cov = r["summary"], r["coverage"]
+    click.echo(f"\n  ✓ {r['orders']} orders · {r['items']} item lines stored")
+    click.echo(f"    matched {r['matched']}"
+               + (f" · {r['ambiguous']} need confirming" if r["ambiguous"] else ""))
+    click.echo(f"    coverage {cov['coverage_pct']}% "
+               f"({dollars(cov['matched_cents'])} of {dollars(cov['total_cents'])})")
+    # Stated plainly rather than buried: these lines are the source's, and the
+    # source does not always agree with its own subtotals. A reader who thinks
+    # the item totals are exact will over-trust a category breakdown built on
+    # them.
+    click.echo(f"    {s['reconciling']} of {s['comparable']} orders have item "
+               f"lines summing to their subtotal; the rest differ (the export "
+               f"does not restate checkout price changes)")
+    hz = r["horizon"]
+    if hz["has_backlog"]:
+        click.echo(f"    reconcilable back to {hz['earliest']}; "
+                   f"{hz['pre_count']} older charges ({dollars(hz['pre_cents'])}) "
+                   f"have no order record to match on")
+
+
 @walmart.command("status")
 @click.option("--month", default=None, help="YYYY-MM (default: all time)")
 def walmart_status(month: str | None) -> None:
