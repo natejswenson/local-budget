@@ -68,20 +68,20 @@ def test_non_food_outranks_the_food_net():
 
 @pytest.mark.parametrize("title,bucket", [
     # These four are the ordering guarantee, stated as behaviour.
-    ("Cascade Complete Dishwasher Detergent Liquid Gel", "Home Improvement"),
-    ("Great Value Vanilla Flavored Baking Chips, 24 oz Bag", "Groceries"),
-    ("Wilton Non-Stick Baking Sheet, 10x15 in", "Home Improvement"),
-    ("Head & Shoulders Anti-Dandruff 2in1 Shampoo", "Personal Care"),
+    ("Automatic Dishwasher Detergent Liquid Gel, 90 oz", "Home Improvement"),
+    ("Vanilla Flavored Baking Chips, 24 oz Bag", "Groceries"),
+    ("Non-Stick Baking Sheet, 10x15 in", "Home Improvement"),
+    ("Anti-Dandruff 2-in-1 Shampoo, 28 oz", "Personal Care"),
     # A representative sweep of the rest.
-    ("Nature Made Vitamin D3 2000 IU Softgels", "Health"),
-    ("Angel Soft 2-Ply Toilet Paper, 24 Rolls", "Home Improvement"),
-    ("Case-it Mighty Zip Tab School Zipper Binder", "Kid Activities"),
-    ("UGG Women's Tasman II Slipper", "Shopping"),
-    ("Anker USB-C Charger Cable 6ft", "Shopping"),
-    ("All Natural* 80% Lean Ground Beef Chuck, 1 lb Tray", "Groceries"),
-    ("Great Value Large White Eggs, 18 Count", "Groceries"),
+    ("Vitamin D3 Softgels, 2000 IU", "Health"),
+    ("2-Ply Toilet Paper, 24 Rolls", "Home Improvement"),
+    ("Zip Tab School Zipper Binder", "Kid Activities"),
+    ("Women's Sheepskin Slipper, Size 8", "Shopping"),
+    ("USB-C Charger Cable, 6 ft", "Shopping"),
+    ("80% Lean Ground Beef Chuck, 1 lb Tray", "Groceries"),
+    ("Large White Eggs, 18 Count", "Groceries"),
     ("Fresh Gala Apple, Each", "Groceries"),
-    ("Diet Dr Pepper Soda Pop, 12 fl oz, 12 Pack Cans", "Groceries"),
+    ("Diet Cola Soda Pop, 12 fl oz, 12 Pack Cans", "Groceries"),
 ])
 def test_classifier_buckets(title, bucket):
     assert classify(title) == bucket
@@ -94,55 +94,74 @@ def test_a_word_boundary_pattern_does_not_match_mid_word():
     assert classify("Advdisor Brand Mystery Item") == "Uncategorized"
 
 
-# ── the clusters the budget has no home for ──────────────────────────────────
-def test_pet_supplies_are_flagged_as_unhoused():
-    assert unhoused("Kaytee In Shell Peanuts Wild Bird Feed, 5 Pounds") == "Pets"
-    assert unhoused("Elanco Chewable Quad Dewormer for Large Dogs") == "Pets"
-    assert unhoused("Extreme Dog Fence Dog Collar") == "Pets"
+# ── pets, which the budget now has a category for ────────────────────────────
+@pytest.mark.parametrize("title", [
+    "In-Shell Peanuts Wild Bird Feed, 5 lb",
+    "Chewable Dewormer for Large Dogs",
+    "Extreme Dog Fence Dog Collar",
+    "Daily Blend Nutrition Diet for Hamsters and Gerbils",
+    "Nylon Dog Leash, 6 ft",
+])
+def test_pet_supplies_classify_as_pets(title):
+    assert classify(title) == "Pets"
+
+
+@pytest.mark.parametrize("title,bucket", [
+    # Each of these reads as a DIFFERENT bucket by keyword, which is why Pets
+    # has to lead the table rather than sit among the other non-food rules.
+    ("Oatmeal Dog Shampoo, 16 oz", "Pets"),        # else Personal Care
+    ("Chicken & Rice Dog Food, 16.5 lb", "Pets"),   # else Groceries
+    ("Power Chew Toy for Large Dogs", "Pets"),        # else Kid Activities
+])
+def test_pets_outranks_the_buckets_a_pet_item_would_otherwise_hit(title, bucket):
+    assert classify(title) == bucket
 
 
 def test_hot_dogs_are_not_pet_supplies():
-    """The failure a bare "dog" pattern would cause: recommending a Pets budget
-    on the strength of a pack of buns."""
-    assert unhoused("Ball Park 100% Beef Hot Dogs, 8 Count") is None
-    assert unhoused("Great Value Corn Dogs, Frozen") is None
-    assert classify("Ball Park 100% Beef Hot Dogs, 8 Count") == "Groceries"
+    """The failure a bare "dog" pattern would cause — and it matters more now
+    that Pets leads the table, because a false positive here would take a
+    grocery line out of the food bucket entirely."""
+    assert classify("Beef Hot Dogs, 8 Count") == "Groceries"
+    assert classify("Frozen Corn Dogs, 16 Count") == "Groceries"
+    assert classify("Hot Dog Buns, 8 Count") == "Groceries"
 
 
-def test_unhoused_is_independent_of_classify():
-    """An item can be Shopping — where the ledger can show it today — AND a Pets
-    candidate, where it belongs. The report adds up by one and recommends by
-    the other."""
-    title = "PetSafe Nylon Dog Leash, 6 ft"
-    assert unhoused(title) == "Pets"
-    assert classify(title) != "Pets"
+def test_nothing_is_unhoused_now_that_pets_has_a_category():
+    """`NO_LEDGER_HOME` is empty, which is the mechanism having worked: Pets was
+    its one entry, the category was added, and it graduated into KINDS. The
+    machinery stays so the next gap surfaces the same way."""
+    assert kinds.NO_LEDGER_HOME == {}
+    assert unhoused("Wild Bird Feed, 5 lb") is None
+    assert "Pets" in {name for name, _ in KINDS}
 
 
-# ── coverage, asserted against the real shape of the data ────────────────────
-#: Titles drawn to mirror the real corpus's proportions — mostly groceries, a
-#: tail of household and personal care. Invented, not copied: a fixture is read
-#: by strangers, and these are somebody's actual purchases.
+# ── coverage, asserted against a realistic basket ────────────────────────────
+#: Generic product descriptions, written for this test — NOT lifted from anyone's
+#: order history. A fixture is the artifact most likely to be read by strangers,
+#: so it must not carry what a household actually bought. The proportions mirror
+#: a real basket (mostly food, a tail of household and personal care); the items
+#: do not.
 CORPUS = [
-    "Great Value 1% Low-Fat Milk, Gallon",
-    "Great Value Large White Eggs, 18 Count",
-    "Fresh Banana, Each",
-    "Marketside Caesar Salad Kit, 14.55 oz Bag",
-    "Kellogg's Raisin Bran Crunch Breakfast Cereal",
-    "Ball Park 100% Beef Hot Dogs, 15 oz",
-    "Great Value Concord Grape Jelly, 30 oz",
-    "Doritos Tortilla Chips Cool Ranch, 9.25 oz",
+    "Store Brand 1% Low-Fat Milk, Gallon",
+    "Store Brand Large White Eggs, 18 Count",
+    "Fresh Bananas, per lb",
+    "Bagged Caesar Salad Kit, 12 oz",
+    "Bran Flakes Breakfast Cereal, Family Size",
+    "Beef Hot Dogs, 8 Count",
+    "Store Brand Grape Jelly, 30 oz",
+    "Tortilla Chips, Party Size Bag",
     "Fresh Seedless Watermelon, Each",
-    "Great Value Spaghetti, 32 oz",
-    "Prima Della Cracked Pepper Turkey Breast, Deli-Sliced",
-    "Diet Mountain Dew Citrus Soda Pop, 2 Liter Bottle",
-    "Angel Soft 2-Ply Toilet Paper, 24 Rolls",
-    "Cascade Complete Dishwasher Detergent Liquid Gel",
-    "Great Value Ultra Strong Paper Towels, 12 Double Rolls",
-    "Suave Moroccan Oil Infusion Shampoo & Conditioner",
-    "Nature Made Vitamin D3 2000 IU Softgels",
-    "Crayola Ultra Clean Washable Markers, 10 Count",
-    "Anker USB-C to USB-C Charger Cable, 6 ft",
-    "NICETOWN Blackout Window Curtain Panels, 2 Pack",
+    "Store Brand Spaghetti, 32 oz",
+    "Sliced Deli Turkey Breast, per lb",
+    "Diet Lemon-Lime Soda, 2 Liter Bottle",
+    "2-Ply Toilet Paper, 24 Rolls",
+    "Automatic Dishwasher Detergent Gel, 90 oz",
+    "Ultra Strong Paper Towels, 12 Rolls",
+    "Daily Shampoo and Conditioner Value Pack",
+    "Vitamin D3 Softgels, 2000 IU",
+    "Washable Markers, 10 Count",
+    "USB-C to USB-C Charger Cable, 6 ft",
+    "Blackout Window Curtain Panels, 2 Pack",
 ]
 
 

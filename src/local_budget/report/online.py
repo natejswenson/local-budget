@@ -1,16 +1,15 @@
 """Online spend — Amazon and Walmart.com together, itemised into budget lines.
 
 **The question this page exists to answer.** The ledger categorises MERCHANTS,
-not items. Two manual rules carry a large share of the ledger between them:
+not items. A grocery-shop rule labels the whole charge as food, toilet paper
+included; a general-merchant rule labels the whole charge as shopping, vitamins
+included. Both are reasonable rules and both are wrong about a large minority of
+what was actually bought.
 
-    WALMART.COM  →  Groceries      every charge, toilet paper included
-    AMAZON       →  Shopping       every charge, vitamins included
-
-Both are reasonable rules and both are wrong about a large minority of what was
-actually bought. The item detail behind those charges can say what the rules
-cannot, but only if it is grouped into the same vocabulary the budget is set in
-— which is what `connectors/kinds.py` now does. So this report's spine is a
-comparison: **what the ledger says, beside what the items say.**
+The item detail behind those charges can say what the rules cannot, but only if
+it is grouped into the same vocabulary the budget is set in — which is what
+`connectors/kinds.py` does. So this report's spine is a comparison: **what the
+ledger says, beside what the items say.**
 
 **Why it lives here and not under a connector.** It belongs to neither source.
 `connectors/amazon/report.py` and `connectors/walmart/report.py` each answer
@@ -257,7 +256,8 @@ def _bars(pairs: list[tuple[str, int]], *, peak: int | None = None) -> str:
     """Horizontal ink bars — label, bar, value. No gridlines, no fills.
 
     `peak` can be pinned so two charts share a scale. The ledger/items
-    comparison needs that: drawn to their own maxima, a large bar and a slightly smaller one
+    comparison needs that: drawn to their own maxima, a large bar and a
+    slightly smaller one
     are the same length and the comparison silently says nothing.
     """
     if not pairs:

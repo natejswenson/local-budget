@@ -7,7 +7,7 @@ The chain this completes:
 **An order is not a charge.** Amazon publishes its own charge list at the
 granularity the bank posts, so its matcher pairs one charge to one bank row.
 Walmart publishes orders, and an order routinely settles as several partial
-charges it never enumerates. A pattern seen in a real ledger:
+charges it never enumerates. Illustrative, with invented figures:
 
     day 1   $100.00  ->  one bank row
     day 8   $150.00  ->  two:   $20.00 + $130.00

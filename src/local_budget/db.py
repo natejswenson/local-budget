@@ -248,8 +248,8 @@ CREATE TABLE IF NOT EXISTS amazon_matches (
 );
 
 -- ── Walmart connector ───────────────────────────────────────────────────────
--- Same job as the Amazon block above, against a bigger number: this ledger
--- carries $XX.Xk of Walmart charges to $YY.Yk of Amazon. Same footing too —
+-- Same job as the Amazon block above, and typically against a bigger number:
+-- a household can spend more at Walmart than at Amazon. Same footing too —
 -- IMPORTED FACTS, written by the deterministic core through connect(), absent
 -- from _AGENT_WRITE_TABLES so every agent write is denied.
 --

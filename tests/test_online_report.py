@@ -78,10 +78,10 @@ def _az_order(c, num, dt, items, txn_id):
 # ── the arithmetic ───────────────────────────────────────────────────────────
 def test_both_sources_land_in_one_basket(conn):
     _charge(conn, 1, "2026-07-01", -1000)
-    _wm_order(conn, "W1", "2026-07-01", [("Great Value Milk, Gallon", 1000)])
+    _wm_order(conn, "W1", "2026-07-01", [("Store Brand Milk, Gallon", 1000)])
     _wm_match(conn, "W1", 1)
     _charge(conn, 2, "2026-07-02", -2000, merchant="AMAZON.COM", category="Shopping")
-    _az_order(conn, "A1", "2026-07-02", [("Anker USB-C Charger Cable", 2000)], 2)
+    _az_order(conn, "A1", "2026-07-02", [("USB-C Charger Cable, 6 ft", 2000)], 2)
 
     d = online.gather(conn)
     assert d["items"] == 2
@@ -95,7 +95,7 @@ def test_a_split_settlement_counts_its_items_once(conn):
     is the normal case, not an edge."""
     _charge(conn, 1, "2026-07-01", -600)
     _charge(conn, 2, "2026-07-02", -400)
-    _wm_order(conn, "W1", "2026-07-01", [("Great Value Milk, Gallon", 1000)])
+    _wm_order(conn, "W1", "2026-07-01", [("Store Brand Milk, Gallon", 1000)])
     _wm_match(conn, "W1", 1, 2)
 
     d = online.gather(conn)
@@ -107,7 +107,7 @@ def test_in_store_walmart_is_excluded(conn):
     """This is an ONLINE report. An in-store receipt is a different behaviour
     and posts under a different merchant."""
     _charge(conn, 1, "2026-07-01", -1000)
-    _wm_order(conn, "W1", "2026-07-01", [("Great Value Milk, Gallon", 1000)],
+    _wm_order(conn, "W1", "2026-07-01", [("Store Brand Milk, Gallon", 1000)],
               channel="in-store")
     _wm_match(conn, "W1", 1)
 
@@ -120,7 +120,7 @@ def test_cancelled_lines_never_reach_a_category_total(conn):
     wm_store.store_orders(conn, [{
         "order_number": "W1", "order_placed_date": "2026-07-01",
         "channel": "online", "detail_fetched": True, "grand_total": "10.00",
-        "items": [{"product_id": "p1", "title": "Great Value Milk, Gallon",
+        "items": [{"product_id": "p1", "title": "Store Brand Milk, Gallon",
                    "quantity": 1, "line_price": "10.00"},
                   {"product_id": "p2", "title": "Angel Soft Toilet Paper",
                    "quantity": 1, "line_price": "25.00", "status": "Canceled"}],
@@ -144,12 +144,12 @@ def test_the_headline_ratio_is_measured_inside_grocery_charges_only(conn):
     """
     _charge(conn, 1, "2026-07-01", -1000, category="Groceries")
     _wm_order(conn, "W1", "2026-07-01",
-              [("Great Value Milk, Gallon", 500),
-               ("Angel Soft 2-Ply Toilet Paper", 500)])
+              [("Store Brand Milk, Gallon", 500),
+               ("2-Ply Toilet Paper, 24 Rolls", 500)])
     _wm_match(conn, "W1", 1)
     # A large, wholly non-food Amazon order that must not move the number.
     _charge(conn, 2, "2026-07-02", -9000, merchant="AMAZON.COM", category="Shopping")
-    _az_order(conn, "A1", "2026-07-02", [("Anker USB-C Charger Cable", 9000)], 2)
+    _az_order(conn, "A1", "2026-07-02", [("USB-C Charger Cable, 6 ft", 9000)], 2)
 
     d = online.gather(conn)
     assert d["food_ledger_split"] == {"food": 500, "non_food": 500}
@@ -160,29 +160,49 @@ def test_the_headline_is_silent_when_there_is_nothing_to_compare(conn):
     """No grocery-labelled charge means no claim to make. An unguarded template
     asserts something false with great confidence."""
     _charge(conn, 1, "2026-07-01", -1000, merchant="AMAZON.COM", category="Shopping")
-    _az_order(conn, "A1", "2026-07-01", [("Anker USB-C Charger Cable", 1000)], 1)
+    _az_order(conn, "A1", "2026-07-01", [("USB-C Charger Cable, 6 ft", 1000)], 1)
     assert online.headline(online.gather(conn)) == ""
 
 
-def test_clusters_with_no_budget_category_are_reported(conn):
+def test_clusters_with_no_budget_category_are_reported(conn, monkeypatch):
+    """`NO_LEDGER_HOME` is empty today — Pets was its one entry and graduated
+    into a real category — so the reporting path is exercised through the
+    mechanism rather than a live cluster. It stays covered for the next gap."""
+    from local_budget.connectors import kinds
+    monkeypatch.setitem(kinds.NO_LEDGER_HOME, "Boats", ("kayak paddle",))
+
     _charge(conn, 1, "2026-07-01", -3000)
     _wm_order(conn, "W1", "2026-07-01",
-              [("Kaytee Wild Bird Feed, 5 lb", 2000),
-               ("Great Value Milk, Gallon", 1000)])
+              [("Kayak Paddle, 86 in", 2000),
+               ("Store Brand Milk, Gallon", 1000)])
     _wm_match(conn, "W1", 1)
 
     d = online.gather(conn)
-    assert d["by_unhoused"] == [("Pets", 2000)]
-    assert d["unhoused_lines"] == {"Pets": 1}
+    assert d["by_unhoused"] == [("Boats", 2000)]
+    assert d["unhoused_lines"] == {"Boats": 1}
+
+
+def test_no_unhoused_section_when_every_cluster_has_a_home(conn):
+    """The live case now: nothing is unhoused, and the report must simply omit
+    the section rather than render an empty table."""
+    from local_budget.report import brand
+    _charge(conn, 1, "2026-07-01", -2000)
+    _wm_order(conn, "W1", "2026-07-01", [("Wild Bird Feed, 5 lb", 2000)])
+    _wm_match(conn, "W1", 1)
+
+    d = online.gather(conn)
+    assert d["by_unhoused"] == []
+    assert dict(d["by_kind"]) == {"Pets": 2000}
+    assert "No home in your budget" not in online.build_html(d, brand.load_theme())
 
 
 # ── the document ─────────────────────────────────────────────────────────────
 def test_food_is_one_bar_and_the_rest_is_its_own_chart(conn):
     _charge(conn, 1, "2026-07-01", -3000)
     _wm_order(conn, "W1", "2026-07-01",
-              [("Great Value Milk, Gallon", 1000),
-               ("Fresh Banana, Each", 500),
-               ("Angel Soft 2-Ply Toilet Paper", 1500)])
+              [("Store Brand Milk, Gallon", 1000),
+               ("Fresh Bananas, per lb", 500),
+               ("2-Ply Toilet Paper, 24 Rolls", 1500)])
     _wm_match(conn, "W1", 1)
 
     d = online.gather(conn)
@@ -208,11 +228,11 @@ def test_the_default_window_is_twelve_months(conn, tmp_path):
     """A year is the window a household reasons about, and twelve columns read
     as a shape where twenty-six read as a list."""
     _charge(conn, 1, "2026-07-01", -1000)
-    _wm_order(conn, "W1", "2026-07-01", [("Great Value Milk, Gallon", 1000)])
+    _wm_order(conn, "W1", "2026-07-01", [("Store Brand Milk, Gallon", 1000)])
     _wm_match(conn, "W1", 1)
     # Well outside the window, and it must not appear.
     _charge(conn, 2, "2023-09-01", -5000)
-    _wm_order(conn, "W2", "2023-09-01", [("Fresh Banana, Each", 5000)])
+    _wm_order(conn, "W2", "2023-09-01", [("Fresh Bananas, per lb", 5000)])
     _wm_match(conn, "W2", 2)
     conn.commit()
 
@@ -265,7 +285,7 @@ def test_the_month_chart_marks_the_latest_column(conn):
 def test_html_renders_with_the_comparison_and_the_disclaimer(conn):
     from local_budget.report import brand
     _charge(conn, 1, "2026-07-01", -1000)
-    _wm_order(conn, "W1", "2026-07-01", [("Great Value Milk, Gallon", 1000)])
+    _wm_order(conn, "W1", "2026-07-01", [("Store Brand Milk, Gallon", 1000)])
     _wm_match(conn, "W1", 1)
 
     html = online.build_html(online.gather(conn), brand.load_theme())
@@ -287,7 +307,7 @@ def test_a_scoped_render_does_not_clobber_the_all_history_one(conn, tmp_path):
     """Same path, wholly different document — and no way to tell them apart
     afterwards."""
     _charge(conn, 1, "2026-07-01", -1000)
-    _wm_order(conn, "W1", "2026-07-01", [("Great Value Milk, Gallon", 1000)])
+    _wm_order(conn, "W1", "2026-07-01", [("Store Brand Milk, Gallon", 1000)])
     _wm_match(conn, "W1", 1)
 
     # `render` opens its own connection, so the fixture's writes have to be
