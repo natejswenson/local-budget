@@ -276,6 +276,7 @@ def test_sync_stores_the_list_before_fetching_any_detail(conn, fetcher, tmp_path
 
     assert r["orders"] == 1
     assert r["matched"] == 1, "reconciliation survives a failed detail fetch"
+    assert r["new_matches"] == 1
     assert r["detailed"] == 0
     with db.connect(tmp_path / "budget.db") as c:
         assert c.execute("SELECT COUNT(*) n FROM walmart_orders").fetchone()["n"] == 1
@@ -299,3 +300,20 @@ def test_sync_does_not_touch_detail_pages_unless_asked(conn, fetcher, tmp_path,
 def test_the_polite_delay_is_not_brisk(monkeypatch):
     """1.5s drew a challenge on a live run's first detail page."""
     assert backfill.POLITE_DELAY_SECONDS >= 5.0
+
+
+def test_a_resync_over_matched_orders_reports_the_total_not_zero(conn, fetcher,
+                                                                 tmp_path,
+                                                                 monkeypatch):
+    """A second sync adds no new matches. Printing "matched 0" reads as a failed
+    run when in fact everything already reconciles."""
+    from local_budget.connectors.walmart import sync
+
+    monkeypatch.setenv("LOCAL_BUDGET_DATA_DIR", str(tmp_path))
+    _bank(conn, 1, "2026-07-01", -1000)
+    conn.commit()
+    fetcher["f"] = FakeFetcher([_order("A", "2026-07-01", "10.00")])
+    sync.run_sync(days=60)
+    again = sync.run_sync(days=60)
+    assert again["new_matches"] == 0
+    assert again["matched"] == 1, "still reconciled, and it should say so"

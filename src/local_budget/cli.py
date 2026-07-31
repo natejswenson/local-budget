@@ -929,8 +929,9 @@ def walmart_sync(days: int, detail: bool, headed: bool) -> None:
     cov = r["coverage"]
     click.echo(f"  ✓ {r['orders']} orders · {r['items']} item lines"
                + (f" · {r['detailed']} detail pages read" if "detailed" in r else ""))
-    click.echo(f"    matched {r['matched']} "
-               f"({r['exact']} single-charge, {r['split']} split settlement)"
+    click.echo(f"    {r['matched']} orders reconcile"
+               + (f" (+{r['new_matches']} this run: {r['exact']} single-charge, "
+                  f"{r['split']} split settlement)" if r["new_matches"] else "")
                + (f" · {r['ambiguous']} need confirming" if r["ambiguous"] else ""))
     click.echo(f"    coverage {cov['coverage_pct']}% of Walmart spend "
                f"({dollars(cov['matched_cents'])} of {dollars(cov['total_cents'])})")

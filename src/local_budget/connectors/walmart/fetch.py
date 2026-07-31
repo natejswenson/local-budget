@@ -45,6 +45,10 @@ POLITE_DELAY_SECONDS = 5.0
 #: Hard stop on paging, so a cursor that stops advancing cannot loop forever.
 MAX_PAGES = 80
 
+#: How long to let ONE click attempt run. Playwright's 30s default spends the
+#: whole budget retrying into a captcha overlay and printing every attempt.
+CLICK_TIMEOUT_MS = 4000
+
 #: Half-second ticks to wait for the app's own response after clicking Next.
 #: 10s proved too short on a real run — the list re-renders before the fetch
 #: resolves — and paging silently stopped at page two.
@@ -148,7 +152,15 @@ class Fetcher:
             if not batch:
                 break
 
-            got, why = self._next_page()
+            try:
+                got, why = self._next_page()
+            except WalmartBlocked as e:
+                # Keep what we already read. The orders collected so far are
+                # real, they reconcile on their totals alone, and throwing them
+                # away would mean a challenge on page nine costs all nine pages.
+                say(f"    ! {e}")
+                self.paging_stopped = "bot challenge mid-paging"
+                break
             if got is None:
                 # Say WHY paging stopped. Silence here is indistinguishable from
                 # "that was all your history", and it is not: a real run stopped
@@ -184,9 +196,24 @@ class Fetcher:
             if btn.first.is_disabled():
                 return None, "Next is disabled (end of history)"
             before = len(self._responses)
-            btn.first.click()
+            # A SHORT timeout on purpose. Walmart's bot defence can drop a
+            # captcha over the page mid-session, and Playwright's default is to
+            # spend 30s politely retrying a click into an overlay — printing a
+            # wall of retry logs and then reporting a clean finish. Fail fast
+            # and let the block check below name what actually happened.
+            btn.first.click(timeout=CLICK_TIMEOUT_MS)
         except Exception as e:                                 # noqa: BLE001
-            return None, f"could not click Next: {type(e).__name__}: {e}"
+            # The overlay case. `_guard` only runs on navigation, so a challenge
+            # that appears WITHOUT one — which is how it arrived on a real run —
+            # would otherwise be reported as "that was all your history".
+            if blocked(page.url, page.content()):
+                raise WalmartBlocked(
+                    "Walmart dropped a bot challenge over the orders page "
+                    "part-way through paging.\n"
+                    "  Wait before retrying. Do NOT sign in again — that sends "
+                    "more traffic from an address already being throttled.\n"
+                    "  Orders read before the challenge have been kept.") from e
+            return None, f"could not click Next: {type(e).__name__}"
 
         # Generous: the app re-renders a long list before its fetch resolves,
         # and this runs at a deliberately unhurried pace anyway.

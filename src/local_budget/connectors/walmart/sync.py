@@ -71,13 +71,18 @@ def store_and_match(orders: list, *, scope: str, since: str) -> dict:
         store.finish_run(conn, run_id, status="success",
                          orders_seen=len(orders), orders_upserted=n["orders"],
                          items_seen=n["items"], items_upserted=n["items"])
+        cov = match.coverage(conn)
+        # `matched` is the TOTAL that now reconciles, not what this run added.
+        # A re-sync over an already-matched window adds nothing and printing
+        # "matched 0" reads as a failed run — the same trap backfill fell into.
         return {
             "sync_run_id": run_id, "scope": scope,
             "orders": n["orders"], "items": n["items"],
-            "matched": result["matched"], "exact": result["exact"],
-            "split": result["split"],
+            "matched": cov["split_settlements"]["orders"],
+            "new_matches": result["matched"],
+            "exact": result["exact"], "split": result["split"],
             "ambiguous": len(result["ambiguous"]),
-            "coverage": match.coverage(conn),
+            "coverage": cov,
             "horizon": match.horizon(conn),
         }
 
