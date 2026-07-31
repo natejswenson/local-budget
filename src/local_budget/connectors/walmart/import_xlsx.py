@@ -275,7 +275,11 @@ def _read_orders(ws, items: dict[str, dict]) -> list[dict]:
             "shipping": _sum_str(cell(row, "Delivery Charges"), cell(row, "Bag Fee")),
             "savings": money_str(cell(row, "Savings")),
             "refund_total": money_str(cell(row, "Refund")),
-            "payment_method": _text(cell(row, "Payment Method")) or None,
+            # `Payment Method` is deliberately NOT read. The export spells it
+            # "Visa ending in 1840" — a card last-4, which the schema promises
+            # this connector does not keep, and which nothing downstream reads.
+            # A field no one consumes is one that can only ever leak.
+            "payment_method": None,
             # The sheet's own count, kept as published. It counts restatement
             # rows, so it can exceed the lines stored — that disagreement is a
             # fact about the export and is not worth papering over.

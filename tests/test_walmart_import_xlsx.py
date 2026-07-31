@@ -194,6 +194,20 @@ def test_the_shipping_address_is_never_read(tmp_path):
     assert not any(k in o for k in ("ship_to", "address", "recipient"))
 
 
+def test_the_card_last_four_is_never_read(tmp_path):
+    """`Payment Method` reads "Visa ending in 1840" — a card last-4, which the
+    schema promises this connector does not keep and which nothing consumes.
+
+    Denied to the agent as well (db._AGENT_READ_DENY), but the real control is
+    not storing it: `sanitize.redact_account_numbers` only masks runs of 7+
+    digits, so a 4-digit fragment would survive every downstream scrub.
+    """
+    wb = workbook([order_row(pay="Visa ending in 1840")], [item_row()])
+    o = import_xlsx.load(written(tmp_path, wb))[0]
+    assert o["payment_method"] is None
+    assert "1840" not in repr(o)
+
+
 def test_an_order_whose_every_line_was_cancelled_is_marked_cancelled(tmp_path):
     wb = workbook([order_row()], [item_row(status="Canceled")])
     o = import_xlsx.load(written(tmp_path, wb))[0]

@@ -137,3 +137,22 @@ def test_the_table_classifies_the_overwhelming_majority_of_a_realistic_basket():
     """
     missed = [t for t in CORPUS if classify(t) == "Uncategorized"]
     assert len(missed) / len(CORPUS) <= 0.10, f"unclassified: {missed}"
+
+
+# ── the agent read boundary (lives here as the shared connector-level guard) ──
+def test_pii_columns_the_connectors_hold_are_denied_to_the_agent():
+    """Card last-4 and the imported filename must not reach the agent.
+
+    `sanitize.redact_account_numbers` masks runs of 7+ digits, so a 4-digit
+    card fragment survives every downstream scrub — the deny list is the
+    control. The filename rule already existed for `import_runs.source_name`
+    and `inbox_files.filename`; a download is routinely named after its owner
+    and account, and the connectors must not reintroduce the same leak under a
+    different column.
+    """
+    from local_budget.db import _AGENT_READ_DENY
+    for pair in (("walmart_orders", "payment_method"),
+                 ("amazon_orders", "payment_method"),
+                 ("amazon_transactions", "payment_method"),
+                 ("walmart_sync_runs", "scope")):
+        assert pair in _AGENT_READ_DENY, f"{pair} is readable by the agent"

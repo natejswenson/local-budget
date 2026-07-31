@@ -469,6 +469,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE walmart_orders ADD COLUMN item_sum_cents INTEGER")
         if "source" not in cols("walmart_orders"):
             conn.execute("ALTER TABLE walmart_orders ADD COLUMN source TEXT")
+        # Retire card last-4s already stored. The schema block above has always
+        # promised this connector does not keep them, but the importer read the
+        # export's `Payment Method` column ("Visa ending in 1840") and the
+        # upsert COALESCEs — so simply not reading it any more would preserve
+        # every value already written. Nothing consumes the column.
+        conn.execute("UPDATE walmart_orders SET payment_method = NULL "
+                     " WHERE payment_method IS NOT NULL")
 
 
 def get_db_path() -> Path:
@@ -532,7 +539,20 @@ _AGENT_READ_DENY = {("transactions", "raw_ofx"), ("transactions", "payee"),
                     # here. The CLI (full access) still prints it in
                     # `budget amazon status`; the agent has no need for it.
                     ("amazon_sync_runs", "error_message"),
-                    ("walmart_sync_runs", "error_message")}
+                    ("walmart_sync_runs", "error_message"),
+                    # A run's scope carries the imported FILE's basename, and a
+                    # download is routinely named after its owner and account
+                    # ("Nate_Swenson_4111_orders.xlsx"). Denied for exactly the
+                    # reason import_runs.source_name and inbox_files.filename
+                    # are — the CLI still prints it in `budget walmart status`.
+                    ("walmart_sync_runs", "scope"),
+                    # Card last-4. The connectors store what their sources hand
+                    # over, but `sanitize.redact_account_numbers` only masks
+                    # runs of 7+ digits, so a 4-digit fragment would reach the
+                    # agent through run_sql untouched. Nothing reads these.
+                    ("walmart_orders", "payment_method"),
+                    ("amazon_orders", "payment_method"),
+                    ("amazon_transactions", "payment_method")}
 
 
 def _agent_authorizer(write: bool):
