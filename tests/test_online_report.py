@@ -12,6 +12,8 @@ wrong:
 """
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
 from local_budget import db
@@ -187,6 +189,77 @@ def test_food_is_one_bar_and_the_rest_is_its_own_chart(conn):
     assert d["food_cents"] == 1500                      # both food lines, one bucket
     assert d["non_food"] == [("Home Improvement", 1500)]
     assert d["food_cents"] + d["non_food_cents"] == d["line_total"]
+
+
+# ── the default window ───────────────────────────────────────────────────────
+@pytest.mark.parametrize("today,expect", [
+    (date(2026, 7, 31), "2025-08-01"),
+    (date(2026, 1, 15), "2025-02-01"),      # crosses a year boundary
+    (date(2026, 12, 1), "2026-01-01"),
+])
+def test_the_default_window_starts_on_a_month_boundary(today, expect):
+    """Anchored to the first of a month, not to today-minus-365. A part-month
+    at either end of the trend chart reads as a collapse in spending that never
+    happened."""
+    assert online.default_since(today=today) == expect
+
+
+def test_the_default_window_is_twelve_months(conn, tmp_path):
+    """A year is the window a household reasons about, and twelve columns read
+    as a shape where twenty-six read as a list."""
+    _charge(conn, 1, "2026-07-01", -1000)
+    _wm_order(conn, "W1", "2026-07-01", [("Great Value Milk, Gallon", 1000)])
+    _wm_match(conn, "W1", 1)
+    # Well outside the window, and it must not appear.
+    _charge(conn, 2, "2023-09-01", -5000)
+    _wm_order(conn, "W2", "2023-09-01", [("Fresh Banana, Each", 5000)])
+    _wm_match(conn, "W2", 2)
+    conn.commit()
+
+    import local_budget.report.pdf as pdf_mod
+    seen = {}
+    orig, pdf_mod.render_pdf = pdf_mod.render_pdf, lambda h, o: seen.update(html=h)
+    try:
+        r = online.render(out_dir=tmp_path)
+        assert r["items"] == 1                 # the 2023 order is out of scope
+        online.render(out_dir=tmp_path, all_history=True)
+    finally:
+        pdf_mod.render_pdf = orig
+    # --all reaches back and produces a differently-named file, so the two
+    # documents cannot overwrite each other.
+    assert online.gather(conn)["items"] == 2
+
+
+# ── the charts ───────────────────────────────────────────────────────────────
+def test_food_is_the_baseline_of_every_stacked_chart(conn):
+    """One stacking order across the document: food first, the varying part
+    read against it. Two charts stacking the same comparison in opposite
+    orders is a reading error waiting to happen."""
+    rows = [("Walmart.com", 800, 200)]
+    stacked = online._stacked(rows)
+    assert stacked.index("st-food") < stacked.index("st-rest")
+    assert "80% food" in stacked
+
+    svg = online._month_chart([("2026-07", 800, 200)])
+    assert svg.index("var(--ink)") < svg.index("var(--ink-mid)")
+
+
+def test_stacked_bars_keep_length_meaning_money(conn):
+    """Drawn to a shared maximum, not each normalised to 100%. Normalising
+    would make a $200 month and a $2,000 month the same size and turn a
+    spending chart into a ratio chart."""
+    out = online._stacked([("Big", 900, 100), ("Small", 90, 10)])
+    assert 'style="width:90.0%"' in out       # big row's food segment
+    assert 'style="width:9.0%"' in out        # small row's, a tenth of it
+
+
+def test_the_month_chart_marks_the_latest_column(conn):
+    """The accent goes on the axis LABEL, never a bar: the bars carry the
+    food/not-food key, and a third fill in them would read as a third
+    category."""
+    svg = online._month_chart([("2026-06", 100, 50), ("2026-07", 100, 50)])
+    assert svg.count('class="axis now"') == 1
+    assert svg.count("var(--accent)") == 0
 
 
 def test_html_renders_with_the_comparison_and_the_disclaimer(conn):

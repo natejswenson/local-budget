@@ -21,13 +21,13 @@
 /* Category names and month keys, not short budget labels. */
 div.sb-row { grid-template-columns: 13rem 1fr 7rem; }
 
-/* The one accent on the "when" chart marks the most recent month, so a reader
- * can place the document in the series without counting columns. */
-span.sb-fill.last { background: var(--accent); }
-
 table.data td:last-child { width: 48%; }
 
-h3.block-title { padding-top: 2.2rem; }
+/* Tighter than the sibling reports' 2.2rem. Those are table-led documents where
+ * the gap separates dense blocks; this one is charts, which already carry their
+ * own white space — and the looser rhythm pushed a short chart onto its own
+ * page and left half of the previous one empty. */
+h3.block-title { padding-top: 1.05rem; }
 
 /* Two sources, not fourteen. Left at chart width the block reads as a stub of
  * a bigger chart that failed to load. */
@@ -71,20 +71,71 @@ div.compare div.sb-row { grid-template-columns: 8.5rem 1fr 5.5rem; }
  * and puts it in full ink rather than dim — it is the one sentence a reader
  * should carry away, not an aside. */
 p.caption.headline {
-  font-size: 1.3rem;
-  line-height: 1.35;
+  font-size: 1.24rem;
+  line-height: 1.32;
   color: var(--ink);
-  margin: 1.5rem 0 0.4rem;
+  margin: 1.1rem 0 0.3rem;
   padding-left: 1rem;
   border-left: 3px solid var(--ink);
   max-width: 46rem;
 }
+
+/* ── the food / not-food stacked bars ────────────────────────────────────── */
+/* Same grammar as sb-row, plus a share column. The two segments sit flush
+ * inside one track: a gap between them would read as a third value. */
+div.st-row {
+  display: grid;
+  grid-template-columns: 9rem 1fr 7rem 5rem;
+  align-items: center;
+  gap: 0 0.9rem;
+  padding: 0.28rem 0;
+}
+div.st-row .sb-track { display: flex; }
+span.st-food { background: var(--ink); height: 100%; }
+span.st-rest { background: var(--ink-mid); height: 100%; }
+
+div.st-row .st-pct {
+  font-size: 0.72rem;
+  color: var(--dim);
+  text-align: right;
+}
+
+/* Product names need the room; their bars are a ranking, not a measurement. */
+section.repeats div.sb-row { grid-template-columns: 20rem 1fr 6rem; }
+
+/* The window note sits tight under the standfirst rather than floating between
+ * the masthead and the stat strip. */
+p.caption.window { margin-top: 0.35rem; }
 
 /* ── pagination ──────────────────────────────────────────────────────────── */
 /* Written after looking at a rendered PDF rather than at the markup. */
 
 /* A heading must never be the last thing on a page. */
 h3.block-title { break-after: avoid; page-break-after: avoid; }
+
+/* Nor may a caption be the FIRST thing on one. A caption explains the chart
+ * above it, and stranded at the top of the next page it explains a chart the
+ * reader can no longer see — which is how "Food is 48% of the basket" ended up
+ * opening page two, attached to nothing.
+ *
+ * `break-before: avoid` on the caption does NOT achieve this in Chromium; the
+ * only thing that holds is binding the heading, chart and caption into one
+ * unbreakable box. Short chart blocks get `div.block` for exactly that. Long
+ * tables deliberately do not — forbidding a break there shunts a whole table
+ * to the next page and leaves half a page empty. */
+div.block { break-inside: avoid; page-break-inside: avoid; }
+
+/* The brand's 2.6rem lead-in is sized for a table-led page that ends flush. On
+ * a chart-led one it was the difference between a two-page report and a third
+ * page holding nothing but three lines of provenance. */
+footer.provenance { margin-top: 0.7rem; padding-top: 0.6rem; }
+
+/* The closing block may break internally — its table is one row and its footer
+ * three lines, so a split here costs nothing — but `break-inside: avoid` on it
+ * made Chromium push the whole tail to a fresh page and leave a third of the
+ * previous one empty. What matters is only that the footer never lands alone,
+ * which the wrapper achieves by keeping it adjacent to the block above. */
+div.block.tail { break-inside: auto; }
 
 /* The comparison is the argument — split across a page turn it stops being one.
  * It is short enough to keep whole, which the long tables below are not. */

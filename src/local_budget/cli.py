@@ -1195,20 +1195,25 @@ def online() -> None:
 
 
 @online.command("report")
-@click.option("--since", default=None, help="YYYY-MM-DD (default: all history)")
+@click.option("--since", default=None, help="YYYY-MM-DD (default: the last 12 months)")
 @click.option("--until", default=None, help="YYYY-MM-DD")
-def online_report(since: str | None, until: str | None) -> None:
-    """Render a PRESS-branded PDF of all online spend, by budget category.
+@click.option("--all", "all_history", is_flag=True,
+              help="every year on record instead of the last 12 months")
+def online_report(since: str | None, until: str | None, all_history: bool) -> None:
+    """Render a PRESS-branded PDF of online spend, by budget category.
 
     The ledger categorises merchants, so every Walmart.com charge reads as
     Groceries and every Amazon charge as Shopping. This groups the ITEMS behind
     those charges into the same categories you budget in, which is the only way
     to see how much of the grocery bill was not food.
+
+    Covers the last 12 months by default — a year is the window a household
+    reasons about, and it keeps the trend chart to twelve columns.
     """
     from .report import online as online_report_mod
     db.init_schema()
     try:
-        r = online_report_mod.render(since, until)
+        r = online_report_mod.render(since, until, all_history=all_history)
     except Exception as e:
         raise click.ClickException(str(e)) from e
     click.echo(f"  ✓ {r['items']} items across {r['orders']} orders "

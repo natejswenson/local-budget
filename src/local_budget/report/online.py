@@ -47,6 +47,25 @@ from . import brand
 #: caption — and a typo in any of them would silently produce a different claim.
 FOOD = "Groceries"
 
+#: How far back the report looks when nothing is asked for. A year is the window
+#: a household actually reasons about: it covers every season and every annual
+#: purchase once, and it keeps the month chart at twelve columns, which reads as
+#: a shape. Two years of history was the honest default and the wrong one — it
+#: doubled the page count and made the trend a list.
+DEFAULT_MONTHS = 12
+
+
+def default_since(months: int = DEFAULT_MONTHS, today: date | None = None) -> str:
+    """The first day of the month `months - 1` back.
+
+    Anchored to a month boundary rather than to "today minus 365 days", so the
+    first and last columns of the chart are whole months. A part-month at either
+    end reads as a collapse in spending that never happened.
+    """
+    d = today or date.today()
+    total = d.year * 12 + (d.month - 1) - (months - 1)
+    return f"{total // 12:04d}-{total % 12 + 1:02d}-01"
+
 #: Bank-side merchant patterns for ONLINE spend, per source. Walmart's in-store
 #: strings are deliberately absent: this is an online report, and `WM SUPERC%`
 #: is a person standing in a shop.
@@ -128,6 +147,12 @@ def gather(conn: sqlite3.Connection, since: str | None = None,
     by_kind: Counter = Counter()
     by_month: Counter = Counter()
     by_source: Counter = Counter()
+    # Food vs not-food, sliced three ways. One comparison repeated across
+    # category, shop and time is the document's whole visual language — three
+    # different chart types answering three different questions would be more
+    # to look at and less to see.
+    split_month: dict = defaultdict(lambda: [0, 0])
+    split_source: dict = defaultdict(lambda: [0, 0])
     by_unhoused: Counter = Counter()
     unhoused_lines: Counter = Counter()
     per_product: dict = defaultdict(lambda: {"n": 0, "cents": 0, "title": ""})
@@ -135,6 +160,9 @@ def gather(conn: sqlite3.Connection, since: str | None = None,
         by_kind[r["kind"]] += r["line_cents"]
         by_month[r["posted_date"][:7]] += r["line_cents"]
         by_source[r["source"]] += r["line_cents"]
+        slot = 0 if r["kind"] == FOOD else 1
+        split_month[r["posted_date"][:7]][slot] += r["line_cents"]
+        split_source[r["source"]][slot] += r["line_cents"]
         if r["unhoused"]:
             by_unhoused[r["unhoused"]] += r["line_cents"]
             unhoused_lines[r["unhoused"]] += 1
@@ -187,13 +215,18 @@ def gather(conn: sqlite3.Connection, since: str | None = None,
         "non_food": non_food,
         "by_month": sorted(by_month.items()),
         "by_source": by_source.most_common(),
+        "split_month": [(m, *split_month[m]) for m in sorted(split_month)],
+        "split_source": [(s, *split_source[s])
+                         for s, _ in by_source.most_common()],
         "by_unhoused": by_unhoused.most_common(),
         "unhoused_lines": dict(unhoused_lines),
         "ledger": ledger.most_common(),
         "ledger_total": charge_total, "charge_count": charge_count,
+        # Eight, not twelve. This is a ranked chart answering "what dominates",
+        # and a long tail of near-equal bars is a table wearing a chart's
+        # clothes. It also keeps the document to two pages.
         "repeats": sorted((v for v in per_product.values() if v["n"] > 1),
-                          key=lambda v: -v["cents"])[:12],
-        "biggest": sorted(rows, key=lambda r: -r["line_cents"])[:12],
+                          key=lambda v: -v["cents"])[:7],
         "uncategorised_cents": by_kind.get("Uncategorized", 0),
         "is_scoped": bool(since or until),
     }
@@ -220,8 +253,7 @@ def _clip(text: str | None, n: int) -> str:
     return (cut or t[:n]).rstrip(" ,-–—") + "…"
 
 
-def _bars(pairs: list[tuple[str, int]], *, accent_last: bool = False,
-          peak: int | None = None) -> str:
+def _bars(pairs: list[tuple[str, int]], *, peak: int | None = None) -> str:
     """Horizontal ink bars — label, bar, value. No gridlines, no fills.
 
     `peak` can be pinned so two charts share a scale. The ledger/items
@@ -232,14 +264,113 @@ def _bars(pairs: list[tuple[str, int]], *, accent_last: bool = False,
         return '<p class="empty">nothing to show</p>'
     top = peak or max(v for _, v in pairs) or 1
     out = []
-    for i, (label, v) in enumerate(pairs):
+    for label, v in pairs:
         w = round(v / top * 100, 2)
-        cls = " last" if (accent_last and i == len(pairs) - 1) else ""
         out.append(
             f'<div class="sb-row"><div class="sb-label">{_esc(label)}</div>'
-            f'<div class="sb-track"><span class="sb-fill{cls}" style="width:{w}%">'
+            f'<div class="sb-track"><span class="sb-fill" style="width:{w}%">'
             f'</span></div><div class="sb-value">{_esc(money(v))}</div></div>')
     return "".join(out)
+
+
+#: Brand tokens, emitted as var(...) so the fragments stay theme-independent —
+#: the same discipline `report/charts.py` follows.
+_INK = "var(--ink)"
+_INK_MID = "var(--ink-mid)"
+_DIM = "var(--dim)"
+
+
+def _legend() -> str:
+    """One legend, reused by every chart on the page. The document makes a
+    single comparison — food against everything else — so it should only ever
+    have to teach the reader one key."""
+    return ('<div class="legend">'
+            f'<span class="key"><i style="background:{_INK}"></i>Food</span>'
+            f'<span class="key"><i style="background:{_INK_MID}"></i>'
+            'Everything else</span></div>')
+
+
+def _stacked(rows: list[tuple[str, int, int]]) -> str:
+    """Horizontal food/not-food bars — label, stacked bar, total, food share.
+
+    Drawn to a shared maximum rather than each to 100%, so bar LENGTH still
+    reads as money. Normalising each row would make a $200 month and a $2,000
+    month the same size and turn a spending chart into a ratio chart.
+    """
+    if not rows:
+        return '<p class="empty">nothing to show</p>'
+    peak = max((f + n) for _, f, n in rows) or 1
+    out = []
+    for label, food, non_food in rows:
+        total = food + non_food
+        fw = round(food / peak * 100, 2)
+        nw = round(non_food / peak * 100, 2)
+        pct = round(food / total * 100) if total else 0
+        out.append(
+            f'<div class="st-row"><div class="sb-label">{_esc(label)}</div>'
+            f'<div class="sb-track">'
+            f'<span class="st-food" style="width:{fw}%"></span>'
+            f'<span class="st-rest" style="width:{nw}%"></span></div>'
+            f'<div class="sb-value">{_esc(money(total))}</div>'
+            f'<div class="st-pct">{pct}% food</div></div>')
+    return "".join(out)
+
+
+def _month_chart(rows: list[tuple[str, int, int]]) -> str:
+    """Monthly spend as stacked columns — food on the bottom, the rest above.
+
+    An SVG rather than another row of bars: twelve months read as a shape when
+    they are columns on a shared baseline, and as a list when they are rows.
+    The trend is the point, and a list does not have one.
+    """
+    if not rows:
+        return '<p class="empty">no history yet</p>'
+    w, h, pad = 720, 152, 20
+    n = len(rows)
+    peak = max((f + nf) for _, f, nf in rows) or 1
+    slot = (w - 2 * pad) / n
+    bar_w = max(slot * 0.56, 2)
+    body, labels = [], []
+    for i, (month, food, non_food) in enumerate(rows):
+        x = round(pad + i * slot + (slot - bar_w) / 2, 1)
+        y = h - pad
+        # Food first, so it sits on the baseline: it is the stable floor of the
+        # basket and the varying part should be read against it, not balanced on
+        # top of it. Same order as the horizontal bars, where food is the left
+        # segment — one stacking order across the document.
+        for v, fill in ((food, _INK), (non_food, _INK_MID)):
+            bh = round(v / peak * (h - 2 * pad - 10), 1)
+            y -= bh
+            if bh > 0:
+                body.append(f'<rect x="{x}" y="{round(y, 1)}" '
+                            f'width="{round(bar_w, 1)}" height="{bh}" fill="{fill}"/>')
+        # The latest month's LABEL takes the accent, not its bar: the bars carry
+        # the food/not-food key, and a third fill in them would read as a third
+        # category. This still lets a reader place the document in the series.
+        cls = "axis now" if i == n - 1 else "axis"
+        labels.append(f'<text x="{round(x + bar_w / 2, 1)}" y="{h - 6}" '
+                      f'text-anchor="middle" class="{cls}">'
+                      f'{_esc(month[2:])}</text>')
+    return (f'{_legend()}'
+            f'<svg viewBox="0 0 {w} {h}" role="img" '
+            f'aria-label="online spend by month, food and non-food">'
+            f'<line x1="{pad}" y1="{h - pad}" x2="{w - pad}" y2="{h - pad}" '
+            f'stroke="{_DIM}" stroke-width="1"/>'
+            + "".join(body) + "".join(labels) + "</svg>")
+
+
+def _block(title: str, body: str, caption: str = "", *, cls: str = "") -> str:
+    """A heading, a chart and its caption as ONE unbreakable unit.
+
+    Bound together because a caption explains the thing above it: split across a
+    page turn it opens the next page attached to nothing. Chromium ignores
+    `break-before: avoid` on the caption itself, so the grouping has to be
+    structural. Only short chart blocks use this — see the CSS.
+    """
+    cap = f'<p class="caption">{_esc(caption)}</p>' if caption else ""
+    section_cls = f' class="{cls}"' if cls else ""
+    return (f'<div class="block"><h3 class="block-title">{title}</h3>'
+            f'<section{section_cls}>{body}</section>{cap}</div>')
 
 
 def _table(headers: list[str], rows: list[list[str]], nums: set[int],
@@ -311,9 +442,10 @@ def build_html(d: dict, theme: dict) -> str:
     head = headline(d)
     head_html = f'<p class="caption headline">{_esc(head)}</p>' if head else ""
 
-    biggest_rows = [[r["posted_date"], r["source"], money(r["line_cents"]),
-                     _clip(r["title"], 54)] for r in d["biggest"]]
-    repeat_rows = [[f'{v["n"]}x', money(v["cents"]), _clip(v["title"], 58)]
+    # The repeat buys as a chart rather than a table. What matters is which few
+    # products dominate, and a ranked bar says that at a glance where a column
+    # of figures makes the reader do the comparing.
+    repeat_bars = [(f'{_clip(v["title"], 44)} · {v["n"]}x', v["cents"])
                    for v in d["repeats"]]
 
     unhoused_block = ""
@@ -330,6 +462,8 @@ def build_html(d: dict, theme: dict) -> str:
             'in whatever bucket the merchant rule picked, where it cannot be '
             'budgeted or tracked. Adding a category would make it visible — '
             'this report suggests, it does not add one.</p>')
+    # Bound to the footer below: a footer that breaks away lands on a page of
+    # its own carrying three lines of provenance and nothing else.
 
     food_share = (round(d["food_cents"] / d["line_total"] * 100)
                   if d["line_total"] else 0)
@@ -347,6 +481,9 @@ def build_html(d: dict, theme: dict) -> str:
         f'<p class="standfirst">{_esc(lo)} to {_esc(hi)} — every Amazon and '
         f'Walmart.com order that reconciled to a charge, itemised and read '
         f'against the categories you budget in.</p></header>'
+        # A note on the window, right under the masthead, so nobody reads a
+        # twelve-month figure as an all-time one.
+        f'<p class="caption window">Covering {len(d["split_month"])} months.</p>'
         f'<section class="stat-strip">{stats}</section>'
 
         '<h3 class="block-title">What the ledger sees, and what was in the box</h3>'
@@ -359,27 +496,30 @@ def build_html(d: dict, theme: dict) -> str:
         'drawn to one shared scale, so a bar on the left is directly comparable '
         'to a bar on the right.</p>'
 
-        '<h3 class="block-title">Everything that wasn’t food</h3>'
-        f'<section>{_bars(d["non_food"])}</section>'
-        f'<p class="caption">Food is {food_share}% of the basket and one line on '
-        f'the budget, so it is left as one bar. This is the rest — the part a '
-        f'merchant rule cannot categorise for you.</p>'
+        # Shops before categories: it is the coarser cut, and it is two rows
+        # rather than seven — which is also what lets it sit in the space under
+        # the comparison instead of stranding a half-empty page.
+        + _block("Each shop, food against everything else",
+                 _legend() + _stacked(d["split_source"]),
+                 'The two shops are not doing the same job, which is why one '
+                 'merchant rule cannot describe both.', cls="stacked")
 
-        '<h3 class="block-title">Where</h3>'
-        f'<section class="source">{_bars(d["by_source"])}</section>'
+        + _block("Everything that wasn’t food", _bars(d["non_food"]),
+                 f'Food is {food_share}% of the basket and one line on the '
+                 f'budget, so it is left as one bar. This is the rest — the '
+                 f'part a merchant rule cannot categorise for you.')
 
-        '<h3 class="block-title">When</h3>'
-        f'<section>{_bars(d["by_month"], accent_last=True)}</section>'
+        + _block("Month by month", _month_chart(d["split_month"]))
 
-        '<h3 class="block-title">Biggest single items</h3>'
-        f'<section>{_table(["Date", "Source", "Amount", "Item"], biggest_rows, {2})}</section>'
+        + _block("What you buy again and again", _bars(repeat_bars),
+                 'Repeat purchases by total spend across the period — the '
+                 'handful of products a year of ordering actually consists of.',
+                 cls="repeats")
 
-        '<h3 class="block-title">Bought more than once</h3>'
-        f'<section>{_table(["Times", "Total", "Item"], repeat_rows, {0, 1}, "nothing was bought more than once in this period")}</section>'
+        + '<div class="block tail">'
+        + unhoused_block
 
-        f'{unhoused_block}'
-
-        f'<footer class="provenance">'
+        + f'<footer class="provenance">'
         f'Items list at {money(d["line_total"])} against {money(d["ledger_total"])} '
         f'charged — item prices are before discounts and tax, so the two are '
         f'different figures rather than an error'
@@ -388,7 +528,7 @@ def build_html(d: dict, theme: dict) -> str:
            if d["uncategorised_cents"] else '')
         + ' · groupings are inferred from product titles and are never written '
           'back to a transaction'
-        + '</footer></main></body></html>')
+        + '</footer></div></main></body></html>')
 
 
 #: The report's layout template, tracked in git and shipped with the package.
@@ -409,10 +549,18 @@ def template_css() -> str:
 
 
 def render(since: str | None = None, until: str | None = None,
-           out_dir=None) -> dict:
-    """Render the PDF. Returns {"ok": True, "path": str, ...}."""
+           out_dir=None, *, all_history: bool = False) -> dict:
+    """Render the PDF. Returns {"ok": True, "path": str, ...}.
+
+    Defaults to the last `DEFAULT_MONTHS`; `all_history=True` opts back into
+    everything, and an explicit `since` wins over both.
+    """
     from .. import db, paths
     from .pdf import render_pdf
+
+    scoped = bool(since or until)
+    if since is None and not all_history:
+        since = default_since()
 
     with db.connect() as conn:
         d = gather(conn, since, until)
@@ -423,9 +571,10 @@ def render(since: str | None = None, until: str | None = None,
     html = build_html(d, brand.load_theme())
     base = (out_dir or paths.reports_dir()).resolve()
     # The filename carries the scope. With a fixed name, a two-month view
-    # silently overwrites the all-history one — same path, different document.
+    # silently overwrites the default one — same path, different document.
     lo, hi = d["span"]
-    stem = "online-spend" if not (since or until) else f"online-{lo}_{hi}"
+    stem = ("online-spend-all" if all_history and not scoped else
+            "online-spend" if not scoped else f"online-{lo}_{hi}")
     out = (base / f"{_safe(stem)}.pdf").resolve()
     if not out.is_relative_to(base):
         raise ValueError("invalid output path")
