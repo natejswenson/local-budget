@@ -19,12 +19,31 @@ from local_budget.connectors.kinds import KINDS, classify, unhoused
 # ── the vocabulary is the budget's, not the report's ─────────────────────────
 def test_every_bucket_is_a_real_budget_category():
     """A bucket the budget has no category for cannot be shown against a budget
-    line, which is the whole point of classifying into these names."""
+    line, which is the whole point of classifying into these names.
+
+    Checked against the BUILTIN vocabulary plus an explicit list of buckets that
+    need a custom category, rather than against `all_categories()` — that reads
+    the `settings` table, so the assertion would silently become "whatever this
+    machine's database happens to contain". It passed locally against a real
+    ledger and failed in CI, which is the same bug in both directions.
+    """
     from local_budget import categories
-    valid = categories.all_categories()
+    allowed = categories.CATEGORIES | kinds.REQUIRES_CUSTOM_CATEGORY
     for name, _ in KINDS:
-        assert name in valid, f"{name!r} is not an assignable category"
-    assert kinds.UNCATEGORISED in valid
+        assert name in allowed, f"{name!r} is not an assignable category"
+    assert kinds.UNCATEGORISED in categories.CATEGORIES
+
+
+def test_the_custom_category_dependency_is_declared_and_accurate():
+    """`REQUIRES_CUSTOM_CATEGORY` must list exactly the non-builtin buckets.
+
+    Stale either way is a trap: a bucket missing from it fails the check above
+    for the wrong reason, and a stale entry claims a dependency that no longer
+    exists once the category is promoted to builtin.
+    """
+    from local_budget import categories
+    non_builtin = {n for n, _ in KINDS if n not in categories.CATEGORIES}
+    assert non_builtin == kinds.REQUIRES_CUSTOM_CATEGORY
 
 
 def test_the_fallback_is_uncategorized_and_never_random():

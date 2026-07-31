@@ -40,6 +40,17 @@ from __future__ import annotations
 #: defeats the point of categorising. An honest blank beats a wrong home.
 UNCATEGORISED = "Uncategorized"
 
+#: Buckets below that are NOT builtin categories — they exist only if the user
+#: added them (`categories.add_custom_category`).
+#:
+#: Declared rather than discovered, because the failure is silent otherwise: on
+#: a ledger without these, the reports still render a bar labelled "Home
+#: Improvement" that corresponds to no budget line, and the premise that item
+#: spend can be read against something you budget quietly stops holding. Naming
+#: them here keeps the dependency visible and lets a test pin it without
+#: reaching for a database.
+REQUIRES_CUSTOM_CATEGORY = frozenset({"Home Improvement", "Kid Activities"})
+
 #: Keyword → budget category, first match wins. Every bucket name here must be a
 #: real category from `categories.list_categories`, or a report would group spend
 #: under a line the budget cannot show it against.
