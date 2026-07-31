@@ -248,8 +248,8 @@ CREATE TABLE IF NOT EXISTS amazon_matches (
 );
 
 -- ── Walmart connector ───────────────────────────────────────────────────────
--- Same job as the Amazon block above, against a bigger number: this ledger
--- carries ~$27.9k of Walmart charges to ~$15.4k of Amazon. Same footing too —
+-- Same job as the Amazon block above, and typically against a bigger number:
+-- a household can spend more at Walmart than at Amazon. Same footing too —
 -- IMPORTED FACTS, written by the deterministic core through connect(), absent
 -- from _AGENT_WRITE_TABLES so every agent write is denied.
 --
@@ -268,9 +268,9 @@ CREATE TABLE IF NOT EXISTS amazon_matches (
 -- bank posts them. Walmart publishes ORDERS, and an order routinely settles as
 -- SEVERAL partial charges that sum to its total. A pattern seen in a real ledger:
 --
---     2026-06-24  $118.42  ->  one bank row
---     2026-07-01  $164.20  ->  two:  $18.65 + $145.55
---     2026-07-17  $203.60  ->  five: $24.10 + $1.45 + $8.30 + $52.75 + $117.00
+--     day 1   $100.00  ->  one bank row
+--     day 8   $150.00  ->  two:   $20.00 + $130.00
+--     day 20  $200.00  ->  five:  $25.00 + $5.00 + $10.00 + $50.00 + $110.00
 --
 -- Walmart exposes no per-charge record to reconcile against — the order page's
 -- "Charge history" is an empty banner whose contents load separately. So the
@@ -342,7 +342,7 @@ CREATE TABLE IF NOT EXISTS walmart_items (
     quantity         REAL,
     -- What the LINE cost, quantity already included — Walmart publishes
     -- `linePrice`, not a unit price. Verified: two bags of peanuts is one line
-    -- reading $14.50, four ears of corn one line reading $1.00. Storing that as
+    -- reading $14.50, four ears of corn one line reading $2.00. Storing that as
     -- a unit price and multiplying by quantity, as the Amazon connector does
     -- with its own source, would have doubled and quadrupled those lines.
     line_price_cents INTEGER,
