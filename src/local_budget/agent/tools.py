@@ -604,29 +604,184 @@ async def amazon_coverage(args: dict, conn) -> dict:
 
 
 @_with_ro_conn
+async def walmart_breakdown(args: dict, conn) -> dict:
+    """Item lines behind matched Walmart charges. Read-only for the agent: the
+    `walmart_*` tables are absent from `_AGENT_WRITE_TABLES`, so they are
+    imported facts on the same footing as transactions."""
+    from ..connectors.walmart import match as wm_match
+    month = _month_or_current(args.get("month"))
+    items = wm_match.breakdown(conn, month)
+    cov = wm_match.coverage(conn, month)
+    if not items:
+        return {"data": {"month": month, "items": [], "coverage": cov},
+                "rendered": f"## Walmart items — {month}\n\nNo matched Walmart items. "
+                            "Run `budget walmart import <file.xlsx>` to load order detail."}
+    # Walmart publishes a LINE total, quantity already included — no multiply.
+    lines = [(i, i["line_price_cents"] or 0) for i in items]
+    orders = {i["order_number"] for i in items}
+    rows = [{"Date": i["posted_date"],
+             "Amount": render.money(line),
+             "Qty": i["quantity"] or 1,
+             "Where": i["channel"] or "—",
+             "Item": (i["title"] or "—")[:60]}
+            for i, line in lines]
+    # Lead with the shape. "Break down my Walmart purchases" answered by forty
+    # undifferentiated rows is a list, not a breakdown — the header is what makes
+    # the table readable, and it is summed here so the agent never has to.
+    rendered = (
+        f"## Walmart items — {month}\n\n"
+        f"{len(items)} items across {len(orders)} orders · "
+        f"{render.money(sum(v for _, v in lines))} in line totals\n\n"
+        + render.table(rows, [("Date", "Date"), ("Amount", "Amount"),
+                              ("Qty", "Qty"), ("Where", "Where"), ("Item", "Item")]))
+    if cov["coverage_pct"] < 100:
+        rendered += (f"\n\n⚠ {cov['coverage_pct']}% of Walmart spend is explained "
+                     f"({render.money(cov['matched_cents'])} of "
+                     f"{render.money(cov['total_cents'])}) — the rest has no item detail.")
+    return {"data": {"month": month, "items": items, "coverage": cov,
+                     "order_count": len(orders),
+                     "line_total_cents": sum(v for _, v in lines)},
+            "rendered": rendered}
+
+
+@_with_ro_conn
+async def online_breakdown(args: dict, conn) -> dict:
+    """Amazon and Walmart.com item lines, grouped into the budget's categories.
+
+    The tool for "what did my online spend actually buy". It answers what the
+    per-merchant breakdowns structurally cannot: the ledger categorises
+    merchants, so every Walmart.com charge reads as Groceries and every Amazon
+    charge as Shopping, and only the item lines can say how much of that was
+    something else. Read-only, and it never writes a category anywhere — the
+    grouping is a reading of product titles, which is why the rendered output
+    says so.
+    """
+    from ..report import online as online_report
+    month = args.get("month")
+    since = f"{month}-01" if month else None
+    until = f"{month}-31" if month else None
+    d = online_report.gather(conn, since, until)
+    if not d["rows"]:
+        scope = f" in {month}" if month else ""
+        return {"data": {"month": month, "categories": [], "items": 0},
+                "rendered": f"## Online spend{scope}\n\nNo reconciled Amazon or "
+                            "Walmart.com items. Run `budget walmart import` or "
+                            "`budget amazon sync`."}
+
+    rows = [{"Category": k, "Spend": render.money(v),
+             "Share": f"{round(v / d['line_total'] * 100)}%"}
+            for k, v in d["by_kind"]]
+    scope = f" — {month}" if month else ""
+    rendered = (
+        f"## Online spend{scope}\n\n"
+        f"{d['items']:,} items across {d['orders']:,} orders · "
+        f"{render.money(d['ledger_total'])} charged\n\n"
+        + render.table(rows, [("Category", "Category"), ("Spend", "Spend"),
+                              ("Share", "Share")]))
+    head = online_report.headline(d)
+    if head:
+        rendered += f"\n\n**{head}**"
+    if d["by_unhoused"]:
+        gaps = ", ".join(f"{n} ({render.money(v)})" for n, v in d["by_unhoused"])
+        rendered += (f"\n\nNo category in the budget covers: {gaps}.")
+    rendered += ("\n\nGroupings are inferred from product titles and are never "
+                 "written back to a transaction.")
+    return {"data": {"month": month,
+                     "categories": d["by_kind"],
+                     "non_food": d["non_food"],
+                     "food_cents": d["food_cents"],
+                     "non_food_cents": d["non_food_cents"],
+                     "by_source": d["by_source"],
+                     "unhoused": d["by_unhoused"],
+                     "items": d["items"], "orders": d["orders"],
+                     "line_total_cents": d["line_total"],
+                     "charged_cents": d["ledger_total"]},
+            "rendered": rendered}
+
+
+@_with_ro_conn
+async def walmart_coverage(args: dict, conn) -> dict:
+    """The honesty check on any Walmart answer: what fraction of the dollars
+    actually reconciled. Measured in dollars, not transaction count."""
+    from ..connectors.walmart import match as wm_match
+    month = _month_or_current(args.get("month"))
+    cov = wm_match.coverage(conn, month)
+    hz = wm_match.horizon(conn)
+    rendered = (f"## Walmart coverage — {month}\n\n"
+                # coverage() already returns POSITIVE outflow magnitudes —
+                # negating here would render spend as a refund.
+                f"- **{cov['coverage_pct']}%** of Walmart spend has item detail\n"
+                f"- {render.money(cov['matched_cents'])} of "
+                f"{render.money(cov['total_cents'])}\n"
+                f"- {cov['matched_txns']} of {cov['total_txns']} charges explained")
+    # Online and in-store are different problems with different fixes: one is a
+    # question about the parser, the other about whether Walmart holds the
+    # receipt at all. A single averaged number says which neither.
+    for name, c in cov["channels"].items():
+        if c["total_cents"]:
+            rendered += (f"\n- {name}: **{c['coverage_pct']}%** "
+                         f"({render.money(c['matched_cents'])} of "
+                         f"{render.money(c['total_cents'])})")
+    st = cov["split_settlements"]
+    if st["split_orders"]:
+        # Orders and charges do not correspond here. An agent quoting both
+        # without this reads as though it has miscounted one of them.
+        rendered += (f"\n- {st['split_orders']} of {st['orders']} matched orders "
+                     f"settled as MORE THAN ONE bank charge (up to "
+                     f"{st['max_parts']}) — order count and charge count are "
+                     f"different things here, not a discrepancy")
+    if hz["has_backlog"]:
+        # Report the window, not just the number. A low percentage reads as bad
+        # data unless it says the older charges have nothing to match against.
+        rendered += (f"\n- reconcilable back to **{hz['earliest']}** — "
+                     f"{hz['pre_count']} older charges "
+                     f"({render.money(hz['pre_cents'])}) predate any order "
+                     f"record, so they cannot be matched (not a data problem; "
+                     f"`budget amazon backfill` pulls what the source allows)")
+    return {"data": {**cov, "horizon": hz}, "rendered": rendered}
+
+
+@_with_ro_conn
 async def propose_split(args: dict, conn) -> dict:
     """Item lines behind a charge, scaled to what was actually charged.
 
-    Read-only and category-free ON PURPOSE. There is no product category in the
-    source — only titles, ASINs and sellers — so assigning one is the agent's
-    judgment, stated as such and confirmed by the user before `apply_split`
-    writes anything.
+    Works from an Amazon or a Walmart order, tried in turn rather than dispatched
+    on the merchant string: the merchant is the bank's text, while which
+    connector actually holds the order is a fact about what has been synced.
+
+    Read-only and category-free ON PURPOSE. Amazon publishes no product category
+    at all and Walmart's is a shelf label rather than a budget category, so
+    assigning one is the agent's judgment — stated as such and confirmed by the
+    user before `apply_split` writes anything.
     """
     from ..connectors.amazon import split as az_split
-    try:
-        p = az_split.propose(conn, int(args["txn_id"]))
-    except Exception as e:
-        return _err(str(e))
-    rows = [{"ASIN": i["asin"] or "—", "Amount": render.money(i["suggested_cents"]),
+    from ..connectors.walmart import split as wm_split
+
+    txn_id = int(args["txn_id"])
+    p = source = None
+    reasons = []
+    for name, mod in (("amazon", az_split), ("walmart", wm_split)):
+        try:
+            p, source = mod.propose(conn, txn_id), name
+            break
+        except mod.NoOrderBehind as e:
+            reasons.append(f"{name}: {e}")
+        except Exception as e:
+            return _err(str(e))
+    if p is None:
+        return _err("no reconciled order behind that charge — " + "; ".join(reasons))
+
+    rows = [{"Ref": i.get("asin") or i.get("product_id") or "—",
+             "Amount": render.money(i["suggested_cents"]),
              "Qty": i["quantity"], "Item": (i["title"] or "—")[:52]} for i in p["items"]]
     note = ("\n\n_Amounts are each item's share of the charge, scaled from a list "
             f"total of {render.money(p['item_total_cents'])}; they will not equal "
             "the sticker price._" if p["scaled"] else "")
     rendered = (f"## Proposed split — {render.money(p['charge_cents'])} "
-                f"{p['txn']['merchant_norm']}\n"
-                + render.table(rows, [("ASIN", "ASIN"), ("Amount", "Amount"),
+                f"{p['txn']['merchant_norm']} (from the {source} order)\n"
+                + render.table(rows, [("Ref", "Ref"), ("Amount", "Amount"),
                                       ("Qty", "Qty"), ("Item", "Item")]) + note)
-    return {"data": p, "rendered": rendered}
+    return {"data": {**p, "source": source}, "rendered": rendered}
 
 
 @_with_rw_conn
@@ -850,9 +1005,25 @@ TOOL_SPECS: list[ToolSpec] = [
              "Check this before trusting an Amazon breakdown — a low number means most of the "
              "spend is still unexplained.",
              _obj({"month": {"type": "string"}}), amazon_coverage),
-    ToolSpec("propose_split", "Item lines behind an Amazon charge, each scaled to its "
-             "share of what was actually charged. Read-only. Assign a category to every "
-             "line yourself, show the user, and only then call apply_split.",
+    ToolSpec("online_breakdown", "What online spend (Amazon + Walmart.com) actually bought, "
+             "grouped into the budget's own categories. Use this when asked what online "
+             "spend went on, or how much of the grocery bill was not food — the ledger "
+             "categorises MERCHANTS, so Walmart.com all reads as Groceries and Amazon all "
+             "reads as Shopping, and only the item lines can say otherwise. Read-only; "
+             "groupings are inferred from titles and are never written to a transaction.",
+             _obj({"month": {"type": "string"}}), online_breakdown),
+    ToolSpec("walmart_breakdown", "What was actually bought behind the Walmart charges in a "
+             "month — item titles, quantities, line totals, and whether each was bought "
+             "online or in store. Read-only; needs `budget walmart import` to have run.",
+             _obj({"month": {"type": "string"}}), walmart_breakdown),
+    ToolSpec("walmart_coverage", "How much Walmart spend has item detail behind it, in "
+             "DOLLARS, split by online vs in-store. Check this before trusting a Walmart "
+             "breakdown — a low number means most of the spend is still unexplained, and "
+             "in-store is usually the weaker half.",
+             _obj({"month": {"type": "string"}}), walmart_coverage),
+    ToolSpec("propose_split", "Item lines behind an Amazon or Walmart charge, each scaled "
+             "to its share of what was actually charged. Read-only. Assign a category to "
+             "every line yourself, show the user, and only then call apply_split.",
              _obj({"txn_id": {"type": "integer"}}, ["txn_id"]), propose_split),
     ToolSpec("apply_split", "Split one charge across categories. Lines MUST sum to the "
              "charge exactly or the write is refused. Confirm with the user first — a "

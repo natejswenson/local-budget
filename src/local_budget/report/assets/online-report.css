@@ -1,0 +1,147 @@
+/* Online spend report — layout on top of the shared PRESS stylesheet.
+ *
+ * This file is the report's TEMPLATE: it is tracked in git, ships with the
+ * package, and is loaded at render time. Edit it and re-run
+ * `budget online report` to see the change — no Python edit required.
+ *
+ * Its own file rather than a shared one with the Amazon and Walmart reports,
+ * following the precedent those two set: a template that exists to be edited
+ * per-document should be editable per document. This one carries a two-column
+ * comparison block and a headline sentence that neither of the others has.
+ * Shared LOGIC lives in shared modules; this is not logic.
+ *
+ * It deliberately holds NO colour values. Colour belongs to the PRESS brand in
+ * report/brand.py (paper / ink / dim / accent / ink-mid), which is itself
+ * overridable via BUDGET_BRAND_FILE. Everything here is layout, proportion and
+ * pagination, and refers to brand colours only through their tokens.
+ */
+
+/* ── proportions ─────────────────────────────────────────────────────────── */
+
+/* Category names and month keys, not short budget labels. */
+div.sb-row { grid-template-columns: 13rem 1fr 7rem; }
+
+table.data td:last-child { width: 48%; }
+
+/* Tighter than the sibling reports' 2.2rem. Those are table-led documents where
+ * the gap separates dense blocks; this one is charts, which already carry their
+ * own white space — and the looser rhythm pushed a short chart onto its own
+ * page and left half of the previous one empty. */
+h3.block-title { padding-top: 1.05rem; }
+
+/* Two sources, not fourteen. Left at chart width the block reads as a stub of
+ * a bigger chart that failed to load. */
+section.source div.sb-row { grid-template-columns: 9rem 1fr 7rem; }
+
+/* ── the comparison block ────────────────────────────────────────────────── */
+/* The page's argument is a side-by-side, so it has to survive as one. The two
+ * columns are drawn to a SHARED scale in online.py — that is what makes the
+ * lengths comparable; this rule only makes them adjacent. */
+div.compare {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2.4rem;
+  align-items: start;
+}
+
+/* A hairline between the columns, so the eye reads two claims rather than one
+ * wide chart. Ink, like every other rule on the page. */
+div.compare > div.col + div.col {
+  border-left: 1px solid var(--rule);
+  padding-left: 2.4rem;
+}
+
+/* The column headers reuse `h3.block-title` so the mono/caps/tracking come from
+ * the brand rather than being redeclared here — fonts belong to brand.py for
+ * the same reason colours do. This only trims the section-level spacing that
+ * would otherwise push the two columns apart. */
+div.compare h3.col-title {
+  padding-top: 0;
+  margin-top: 0;
+  font-size: 0.64rem;
+  color: var(--dim);
+}
+
+/* Narrower than the full-width charts: these columns are half the page, and a
+ * 13rem label column would leave no room for the bar itself. */
+div.compare div.sb-row { grid-template-columns: 8.5rem 1fr 5.5rem; }
+
+/* The report's thesis, set as a pull quote. It rides on `p.caption`, so the
+ * serif italic comes from the brand; this only sizes it up into a pull quote
+ * and puts it in full ink rather than dim — it is the one sentence a reader
+ * should carry away, not an aside. */
+p.caption.headline {
+  font-size: 1.24rem;
+  line-height: 1.32;
+  color: var(--ink);
+  margin: 1.1rem 0 0.3rem;
+  padding-left: 1rem;
+  border-left: 3px solid var(--ink);
+  max-width: 46rem;
+}
+
+/* ── the food / not-food stacked bars ────────────────────────────────────── */
+/* Same grammar as sb-row, plus a share column. The two segments sit flush
+ * inside one track: a gap between them would read as a third value. */
+div.st-row {
+  display: grid;
+  grid-template-columns: 9rem 1fr 7rem 5rem;
+  align-items: center;
+  gap: 0 0.9rem;
+  padding: 0.28rem 0;
+}
+div.st-row .sb-track { display: flex; }
+span.st-food { background: var(--ink); height: 100%; }
+span.st-rest { background: var(--ink-mid); height: 100%; }
+
+div.st-row .st-pct {
+  font-size: 0.72rem;
+  color: var(--dim);
+  text-align: right;
+}
+
+/* Product names need the room; their bars are a ranking, not a measurement. */
+section.repeats div.sb-row { grid-template-columns: 20rem 1fr 6rem; }
+
+/* The window note sits tight under the standfirst rather than floating between
+ * the masthead and the stat strip. */
+p.caption.window { margin-top: 0.35rem; }
+
+/* ── pagination ──────────────────────────────────────────────────────────── */
+/* Written after looking at a rendered PDF rather than at the markup. */
+
+/* A heading must never be the last thing on a page. */
+h3.block-title { break-after: avoid; page-break-after: avoid; }
+
+/* Nor may a caption be the FIRST thing on one. A caption explains the chart
+ * above it, and stranded at the top of the next page it explains a chart the
+ * reader can no longer see — which is how "Food is 48% of the basket" ended up
+ * opening page two, attached to nothing.
+ *
+ * `break-before: avoid` on the caption does NOT achieve this in Chromium; the
+ * only thing that holds is binding the heading, chart and caption into one
+ * unbreakable box. Short chart blocks get `div.block` for exactly that. Long
+ * tables deliberately do not — forbidding a break there shunts a whole table
+ * to the next page and leaves half a page empty. */
+div.block { break-inside: avoid; page-break-inside: avoid; }
+
+/* The brand's 2.6rem lead-in is sized for a table-led page that ends flush. On
+ * a chart-led one it was the difference between a two-page report and a third
+ * page holding nothing but three lines of provenance. */
+footer.provenance { margin-top: 0.7rem; padding-top: 0.6rem; }
+
+/* The closing block may break internally — its table is one row and its footer
+ * three lines, so a split here costs nothing — but `break-inside: avoid` on it
+ * made Chromium push the whole tail to a fresh page and leave a third of the
+ * previous one empty. What matters is only that the footer never lands alone,
+ * which the wrapper achieves by keeping it adjacent to the block above. */
+div.block.tail { break-inside: auto; }
+
+/* The comparison is the argument — split across a page turn it stops being one.
+ * It is short enough to keep whole, which the long tables below are not. */
+div.compare { break-inside: avoid; }
+
+/* Long tables may break, but never mid-row: that reads as corruption rather
+ * than as a page turn. */
+section { break-inside: auto; }
+table.data tr, div.sb-row { break-inside: avoid; }
