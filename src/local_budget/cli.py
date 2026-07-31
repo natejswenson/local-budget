@@ -958,38 +958,88 @@ def walmart_status(month: str | None) -> None:
 
 
 @walmart.command("match")
-@click.option("--confirm", "confirm_pair", default=None, metavar="CHARGE_ID:TXN_ID",
-              help="resolve one ambiguous pair by hand")
-def walmart_match(confirm_pair: str | None) -> None:
-    """Re-run matching, or confirm an ambiguous pair.
+@click.option("--confirm", "confirm_spec", default=None,
+              metavar="ORDER:TXN[,TXN…]",
+              help="attribute one order to a specific SET of bank rows")
+def walmart_match(confirm_spec: str | None) -> None:
+    """Re-run matching, or resolve an ambiguous order by hand.
 
-    Ambiguity is never guessed: two Walmart charges of the same amount days
-    apart is routine, and attributing the wrong basket of items to a charge is
-    worse than leaving it unexplained.
+    Ambiguity is never guessed. With enough small charges in a window several
+    different SETS of bank rows can sum to the same order total, and attributing
+    the wrong basket of items to a charge is worse than leaving it unexplained —
+    so those orders are reported here with every candidate set spelled out, and
+    a human picks.
+
+    An order settles as a set, so a confirmation names a set:
+
+        budget walmart match --confirm 200014750356531:2628,2789
     """
     from .connectors.walmart import match as wm_match
     db.init_schema()
-    if confirm_pair:
+
+    if confirm_spec:
+        order, _, txn_part = confirm_spec.partition(":")
+        order = order.strip()
+        if not order or not txn_part.strip():
+            raise click.ClickException(
+                "use --confirm ORDER:TXN[,TXN…] — an order settles as a SET of "
+                "bank rows, so name every row that paid for it")
         try:
-            c_id, t_id = (int(x) for x in confirm_pair.split(":", 1))
+            txn_ids = [int(x) for x in txn_part.split(",") if x.strip()]
         except ValueError as e:
-            raise click.ClickException("use --confirm CHARGE_ID:TXN_ID") from e
+            raise click.ClickException(
+                "transaction ids must be whole numbers: "
+                "--confirm ORDER:TXN[,TXN…]") from e
+
         with db.connect() as conn:
-            wm_match.confirm(conn, c_id, t_id)
-        click.echo(f"  ✓ walmart charge {c_id} -> transaction {t_id}")
+            # Everything below is checked BEFORE writing, because `match._record`
+            # is an INSERT OR IGNORE against UNIQUE(txn_id): a row already
+            # claimed by another order would be skipped in silence, and the
+            # operator would walk away believing the attribution landed.
+            if not conn.execute("SELECT 1 FROM walmart_orders WHERE order_number=?",
+                                (order,)).fetchone():
+                raise click.ClickException(
+                    f"no Walmart order {order} — check `budget walmart match` "
+                    f"for the ambiguous ones")
+            holes = " OR ".join("txn_id = ?" for _ in txn_ids)
+            found = {r["txn_id"] for r in conn.execute(
+                f"SELECT txn_id FROM transactions WHERE {holes}", txn_ids)}
+            missing = [t for t in txn_ids if t not in found]
+            if missing:
+                raise click.ClickException(
+                    f"no such transaction(s): {', '.join(map(str, missing))}")
+            taken = conn.execute(
+                f"""SELECT txn_id, order_number FROM walmart_matches
+                     WHERE ({holes}) AND order_number <> ?""",
+                (*txn_ids, order)).fetchall()
+            if taken:
+                claims = "; ".join(f"{r['txn_id']} already explains order "
+                                   f"{r['order_number']}" for r in taken)
+                raise click.ClickException(
+                    f"a bank row explains at most one order — {claims}")
+            wm_match.confirm(conn, order, txn_ids)
+        click.echo(f"  ✓ order {order} -> transaction(s) "
+                   f"{', '.join(map(str, txn_ids))}")
         return
+
     with db.connect() as conn:
         r = wm_match.run(conn)
-    click.echo(f"  ✓ matched {r['matched']} ({r['exact']} exact, {r['windowed']} windowed)")
+    click.echo(f"  ✓ matched {r['matched']} "
+               f"({r['exact']} exact, {r['split']} split settlements)")
+    if not r["ambiguous"]:
+        return
+    click.echo(f"\n  {len(r['ambiguous'])} order(s) could not be resolved — "
+               f"more than one set of charges sums to the total:")
     for a in r["ambiguous"]:
-        click.echo(f"\n  ? walmart charge {a['walmart_charge_id']} · "
-                   f"{a['charged_date']} · {dollars(a['amount_cents'])} · "
-                   f"order {a['order_number'] or '—'}"
-                   + ("  (date inferred from the order)" if a["derived"] else ""))
-        for c in a["candidates"]:
-            click.echo(f"      confirm with: budget walmart match --confirm "
-                       f"{a['walmart_charge_id']}:{c['txn_id']}"
-                       f"   ({c['posted_date']} {c['merchant_norm']})")
+        click.echo(f"\n  ? order {a['order_number']} · {a['order_placed_date']} · "
+                   f"{dollars(a['amount_cents'])} · {a['channel'] or '—'}")
+        for s in a["solutions"]:
+            ids = ",".join(str(c["txn_id"]) for c in s)
+            rows = " + ".join(f"{c['posted_date']} {dollars(-c['amount_cents'])}"
+                              for c in s)
+            click.echo(f"      {rows}")
+            click.echo(f"        confirm with: budget walmart match "
+                       f"--confirm {a['order_number']}:{ids}")
 
 
 @walmart.command("items")

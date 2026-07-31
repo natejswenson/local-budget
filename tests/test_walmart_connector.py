@@ -365,3 +365,87 @@ def test_store_and_match_reports_what_it_did(conn, tmp_path, monkeypatch):
                             scope="days=30", since="2026-07-01")
     assert (r["orders"], r["items"], r["matched"]) == (1, 1, 1)
     assert r["coverage"]["coverage_pct"] == 100.0
+
+
+# ── the `budget walmart match` command ───────────────────────────────────────
+# It shipped broken: written against the pre-redesign model where a charge was
+# a row (`walmart_charge_id`, `candidates`, `windowed`), it survived the move to
+# "an order settles as a SET of bank rows" untouched, and raised on every
+# invocation. Nothing exercised it, so the suite stayed green. These tests run
+# the real command.
+def _cli(conn, args):
+    from click.testing import CliRunner
+
+    from local_budget import cli
+    conn.commit()
+    return CliRunner().invoke(cli.main, args)
+
+
+def _ambiguous_setup(conn):
+    """One order whose total is reachable two different ways.
+
+    Deliberately NO single row equal to the total: pass 1 claims an exact
+    single-row match before pass 2 ever runs, so a $50 row would resolve this
+    order and there would be no ambiguity to report. $25+$25 and $10+$40 both
+    make $50, and neither is more right than the other.
+    """
+    _bank(conn, 1, "2026-07-02", -2500)
+    _bank(conn, 2, "2026-07-03", -2500)
+    _bank(conn, 3, "2026-07-04", -1000)
+    _bank(conn, 4, "2026-07-04", -4000)
+    store.store_orders(conn, [order(number="200099999999999", placed="2026-07-01",
+                                    total="50.00", items=[item("Milk", "50.00")])],
+                       store.start_run(conn, "t"))
+
+
+def test_match_reports_ambiguity_instead_of_guessing(conn):
+    _ambiguous_setup(conn)
+    r = _cli(conn, ["walmart", "match"])
+    assert r.exit_code == 0, r.output
+    assert "could not be resolved" in r.output
+    assert "200099999999999" in r.output
+    # Every candidate set is spelled out as a runnable command.
+    assert "--confirm 200099999999999:3,4" in r.output
+    assert "--confirm 200099999999999:1,2" in r.output
+
+
+def test_confirm_attributes_an_order_to_a_set_of_rows(conn):
+    _ambiguous_setup(conn)
+    r = _cli(conn, ["walmart", "match", "--confirm", "200099999999999:1,2"])
+    assert r.exit_code == 0, r.output
+    rows = conn.execute("SELECT txn_id, confidence FROM walmart_matches "
+                        "ORDER BY txn_id").fetchall()
+    assert [x["txn_id"] for x in rows] == [1, 2]
+    assert {x["confidence"] for x in rows} == {"manual"}
+
+
+def test_confirm_refuses_a_row_that_already_explains_another_order(conn):
+    """`_record` is INSERT OR IGNORE against UNIQUE(txn_id), so without this
+    check the row is skipped in silence and the operator believes it landed."""
+    _ambiguous_setup(conn)
+    store.store_orders(conn, [order(number="200088888888888", placed="2026-07-01",
+                                    total="25.00", items=[item("Eggs", "25.00")])],
+                       store.start_run(conn, "t"))
+    match.confirm(conn, "200088888888888", [1])
+
+    r = _cli(conn, ["walmart", "match", "--confirm", "200099999999999:1,2"])
+    assert r.exit_code != 0
+    assert "at most one order" in r.output
+    # Nothing partial was written: txn 2 must not have been claimed.
+    assert conn.execute("SELECT COUNT(*) c FROM walmart_matches "
+                        "WHERE txn_id = 2").fetchone()["c"] == 0
+
+
+@pytest.mark.parametrize("spec,message", [
+    ("200099999999999", "ORDER:TXN"),
+    ("200099999999999:", "ORDER:TXN"),
+    ("200099999999999:abc", "whole numbers"),
+    ("no-such-order:1", "no Walmart order"),
+    ("200099999999999:999", "no such transaction"),
+])
+def test_confirm_rejects_bad_input_before_writing(conn, spec, message):
+    _ambiguous_setup(conn)
+    r = _cli(conn, ["walmart", "match", "--confirm", spec])
+    assert r.exit_code != 0
+    assert message in r.output
+    assert conn.execute("SELECT COUNT(*) c FROM walmart_matches").fetchone()["c"] == 0
