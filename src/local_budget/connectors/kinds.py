@@ -7,9 +7,9 @@ maintained once, instead of three that drift apart and bucket the same item thre
 different ways in three documents.
 
 **The buckets are the ledger's own category names, not a taxonomy of their own.**
-That is the whole point of this table. The ledger pins merchants, not items:
-`WALMART.COM → Groceries` and `AMAZON → Shopping` describe every charge from
-those merchants, toilet paper and vitamins included. Grouping items into the same
+That is the whole point of this table. The ledger pins MERCHANTS, not items, so
+a single rule can label every charge from one shop — toilet paper and vitamins
+included. Grouping items into the same
 vocabulary the budget is set in is what lets a report say *how much of the
 grocery bill was not food* — a question a parallel set of product-shaped buckets
 could pose but never answer.
@@ -49,7 +49,7 @@ UNCATEGORISED = "Uncategorized"
 #: spend can be read against something you budget quietly stops holding. Naming
 #: them here keeps the dependency visible and lets a test pin it without
 #: reaching for a database.
-REQUIRES_CUSTOM_CATEGORY = frozenset({"Home Improvement", "Kid Activities"})
+REQUIRES_CUSTOM_CATEGORY = frozenset({"Home Improvement", "Kid Activities", "Pets"})
 
 #: Keyword → budget category, first match wins. Every bucket name here must be a
 #: real category from `categories.list_categories`, or a report would group spend
@@ -59,6 +59,21 @@ REQUIRES_CUSTOM_CATEGORY = frozenset({"Home Improvement", "Kid Activities"})
 #: pattern can anchor a word start (`" dog "`) instead of also matching "hot dog".
 KINDS: list[tuple[str, tuple[str, ...]]] = [
     # ── non-food first: specific, and they must outrank the food net ────────
+    # Pets leads the table. Pet products are named for the animal, not for what
+    # they are, so the same item reads as three other buckets: "dog shampoo" is
+    # Personal Care by keyword, "dog food" is Groceries by keyword, and "chew
+    # toy" is Kid Activities. Only an early Pets rule gets them right.
+    #
+    # Every pattern is qualified — "dog collar", never a bare "dog" — because a
+    # grocery run is full of hot dogs and corn dogs. That is pinned by a test.
+    ("Pets", (
+        "mealworm", "bird seed", "birdseed", "bird feed", "wild bird", "suet",
+        "feeder", "for dogs", "for cats", "dog food", "dog treat", "dog collar",
+        "dog fence", "dog training", "dog brush", "dog slicker", "dog bed",
+        "dog toy", "dog chew", "dog shampoo", "puppy", "cat food", "cat litter",
+        "cat treat", "kitty", "pet food", "pet rabbit", "pet shampoo",
+        "aquarium", "hamster", "guinea pig", "gerbil", "chicken feed", "leash",
+        "dewormer", "chew toy")),
     ("Personal Care", (
         "shampoo", "conditioner", "body wash", "deodorant", "razor", "shave",
         "toothpaste", "toothbrush", "floss", "mouthwash", "lotion", "moisturi",
@@ -167,18 +182,15 @@ KINDS: list[tuple[str, tuple[str, ...]]] = [
 #: A suggestion table, not a classification one: `classify` never returns these
 #: names, because a report must not group spend under a category the budget
 #: cannot show it against. Only `unhoused` reads it.
-#: Every pattern is qualified — "dog collar", never a bare "dog". A grocery run
-#: is full of hot dogs, and a bare pattern would recommend a Pets budget on the
-#: strength of a pack of buns.
-NO_LEDGER_HOME: dict[str, tuple[str, ...]] = {
-    "Pets": ("mealworm", "bird seed", "birdseed", "bird feed", "wild bird",
-             "suet", "feeder", "for dogs", "for cats", "dog food", "dog treat",
-             "dog collar", "dog fence", "dog training", "dog brush",
-             "dog slicker", "dog bed", "dog toy", "dog chew", "puppy",
-             "cat food", "cat litter", "cat treat", "kitty", "pet food",
-             "pet rabbit", "aquarium", "hamster", "guinea pig", "gerbil",
-             "chicken feed", "leash", "dewormer", "chew toy"),
-}
+#: **Currently empty, and that is the mechanism working.** Pets was the one
+#: entry — recurring spend on bird feed, mealworms and dog gear with no category
+#: to file it under — so the reports named it as a candidate rather than burying
+#: it in Shopping. The category was added, and Pets graduated into `KINDS`.
+#:
+#: Kept rather than deleted because this is how the next gap surfaces. A cluster
+#: belongs here when it is real, recurring, and has nowhere to go; it moves out
+#: the moment the budget gains a home for it.
+NO_LEDGER_HOME: dict[str, tuple[str, ...]] = {}
 
 
 def _haystack(title: str | None) -> str:
