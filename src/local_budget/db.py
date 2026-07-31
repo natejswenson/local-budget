@@ -320,8 +320,10 @@ CREATE TABLE IF NOT EXISTS walmart_orders (
     -- sources restate prices at checkout without restating the lines. Keeping
     -- the two side by side lets a reader see the gap instead of inheriting it.
     item_sum_cents    INTEGER,
-    -- 'scrape' (walmart.com pages) | 'xlsx' (a purchase-history export). Which
-    -- path put the row here, so a disagreement between them is answerable.
+    -- 'xlsx' (a purchase-history export) for everything written now. 'scrape'
+    -- survives only on rows a retired browser-scraping path wrote before the
+    -- import replaced it — kept rather than rewritten, because which path
+    -- produced a row is a fact about the row, not a fact about today's code.
     source            TEXT,
     fetched_at        TEXT NOT NULL,
     sync_run_id       INTEGER

@@ -45,7 +45,18 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from .parse import WalmartParseError
+from ... import db
+from . import match, store
+
+
+class WalmartParseError(RuntimeError):
+    """The file did not contain the shape this parser knows.
+
+    Raised rather than returning empty. A silent zero is the failure this
+    connector refuses to have: the format changes, the parser yields nothing,
+    the import reports success, and every command afterwards prints a confident
+    empty table.
+    """
 
 #: Sheet names, and the columns each must carry. Checked up front so a renamed
 #: header fails loudly on arrival instead of yielding an order with no items —
@@ -350,22 +361,77 @@ def summarize(orders: list[dict]) -> dict:
     }
 
 
-def run_import(path: str | Path, *, on_progress=None) -> dict:
-    """Read the export, store it, and reconcile — the whole command.
+def ledger_has_walmart_charges(conn, since: str, until: str | None = None) -> bool:
+    """Does the BANK think there were Walmart charges in this window?
 
-    Goes through `sync.store_and_match` rather than calling `store` directly, so
-    an import lands exactly where a scrape lands: same upsert, same matcher, same
-    run record. The only difference is where the orders came from, and
-    `walmart_orders.source` records that.
+    The ground truth the anti-vacuity check leans on. If the ledger says yes and
+    the import produced nothing, the parser is broken — a fact only knowable by
+    comparing against data we already trust.
     """
-    from . import sync
+    like = " OR ".join("merchant_norm LIKE ?" for _ in match.MERCHANT_LIKE)
+    upper = " AND posted_date <= ?" if until else ""
+    row = conn.execute(
+        f"""SELECT COUNT(*) AS n FROM transactions
+             WHERE status='posted' AND amount_cents < 0
+               AND posted_date >= ?{upper} AND ({like})""",
+        (since, *((until,) if until else ()), *match.MERCHANT_LIKE)).fetchone()
+    return bool(row["n"])
 
+
+def store_and_match(orders: list, *, scope: str, since: str) -> dict:
+    """Gate, store, match, record the run — everything after parsing.
+
+    Written through `db.connect()` (the deterministic core's read/write handle),
+    never `agent_connect()`. Walmart rows are imported facts on the same footing
+    as bank transactions: the agent reads them and can never write them, because
+    the authorizer denies writes to any table outside `_AGENT_WRITE_TABLES` and
+    no `walmart_*` table is listed.
+
+    `since` is the window the orders came from, and it is required. An empty
+    result can only be judged against one: without it, a file that genuinely
+    covers a quiet period is indistinguishable from a parser that returned
+    nothing, and the gate would either abort on every legitimate empty import or
+    never abort at all.
+
+    Raises `store.SyncAborted` when the result is empty but the ledger says it
+    should not be, and writes nothing in that case.
+    """
+    with db.connect() as conn:
+        expect = ledger_has_walmart_charges(conn, since)
+        # Checked BEFORE a run is opened, so a broken parse leaves no trace and
+        # no half-written state — nothing began, nothing to unwind.
+        store.assert_not_vacuous(conn, orders=len(orders),
+                                 scope_has_known_charges=expect)
+        run_id = store.start_run(conn, scope)
+        n = store.store_orders(conn, orders, run_id)
+        result = match.run(conn)
+        store.finish_run(conn, run_id, status="success",
+                         orders_seen=len(orders), orders_upserted=n["orders"],
+                         items_seen=n["items"], items_upserted=n["items"])
+        cov = match.coverage(conn)
+        # `matched` is the TOTAL that now reconciles, not what this run added.
+        # Re-importing an export you already loaded adds nothing, and printing
+        # "matched 0" would read as a failed run.
+        return {
+            "sync_run_id": run_id, "scope": scope,
+            "orders": n["orders"], "items": n["items"],
+            "matched": cov["split_settlements"]["orders"],
+            "new_matches": result["matched"],
+            "exact": result["exact"], "split": result["split"],
+            "ambiguous": len(result["ambiguous"]),
+            "coverage": cov,
+            "horizon": match.horizon(conn),
+        }
+
+
+def run_import(path: str | Path, *, on_progress=None) -> dict:
+    """Read the export, store it, and reconcile — the whole command."""
     orders = load(path)
     summary = summarize(orders)
     if on_progress:
         on_progress(f"  read {summary['orders']} orders · {summary['items']} items "
                     f"({summary['since']} → {summary['until']})")
-    result = sync.store_and_match(
+    result = store_and_match(
         orders, scope=f"xlsx-import {Path(path).name}",
         # The export's own earliest order. `store_and_match` judges an empty
         # result against this window; a file that parsed to nothing has already

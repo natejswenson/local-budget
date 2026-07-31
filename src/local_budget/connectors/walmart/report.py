@@ -332,7 +332,7 @@ def render(since: str | None = None, until: str | None = None,
         d = gather(conn, since, until)
     if not d["rows"]:
         raise ValueError("no reconciled Walmart items in that range — run "
-                         "`budget walmart backfill` first")
+                         "`budget walmart import <file.xlsx>` first")
     html = build_html(d, brand.load_theme())
     base = (out_dir or paths.reports_dir()).resolve()
     # The filename carries the scope. With a fixed name, rendering a two-month

@@ -14,7 +14,7 @@ from __future__ import annotations
 import pytest
 
 from local_budget import db, money
-from local_budget.connectors.walmart import match, store, sync
+from local_budget.connectors.walmart import import_xlsx, match, store
 
 
 def order(number="200012345678901", placed="2026-07-20", total="149.50",
@@ -341,7 +341,7 @@ def test_store_and_match_writes_nothing_when_it_aborts(conn, tmp_path, monkeypat
     _bank(conn, 1, "2026-07-20", -14950)
     conn.commit()
     with pytest.raises(store.SyncAborted):
-        sync.store_and_match([], scope="days=30", since="2026-07-01")
+        import_xlsx.store_and_match([], scope="days=30", since="2026-07-01")
     with db.connect(tmp_path / "budget.db") as c:
         assert c.execute("SELECT COUNT(*) n FROM walmart_sync_runs").fetchone()["n"] == 0
 
@@ -353,7 +353,7 @@ def test_an_account_with_no_walmart_history_is_a_legitimate_zero(conn, tmp_path,
     genuinely empty sync must not be called a broken parser."""
     monkeypatch.setenv("LOCAL_BUDGET_DATA_DIR", str(tmp_path))
     conn.commit()
-    r = sync.store_and_match([], scope="days=30", since="2026-07-01")
+    r = import_xlsx.store_and_match([], scope="days=30", since="2026-07-01")
     assert r["orders"] == 0
 
 
@@ -361,7 +361,7 @@ def test_store_and_match_reports_what_it_did(conn, tmp_path, monkeypatch):
     monkeypatch.setenv("LOCAL_BUDGET_DATA_DIR", str(tmp_path))
     _bank(conn, 1, "2026-07-20", -14950)
     conn.commit()
-    r = sync.store_and_match([order(items=[item("Dog food", "42.99")])],
+    r = import_xlsx.store_and_match([order(items=[item("Dog food", "42.99")])],
                             scope="days=30", since="2026-07-01")
     assert (r["orders"], r["items"], r["matched"]) == (1, 1, 1)
     assert r["coverage"]["coverage_pct"] == 100.0

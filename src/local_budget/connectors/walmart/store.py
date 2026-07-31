@@ -1,7 +1,7 @@
 """Entities → rows. Everything money-shaped is converted here, exactly once.
 
-`parse.py` hands over plain dicts whose money fields are **plain decimal
-strings, exactly as the page displayed them**. That is the whole reason this
+`import_xlsx.py` hands over plain dicts whose money fields are **plain decimal
+strings, exactly as the export displayed them**. That is the whole reason this
 module can use `money.cents_from_amount_str` — the project's single mandated
 conversion entry point, which parses with Decimal and RAISES on sub-cent
 precision rather than silently rounding. The Amazon connector could not: its
@@ -10,10 +10,10 @@ converter. Ours is stricter because we own the layer above it.
 
 **Where strictness applies, and where it deliberately does not.** The order
 TOTAL is load-bearing — the matcher sums bank rows against it to the cent — so a
-malformed one raises and the sync writes nothing. Item line prices are
+malformed one raises and the import writes nothing. Item line prices are
 descriptive: they are scaled by `splits.allocate()` before anything is
 attributed, so one unreadable price costs a line's precision rather than a
-ledger fact. Failing an entire backfill over it would be the wrong trade.
+ledger fact. Failing an entire import over it would be the wrong trade.
 """
 from __future__ import annotations
 
@@ -237,8 +237,8 @@ def assert_not_vacuous(conn: sqlite3.Connection, *, orders: int,
     if orders or not scope_has_known_charges:
         return
     raise SyncAborted(
-        "sync returned 0 orders, but the ledger has Walmart charges in this "
-        "window — the parser is almost certainly broken rather than the account "
-        "being empty. Walmart may have changed its order pages; run "
-        "`budget walmart capture` to see what they serve now, or "
-        "`budget walmart login` if the session has expired. Nothing was written.")
+        "the import produced 0 orders, but the ledger has Walmart charges in "
+        "this window — the parser is almost certainly broken rather than the "
+        "export being empty. Check that the file is a Walmart purchase-history "
+        "export and that its sheets still carry the expected columns. Nothing "
+        "was written.")

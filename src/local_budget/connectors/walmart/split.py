@@ -56,9 +56,9 @@ def propose(conn: sqlite3.Connection, txn_id: int) -> dict:
         (txn_id,)).fetchall()
     if not rows:
         raise NoOrderBehind(
-            f"transaction {txn_id} has no reconciled Walmart order — run "
-            f"`budget walmart sync`, `budget walmart backfill` for older "
-            f"charges, or `budget walmart match` if it is ambiguous")
+            f"transaction {txn_id} has no reconciled Walmart order — import "
+            f"an export covering this date with `budget walmart import`, or run "
+            f"`budget walmart match` if the settlement is ambiguous")
 
     # Item prices are positive magnitudes; the charge is negative. Carry the
     # ledger's sign so the scaled lines land the right way round.

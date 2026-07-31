@@ -18,7 +18,7 @@ from openpyxl import Workbook
 
 from local_budget import db
 from local_budget.connectors.walmart import import_xlsx, store
-from local_budget.connectors.walmart.parse import WalmartParseError
+from local_budget.connectors.walmart.import_xlsx import WalmartParseError
 
 ORDER_COLS = ["Order Number", "Order Date", "Order Type", "Items",
               "Subtotal (Before Savings)", "Savings", "Subtotal",
@@ -278,6 +278,31 @@ def test_the_item_sum_and_source_are_recorded(conn, tmp_path):
     assert row["item_sum_cents"] == 615
     assert row["subtotal_cents"] == 1000
     assert row["source"] == "xlsx"
+
+
+def test_the_cli_command_actually_runs(conn, tmp_path, monkeypatch):
+    """Exercises `budget walmart import` end to end, imports included.
+
+    The gap this closes: removing the scraper left the command importing a
+    module that no longer existed, and the whole suite stayed green because
+    every other test called the connector functions directly. A command nothing
+    invokes is a command nothing tests.
+    """
+    from click.testing import CliRunner
+
+    from local_budget import cli
+    monkeypatch.setattr(cli.db, "init_schema", lambda *a, **k: None)
+    conn.commit()
+    wb = workbook([order_row(total=3.98)], [item_row(title="Bread", price=3.98)])
+    path = written(tmp_path, wb)
+
+    r = CliRunner().invoke(cli.main, ["walmart", "import", str(path), "--dry-run"])
+    assert r.exit_code == 0, r.output
+    assert "1" in r.output and "nothing written" in r.output
+
+    r = CliRunner().invoke(cli.main, ["walmart", "import", str(path)])
+    assert r.exit_code == 0, r.output
+    assert "1 orders · 1 item lines stored" in r.output
 
 
 def test_import_upserts_over_a_scraped_order_without_orphaning_it(conn, tmp_path):

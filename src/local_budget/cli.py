@@ -754,7 +754,7 @@ def amazon_status(month: str | None) -> None:
                    f"predate any transaction record")
         click.echo("    `budget amazon backfill` pulls what history the source allows")
     if last:
-        click.echo(f"  last sync: {last['started_at']} · {last['status']} · {last['scope']}")
+        click.echo(f"  last import: {last['started_at']} · {last['status']} · {last['scope']}")
         if last["error_message"]:
             click.echo(f"    ! {last['error_message']}")
     else:
@@ -846,144 +846,18 @@ def amazon_unmatched(month: str | None) -> None:
 # ── walmart connector ────────────────────────────────────────────────────────
 @main.group()
 def walmart() -> None:
-    """Pull Walmart order + item detail and reconcile it against the ledger.
+    """Reconcile Walmart order + item detail against the ledger.
 
-    Same idea as `budget amazon`, and this ledger carries roughly twice as many
-    Walmart dollars. Walmart publishes no consumer order API, so this reads your
-    own order history through a browser session you capture once with
-    `budget walmart login`. Your data, your account — but Walmart's terms
-    prohibit automated extraction, and a page redesign can break it.
+    Ingestion is a FILE, not a scrape. Walmart publishes no consumer order API,
+    and reading the site through a browser session lost to bot detection long
+    before it could reach a year of history — so orders arrive as a purchase-
+    history spreadsheet you export yourself, and `budget walmart import` loads
+    it. Nothing here signs in, holds a session, or makes a request.
 
-    No password is ever stored: Walmart sign-in ends in a one-time code that no
-    stored secret can answer, so the session itself is the only credential.
+    Everything downstream is unchanged: the same matcher recovers each order's
+    settlement by summing bank rows against the order total, because Walmart
+    publishes no charge list either.
     """
-
-
-@walmart.command("login")
-@click.option("--timeout", default=None, type=int,
-              help="seconds to wait for you to finish signing in "
-                   "(default: the connector's, currently 600)")
-def walmart_login(timeout: int | None) -> None:
-    """Sign in through a browser window and cache the session (0600)."""
-    from .connectors.walmart import browser_login
-    db.init_schema()
-    # Defaulted HERE rather than in the option, so the connector stays the one
-    # place that decides how long a sign-in reasonably takes. A literal here
-    # silently overrode it once already — the module said 600 and the window
-    # closed at 300.
-    timeout = timeout or browser_login.DEFAULT_TIMEOUT
-    try:
-        r = browser_login.login(timeout=timeout, echo=click.echo)
-    except Exception as e:
-        raise click.ClickException(str(e)) from e
-    click.echo(f"  ✓ session cached at {r['path']} (0600)")
-    click.echo("    now run: budget walmart capture")
-
-
-@walmart.command("capture")
-@click.option("--headed", is_flag=True,
-              help="show the browser window (try this if headless is challenged)")
-def walmart_capture(headed: bool) -> None:
-    """Dump what the order pages actually serve, for parser development.
-
-    Diagnostic only — nothing it writes is ever read by the connector. Output
-    lands in data/walmart/capture/, which is gitignored: it is real order
-    content.
-    """
-    from .connectors.walmart import capture as wm_capture, session as wm_session
-    db.init_schema()
-    try:
-        m = wm_capture.run(headless=not headed, echo=click.echo)
-    except Exception as e:
-        raise click.ClickException(str(e)) from e
-    click.echo(f"  ✓ captured {'headed' if headed else 'headless'} — "
-               f"{len(m['pages'])} pages, {len(m['responses'])} JSON responses")
-    for p in m["pages"]:
-        keys = ", ".join(f"{k} ({v:,}b)" for k, v in p["inline_keys"].items()) or "none"
-        click.echo(f"    {p['label']:<13} {p['html_bytes']:>9,}b html · inline: {keys}")
-    click.echo(f"    order links on the list page: {m['order_links']}")
-    click.echo(f"  ✓ written to {wm_session.capture_dir()}")
-
-
-@walmart.command("sync")
-@click.option("--days", type=int, default=90, show_default=True,
-              help="how far back to pull")
-@click.option("--detail", is_flag=True,
-              help="also read each order's page for item lines (slow; one page "
-                   "load per order, and the part Walmart challenges)")
-@click.option("--headed", is_flag=True, help="show the browser window")
-def walmart_sync(days: int, detail: bool, headed: bool) -> None:
-    """Fetch recent orders, store them, and match them to bank charges.
-
-    Reconciling needs only the order total, which the list carries — so this is
-    quick and safe to run often. Item lines come from `budget walmart backfill`,
-    or from `--detail` here.
-    """
-    from .connectors.walmart import sync as wm_sync
-    db.init_schema()
-    try:
-        r = wm_sync.run_sync(days=days, detail=detail, headless=not headed,
-                             on_progress=click.echo)
-    except Exception as e:
-        raise click.ClickException(str(e)) from e
-    cov = r["coverage"]
-    click.echo(f"  ✓ {r['orders']} orders · {r['items']} item lines"
-               + (f" · {r['detailed']} detail pages read" if "detailed" in r else ""))
-    click.echo(f"    {r['matched']} orders reconcile"
-               + (f" (+{r['new_matches']} this run: {r['exact']} single-charge, "
-                  f"{r['split']} split settlement)" if r["new_matches"] else "")
-               + (f" · {r['ambiguous']} need confirming" if r["ambiguous"] else ""))
-    click.echo(f"    coverage {cov['coverage_pct']}% of Walmart spend "
-               f"({dollars(cov['matched_cents'])} of {dollars(cov['total_cents'])})")
-
-
-@walmart.command("backfill")
-@click.option("--since", default=None,
-              help="YYYY-MM-DD (default: earliest Walmart charge in the ledger)")
-@click.option("--limit", type=int, default=None,
-              help="stop after this many detail pages (the rest resume next run)")
-@click.option("--headed", is_flag=True, help="show the browser window")
-@click.option("--dry-run", is_flag=True, help="show what would be fetched")
-def walmart_backfill(since: str | None, limit: int | None, headed: bool,
-                     dry_run: bool) -> None:
-    """Pull order history across the whole range the ledger covers.
-
-    A long job — item detail is one request per order — so it is resumable:
-    every order records whether its detail page has been read, and re-running
-    picks up where it stopped. The cheap list pass runs first, so even an
-    interrupted backfill leaves coverage better than it found it.
-    """
-    from .connectors.walmart import backfill as wm_backfill
-    db.init_schema()
-    with db.connect() as conn:
-        p = wm_backfill.plan(conn, since)
-    if p["reason"]:
-        click.echo(f"  {p['reason']}")
-        return
-    click.echo(f"  history from:   {p['since']}")
-    click.echo(f"  orders stored:  {p['stored']}")
-    click.echo(f"  need detail:    {p['pending']}"
-               + (f" (fetching {limit} this run)" if limit else ""))
-    if dry_run:
-        click.echo("\n  (dry run — nothing fetched)")
-        return
-    try:
-        r = wm_backfill.run_backfill(since=since, limit=limit,
-                                     headless=not headed, on_progress=click.echo)
-    except Exception as e:
-        raise click.ClickException(str(e)) from e
-    cov, hz = r["coverage"], r["horizon"]
-    click.echo(f"\n  ✓ {r['orders']} orders · {r['detailed']} detail pages read")
-    if r["remaining"]:
-        click.echo(f"    {r['remaining']} still need detail — re-run to continue")
-    click.echo(f"    matched {r['matched']}"
-               + (f" · {r['ambiguous']} need confirming" if r["ambiguous"] else ""))
-    click.echo(f"    coverage {cov['coverage_pct']}% "
-               f"({dollars(cov['matched_cents'])} of {dollars(cov['total_cents'])})")
-    if hz["has_backlog"]:
-        click.echo(f"    reconcilable back to {hz['earliest']}; "
-                   f"{hz['pre_count']} older charges ({dollars(hz['pre_cents'])}) "
-                   f"have no order record to match on")
 
 
 @walmart.command("import")
@@ -1001,7 +875,7 @@ def walmart_import(path: str, dry_run: bool) -> None:
     fills in what is missing and leaves existing matches intact.
     """
     from .connectors.walmart import import_xlsx as wm_import
-    from .connectors.walmart.parse import WalmartParseError
+    from .connectors.walmart.import_xlsx import WalmartParseError
     db.init_schema()
 
     if dry_run:
@@ -1073,13 +947,14 @@ def walmart_status(month: str | None) -> None:
         click.echo(f"  reconcilable back to {hz['earliest']} — "
                    f"{hz['pre_count']} older charges ({dollars(hz['pre_cents'])}) "
                    f"predate any order record")
-        click.echo("    `budget walmart backfill` pulls what history the source allows")
+        click.echo("    export a wider date range from Walmart and re-run "
+                   "`budget walmart import` to reach further back")
     if last:
-        click.echo(f"  last sync: {last['started_at']} · {last['status']} · {last['scope']}")
+        click.echo(f"  last import: {last['started_at']} · {last['status']} · {last['scope']}")
         if last["error_message"]:
             click.echo(f"    ! {last['error_message']}")
     else:
-        click.echo("  last sync: never — run `budget walmart sync`")
+        click.echo("  last import: never — run `budget walmart import <file.xlsx>`")
 
 
 @walmart.command("match")
@@ -1127,7 +1002,8 @@ def walmart_items(month: str | None) -> None:
         rows = wm_match.breakdown(conn, month)
         cov = wm_match.coverage(conn, month)
     if not rows:
-        click.echo("  no matched Walmart items yet — run `budget walmart sync`")
+        click.echo("  no matched Walmart items yet — run "
+                   "`budget walmart import <file.xlsx>`")
         return
     click.echo(f"Walmart items — {month or 'all time'}")
     click.echo(f"  {'DATE':<11} {'AMOUNT':>10}  ITEM")

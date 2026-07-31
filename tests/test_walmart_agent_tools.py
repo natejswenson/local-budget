@@ -67,7 +67,7 @@ def test_breakdown_says_what_to_run_when_there_is_nothing_yet():
     _seed(bank=[("2026-06-03", -8000, "WALMART.COM")], items=None)
     r = _call("walmart_breakdown", {"month": "2026-06"})
     assert r["data"]["items"] == []
-    assert "budget walmart sync" in r["rendered"]
+    assert "budget walmart import" in r["rendered"]
 
 
 def test_breakdown_leads_with_the_shape_then_the_rows():

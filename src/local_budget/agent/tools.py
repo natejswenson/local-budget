@@ -615,7 +615,7 @@ async def walmart_breakdown(args: dict, conn) -> dict:
     if not items:
         return {"data": {"month": month, "items": [], "coverage": cov},
                 "rendered": f"## Walmart items — {month}\n\nNo matched Walmart items. "
-                            "Run `budget walmart sync` to pull order detail."}
+                            "Run `budget walmart import <file.xlsx>` to load order detail."}
     # Walmart publishes a LINE total, quantity already included — no multiply.
     lines = [(i, i["line_price_cents"] or 0) for i in items]
     orders = {i["order_number"] for i in items}
@@ -737,7 +737,7 @@ async def walmart_coverage(args: dict, conn) -> dict:
                      f"{hz['pre_count']} older charges "
                      f"({render.money(hz['pre_cents'])}) predate any order "
                      f"record, so they cannot be matched (not a data problem; "
-                     f"`budget walmart backfill` pulls what the source allows)")
+                     f"`budget amazon backfill` pulls what the source allows)")
     return {"data": {**cov, "horizon": hz}, "rendered": rendered}
 
 
@@ -1014,7 +1014,7 @@ TOOL_SPECS: list[ToolSpec] = [
              _obj({"month": {"type": "string"}}), online_breakdown),
     ToolSpec("walmart_breakdown", "What was actually bought behind the Walmart charges in a "
              "month — item titles, quantities, line totals, and whether each was bought "
-             "online or in store. Read-only; needs `budget walmart sync` to have run.",
+             "online or in store. Read-only; needs `budget walmart import` to have run.",
              _obj({"month": {"type": "string"}}), walmart_breakdown),
     ToolSpec("walmart_coverage", "How much Walmart spend has item detail behind it, in "
              "DOLLARS, split by online vs in-store. Check this before trusting a Walmart "
