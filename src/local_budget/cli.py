@@ -1182,5 +1182,41 @@ def walmart_report(since: str | None, until: str | None) -> None:
     click.echo(f"  ✓ saved to {r['path']}")
 
 
+# ── online spend (both connectors together) ──────────────────────────────────
+@main.group()
+def online() -> None:
+    """Amazon and Walmart.com together — what online spend actually bought.
+
+    Its own group rather than a subcommand of either connector: this reads both
+    and belongs to neither. The per-merchant reports answer "what did I buy from
+    this shop"; this one answers "what did I buy online", which is a question
+    about the household.
+    """
+
+
+@online.command("report")
+@click.option("--since", default=None, help="YYYY-MM-DD (default: all history)")
+@click.option("--until", default=None, help="YYYY-MM-DD")
+def online_report(since: str | None, until: str | None) -> None:
+    """Render a PRESS-branded PDF of all online spend, by budget category.
+
+    The ledger categorises merchants, so every Walmart.com charge reads as
+    Groceries and every Amazon charge as Shopping. This groups the ITEMS behind
+    those charges into the same categories you budget in, which is the only way
+    to see how much of the grocery bill was not food.
+    """
+    from .report import online as online_report_mod
+    db.init_schema()
+    try:
+        r = online_report_mod.render(since, until)
+    except Exception as e:
+        raise click.ClickException(str(e)) from e
+    click.echo(f"  ✓ {r['items']} items across {r['orders']} orders "
+               f"({dollars(r['spent_cents'])})")
+    click.echo(f"    food {dollars(r['food_cents'])} · "
+               f"everything else {dollars(r['non_food_cents'])}")
+    click.echo(f"  ✓ saved to {r['path']}")
+
+
 if __name__ == "__main__":
     main()

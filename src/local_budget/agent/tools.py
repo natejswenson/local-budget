@@ -645,6 +645,61 @@ async def walmart_breakdown(args: dict, conn) -> dict:
 
 
 @_with_ro_conn
+async def online_breakdown(args: dict, conn) -> dict:
+    """Amazon and Walmart.com item lines, grouped into the budget's categories.
+
+    The tool for "what did my online spend actually buy". It answers what the
+    per-merchant breakdowns structurally cannot: the ledger categorises
+    merchants, so every Walmart.com charge reads as Groceries and every Amazon
+    charge as Shopping, and only the item lines can say how much of that was
+    something else. Read-only, and it never writes a category anywhere — the
+    grouping is a reading of product titles, which is why the rendered output
+    says so.
+    """
+    from ..report import online as online_report
+    month = args.get("month")
+    since = f"{month}-01" if month else None
+    until = f"{month}-31" if month else None
+    d = online_report.gather(conn, since, until)
+    if not d["rows"]:
+        scope = f" in {month}" if month else ""
+        return {"data": {"month": month, "categories": [], "items": 0},
+                "rendered": f"## Online spend{scope}\n\nNo reconciled Amazon or "
+                            "Walmart.com items. Run `budget walmart import` or "
+                            "`budget amazon sync`."}
+
+    rows = [{"Category": k, "Spend": render.money(v),
+             "Share": f"{round(v / d['line_total'] * 100)}%"}
+            for k, v in d["by_kind"]]
+    scope = f" — {month}" if month else ""
+    rendered = (
+        f"## Online spend{scope}\n\n"
+        f"{d['items']:,} items across {d['orders']:,} orders · "
+        f"{render.money(d['ledger_total'])} charged\n\n"
+        + render.table(rows, [("Category", "Category"), ("Spend", "Spend"),
+                              ("Share", "Share")]))
+    head = online_report.headline(d)
+    if head:
+        rendered += f"\n\n**{head}**"
+    if d["by_unhoused"]:
+        gaps = ", ".join(f"{n} ({render.money(v)})" for n, v in d["by_unhoused"])
+        rendered += (f"\n\nNo category in the budget covers: {gaps}.")
+    rendered += ("\n\nGroupings are inferred from product titles and are never "
+                 "written back to a transaction.")
+    return {"data": {"month": month,
+                     "categories": d["by_kind"],
+                     "non_food": d["non_food"],
+                     "food_cents": d["food_cents"],
+                     "non_food_cents": d["non_food_cents"],
+                     "by_source": d["by_source"],
+                     "unhoused": d["by_unhoused"],
+                     "items": d["items"], "orders": d["orders"],
+                     "line_total_cents": d["line_total"],
+                     "charged_cents": d["ledger_total"]},
+            "rendered": rendered}
+
+
+@_with_ro_conn
 async def walmart_coverage(args: dict, conn) -> dict:
     """The honesty check on any Walmart answer: what fraction of the dollars
     actually reconciled. Measured in dollars, not transaction count."""
@@ -950,6 +1005,13 @@ TOOL_SPECS: list[ToolSpec] = [
              "Check this before trusting an Amazon breakdown — a low number means most of the "
              "spend is still unexplained.",
              _obj({"month": {"type": "string"}}), amazon_coverage),
+    ToolSpec("online_breakdown", "What online spend (Amazon + Walmart.com) actually bought, "
+             "grouped into the budget's own categories. Use this when asked what online "
+             "spend went on, or how much of the grocery bill was not food — the ledger "
+             "categorises MERCHANTS, so Walmart.com all reads as Groceries and Amazon all "
+             "reads as Shopping, and only the item lines can say otherwise. Read-only; "
+             "groupings are inferred from titles and are never written to a transaction.",
+             _obj({"month": {"type": "string"}}), online_breakdown),
     ToolSpec("walmart_breakdown", "What was actually bought behind the Walmart charges in a "
              "month — item titles, quantities, line totals, and whether each was bought "
              "online or in store. Read-only; needs `budget walmart sync` to have run.",

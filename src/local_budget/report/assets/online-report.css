@@ -1,0 +1,96 @@
+/* Online spend report — layout on top of the shared PRESS stylesheet.
+ *
+ * This file is the report's TEMPLATE: it is tracked in git, ships with the
+ * package, and is loaded at render time. Edit it and re-run
+ * `budget online report` to see the change — no Python edit required.
+ *
+ * Its own file rather than a shared one with the Amazon and Walmart reports,
+ * following the precedent those two set: a template that exists to be edited
+ * per-document should be editable per document. This one carries a two-column
+ * comparison block and a headline sentence that neither of the others has.
+ * Shared LOGIC lives in shared modules; this is not logic.
+ *
+ * It deliberately holds NO colour values. Colour belongs to the PRESS brand in
+ * report/brand.py (paper / ink / dim / accent / ink-mid), which is itself
+ * overridable via BUDGET_BRAND_FILE. Everything here is layout, proportion and
+ * pagination, and refers to brand colours only through their tokens.
+ */
+
+/* ── proportions ─────────────────────────────────────────────────────────── */
+
+/* Category names and month keys, not short budget labels. */
+div.sb-row { grid-template-columns: 13rem 1fr 7rem; }
+
+/* The one accent on the "when" chart marks the most recent month, so a reader
+ * can place the document in the series without counting columns. */
+span.sb-fill.last { background: var(--accent); }
+
+table.data td:last-child { width: 48%; }
+
+h3.block-title { padding-top: 2.2rem; }
+
+/* Two sources, not fourteen. Left at chart width the block reads as a stub of
+ * a bigger chart that failed to load. */
+section.source div.sb-row { grid-template-columns: 9rem 1fr 7rem; }
+
+/* ── the comparison block ────────────────────────────────────────────────── */
+/* The page's argument is a side-by-side, so it has to survive as one. The two
+ * columns are drawn to a SHARED scale in online.py — that is what makes the
+ * lengths comparable; this rule only makes them adjacent. */
+div.compare {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2.4rem;
+  align-items: start;
+}
+
+/* A hairline between the columns, so the eye reads two claims rather than one
+ * wide chart. Ink, like every other rule on the page. */
+div.compare > div.col + div.col {
+  border-left: 1px solid var(--rule);
+  padding-left: 2.4rem;
+}
+
+/* The column headers reuse `h3.block-title` so the mono/caps/tracking come from
+ * the brand rather than being redeclared here — fonts belong to brand.py for
+ * the same reason colours do. This only trims the section-level spacing that
+ * would otherwise push the two columns apart. */
+div.compare h3.col-title {
+  padding-top: 0;
+  margin-top: 0;
+  font-size: 0.64rem;
+  color: var(--dim);
+}
+
+/* Narrower than the full-width charts: these columns are half the page, and a
+ * 13rem label column would leave no room for the bar itself. */
+div.compare div.sb-row { grid-template-columns: 8.5rem 1fr 5.5rem; }
+
+/* The report's thesis, set as a pull quote. It rides on `p.caption`, so the
+ * serif italic comes from the brand; this only sizes it up into a pull quote
+ * and puts it in full ink rather than dim — it is the one sentence a reader
+ * should carry away, not an aside. */
+p.caption.headline {
+  font-size: 1.3rem;
+  line-height: 1.35;
+  color: var(--ink);
+  margin: 1.5rem 0 0.4rem;
+  padding-left: 1rem;
+  border-left: 3px solid var(--ink);
+  max-width: 46rem;
+}
+
+/* ── pagination ──────────────────────────────────────────────────────────── */
+/* Written after looking at a rendered PDF rather than at the markup. */
+
+/* A heading must never be the last thing on a page. */
+h3.block-title { break-after: avoid; page-break-after: avoid; }
+
+/* The comparison is the argument — split across a page turn it stops being one.
+ * It is short enough to keep whole, which the long tables below are not. */
+div.compare { break-inside: avoid; }
+
+/* Long tables may break, but never mid-row: that reads as corruption rather
+ * than as a page turn. */
+section { break-inside: auto; }
+table.data tr, div.sb-row { break-inside: avoid; }
