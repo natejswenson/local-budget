@@ -128,29 +128,13 @@ def test_an_all_history_report_does_show_the_horizon(conn):
 
 
 # ── classification ───────────────────────────────────────────────────────────
-@pytest.mark.parametrize("title,kind", [
-    ("Case-it Mighty Zip Tab School Zipper Binder", "School & office"),
-    ("Selkirk Amped Pickleball Paddle", "Sports & rec"),
-    ("PURPLE LEAF 10 Feet Patio Umbrella Outdoor", "Outdoor & patio"),
-    ("UGG Women's Tasman II Slipper", "Clothing & footwear"),
-    ("Sterilite 4 Pack Ultra Latching Box, Storage Bins", "Storage & organisation"),
-    ("Elanco Chewable Quad Dewormer for Large Dogs", "Pets & backyard"),
-    ("NICETOWN Window Curtain Panels", "Home & decor"),
-    ("Touchland Hydrating Hand Sanitizer Spray", "Personal care"),
-    ("Something With No Keyword At All", "Uncategorised"),
-    (None, "Uncategorised"),
-])
-def test_classifier_buckets(title, kind):
-    assert report.classify(title) == kind
-
-
-def test_classification_is_first_match_wins_in_declared_order():
-    """Order in KINDS is load-bearing, not incidental: a title matching two
-    buckets takes the earlier one, which is why the specific patterns are
-    declared above the general ones."""
-    names = [k for k, _ in report.KINDS]
-    assert names.index("School & office") < names.index("Kids & toys")
-    assert report.classify("Kids Activity Book") == "Kids & toys"
+# The keyword table itself is tested in tests/test_kinds.py — it is shared by
+# three reports now, so its cases do not belong to any one of them. What this
+# file still owns is that the Amazon report reaches it at all.
+def test_the_report_reexports_the_shared_classifier():
+    from local_budget.connectors import kinds
+    assert report.classify is kinds.classify
+    assert report.KINDS is kinds.KINDS
 
 
 # ── presentation details that read as corruption when wrong ──────────────────

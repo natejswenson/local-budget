@@ -23,6 +23,10 @@ dependencies = [
     # to authenticate is for a human to do it in a real browser and for us to
     # keep the resulting session. Needs `playwright install chromium` once.
     "playwright>=1.40",
+    # Reading Walmart purchase-history exports. The connector's backfill path:
+    # the site itself blocks paging long before it reaches a year of history,
+    # and a spreadsheet does not.
+    "openpyxl>=3.1",
 ]
 
 [dependency-groups]

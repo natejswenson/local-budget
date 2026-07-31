@@ -470,52 +470,83 @@ def config_get(key: str | None) -> None:
 
 
 # ── transaction splits ───────────────────────────────────────────────────────
+def propose_from_any_connector(conn, txn_id: int) -> tuple[str, dict]:
+    """The order behind a charge, from whichever connector reconciled it.
+
+    Tried in turn rather than dispatched on the merchant string: the merchant is
+    the bank's text, and which connector actually has the order is a fact about
+    what has been synced. Asking is cheap and cannot be wrong; guessing from
+    `WM SUPERC…` can.
+
+    Returns ``(source, proposal)``. `source` is recorded on the split rows, so a
+    later reader can tell where an apportionment came from.
+    """
+    from .connectors.amazon import split as az_split
+    from .connectors.walmart import split as wm_split
+
+    if conn.execute("SELECT 1 FROM transactions WHERE txn_id = ?",
+                    (txn_id,)).fetchone() is None:
+        raise click.ClickException(f"no transaction {txn_id}")
+
+    reasons = []
+    for source, mod in (("amazon", az_split), ("walmart", wm_split)):
+        try:
+            return source, mod.propose(conn, txn_id)
+        except mod.NoOrderBehind as e:
+            reasons.append(f"  {source}: {e}")
+    raise click.ClickException(
+        "no reconciled order behind that charge:\n" + "\n".join(reasons))
+
+
 @main.command("split")
 @click.argument("txn_id", type=int)
 @click.option("--dry-run", is_flag=True, help="show the proposed allocation, write nothing")
-@click.option("--category", "cats", multiple=True, metavar="ASIN=CATEGORY",
-              help="assign a category to an item line (repeatable)")
+@click.option("--category", "cats", multiple=True, metavar="ITEM_REF=CATEGORY",
+              help="assign a category to an item line, by ASIN or Walmart item "
+                   "number (repeatable)")
 @click.option("--rest", default=None, metavar="CATEGORY",
               help="category for every line not named by --category")
 def split_cmd(txn_id: int, dry_run: bool, cats: tuple[str, ...], rest: str | None) -> None:
-    """Split a charge across categories using the Amazon order behind it.
+    """Split a charge across categories using the order behind it.
+
+    Works from an Amazon or a Walmart order, whichever reconciled to the charge.
 
     Item prices do not sum to what the card was charged — discounts and
     promotions land between them — so lines are scaled proportionally and every
     cent of the charge is attributed to a real item.
     """
-    from .connectors.amazon import split as az_split
     db.init_schema()
     with db.connect() as conn:
-        try:
-            p = az_split.propose(conn, txn_id)
-        except Exception as e:
-            raise click.ClickException(str(e)) from e
+        source, p = propose_from_any_connector(conn, txn_id)
 
         assigned = dict(c.split("=", 1) for c in cats if "=" in c)
         click.echo(f"Split {dollars(p['charge_cents'])} · "
-                   f"{p['txn']['merchant_norm']} · {p['txn']['posted_date']}")
+                   f"{p['txn']['merchant_norm']} · {p['txn']['posted_date']} "
+                   f"· from the {source} order")
         if p["scaled"]:
             click.echo(f"  items list at {dollars(p['item_total_cents'])}; "
                        f"scaled to the {dollars(p['charge_cents'])} charged")
         lines = []
         for it in p["items"]:
-            cat = assigned.get(it["asin"] or "") or rest
+            # An ASIN for Amazon, a Walmart item number for Walmart — the same
+            # role in both, which is why txn_splits calls the column `item_ref`.
+            ref = it.get("asin") or it.get("product_id")
+            cat = assigned.get(ref or "") or rest
             click.echo(f"  {dollars(it['suggested_cents']):>10}  "
                        f"{(cat or '?'):<16}  {(it['title'] or '—')[:44]}")
             if cat:
                 lines.append({"amount_cents": it["suggested_cents"], "category": cat,
-                              "item_ref": it["asin"], "note": (it["title"] or "")[:80]})
+                              "item_ref": ref, "note": (it["title"] or "")[:80]})
 
         if len(lines) != len(p["items"]):
-            click.echo("\n  ! every line needs a category — use --category ASIN=Cat "
-                       "and/or --rest Cat")
+            click.echo("\n  ! every line needs a category — use "
+                       "--category ITEM_REF=Cat and/or --rest Cat")
             return
         if dry_run:
             click.echo("\n  (dry run — nothing written)")
             return
         try:
-            n = splits_mod.apply(conn, txn_id, lines, source="amazon")
+            n = splits_mod.apply(conn, txn_id, lines, source=source)
         except splits_mod.SplitError as e:
             raise click.ClickException(str(e)) from e
     click.echo(f"\n  ✓ split into {n} lines — `budget report --month "
@@ -723,7 +754,7 @@ def amazon_status(month: str | None) -> None:
                    f"predate any transaction record")
         click.echo("    `budget amazon backfill` pulls what history the source allows")
     if last:
-        click.echo(f"  last sync: {last['started_at']} · {last['status']} · {last['scope']}")
+        click.echo(f"  last import: {last['started_at']} · {last['status']} · {last['scope']}")
         if last["error_message"]:
             click.echo(f"    ! {last['error_message']}")
     else:
@@ -810,6 +841,312 @@ def amazon_unmatched(month: str | None) -> None:
     for r in rows:
         click.echo(f"  {r['txn_id']:>5}  {r['posted_date']}  "
                    f"{dollars(r['amount_cents']):>10}  {r['merchant_norm']}")
+
+
+# ── walmart connector ────────────────────────────────────────────────────────
+@main.group()
+def walmart() -> None:
+    """Reconcile Walmart order + item detail against the ledger.
+
+    Ingestion is a FILE, not a scrape. Walmart publishes no consumer order API,
+    and reading the site through a browser session lost to bot detection long
+    before it could reach a year of history — so orders arrive as a purchase-
+    history spreadsheet you export yourself, and `budget walmart import` loads
+    it. Nothing here signs in, holds a session, or makes a request.
+
+    Everything downstream is unchanged: the same matcher recovers each order's
+    settlement by summing bank rows against the order total, because Walmart
+    publishes no charge list either.
+    """
+
+
+@walmart.command("import")
+@click.argument("path", type=click.Path(exists=True, dir_okay=False))
+@click.option("--dry-run", is_flag=True, help="show what would be written")
+def walmart_import(path: str, dry_run: bool) -> None:
+    """Load a purchase-history spreadsheet export (.xlsx).
+
+    The backfill path that does not touch Walmart. `sync` and `backfill` walk
+    the site, which works for the last handful of orders and gets challenged
+    long before it reaches last year; an export from an already-signed-in
+    browser carries the same orders with no bot-detection surface at all.
+
+    Safe to run over data you already have: orders upsert by number, so this
+    fills in what is missing and leaves existing matches intact.
+    """
+    from .connectors.walmart import import_xlsx as wm_import
+    from .connectors.walmart.import_xlsx import WalmartParseError
+    db.init_schema()
+
+    if dry_run:
+        try:
+            s = wm_import.summarize(wm_import.load(path))
+        except WalmartParseError as e:
+            raise click.ClickException(str(e)) from e
+        click.echo(f"  orders:    {s['orders']} ({s['since']} → {s['until']})")
+        click.echo(f"  items:     {s['items']}")
+        click.echo("  channels:  "
+                   + ", ".join(f"{k} {v}" for k, v in sorted(s["channels"].items())))
+        click.echo(f"  lines tie to subtotal: {s['reconciling']}/{s['comparable']}")
+        click.echo("\n  (dry run — nothing written)")
+        return
+
+    try:
+        r = wm_import.run_import(path, on_progress=click.echo)
+    except WalmartParseError as e:
+        raise click.ClickException(str(e)) from e
+    s, cov = r["summary"], r["coverage"]
+    click.echo(f"\n  ✓ {r['orders']} orders · {r['items']} item lines stored")
+    click.echo(f"    matched {r['matched']}"
+               + (f" · {r['ambiguous']} need confirming" if r["ambiguous"] else ""))
+    click.echo(f"    coverage {cov['coverage_pct']}% "
+               f"({dollars(cov['matched_cents'])} of {dollars(cov['total_cents'])})")
+    # Stated plainly rather than buried: these lines are the source's, and the
+    # source does not always agree with its own subtotals. A reader who thinks
+    # the item totals are exact will over-trust a category breakdown built on
+    # them.
+    click.echo(f"    {s['reconciling']} of {s['comparable']} orders have item "
+               f"lines summing to their subtotal; the rest differ (the export "
+               f"does not restate checkout price changes)")
+    hz = r["horizon"]
+    if hz["has_backlog"]:
+        click.echo(f"    reconcilable back to {hz['earliest']}; "
+                   f"{hz['pre_count']} older charges ({dollars(hz['pre_cents'])}) "
+                   f"have no order record to match on")
+
+
+@walmart.command("status")
+@click.option("--month", default=None, help="YYYY-MM (default: all time)")
+def walmart_status(month: str | None) -> None:
+    """Coverage — what share of Walmart dollars have item detail behind them."""
+    from .connectors.walmart import match as wm_match
+    db.init_schema()
+    with db.connect() as conn:
+        cov = wm_match.coverage(conn, month)
+        hz = wm_match.horizon(conn)
+        last = conn.execute(
+            "SELECT started_at, status, scope, orders_upserted, error_message "
+            "FROM walmart_sync_runs ORDER BY sync_run_id DESC LIMIT 1").fetchone()
+    click.echo(f"Walmart coverage — {month or 'all time'}")
+    click.echo(f"  {cov['coverage_pct']}% of dollars "
+               f"({dollars(cov['matched_cents'])} of {dollars(cov['total_cents'])})")
+    click.echo(f"  {cov['matched_txns']} of {cov['total_txns']} charges explained")
+    # Online and in-store are different problems with different fixes; a single
+    # averaged number says which neither.
+    for name, c in cov["channels"].items():
+        if c["total_cents"]:
+            click.echo(f"    {name:<9} {c['coverage_pct']:>5}%  "
+                       f"({dollars(c['matched_cents'])} of {dollars(c['total_cents'])})")
+    st = cov["split_settlements"]
+    if st["split_orders"]:
+        click.echo(f"  {st['split_orders']} of {st['orders']} matched orders "
+                   f"settled as more than one charge (up to {st['max_parts']})")
+    # Without this line a low percentage is unreadable — it looks like a data
+    # quality problem when it is a window problem.
+    if hz["has_backlog"]:
+        click.echo(f"  reconcilable back to {hz['earliest']} — "
+                   f"{hz['pre_count']} older charges ({dollars(hz['pre_cents'])}) "
+                   f"predate any order record")
+        click.echo("    export a wider date range from Walmart and re-run "
+                   "`budget walmart import` to reach further back")
+    if last:
+        click.echo(f"  last import: {last['started_at']} · {last['status']} · {last['scope']}")
+        if last["error_message"]:
+            click.echo(f"    ! {last['error_message']}")
+    else:
+        click.echo("  last import: never — run `budget walmart import <file.xlsx>`")
+
+
+@walmart.command("match")
+@click.option("--confirm", "confirm_spec", default=None,
+              metavar="ORDER:TXN[,TXN…]",
+              help="attribute one order to a specific SET of bank rows")
+def walmart_match(confirm_spec: str | None) -> None:
+    """Re-run matching, or resolve an ambiguous order by hand.
+
+    Ambiguity is never guessed. With enough small charges in a window several
+    different SETS of bank rows can sum to the same order total, and attributing
+    the wrong basket of items to a charge is worse than leaving it unexplained —
+    so those orders are reported here with every candidate set spelled out, and
+    a human picks.
+
+    An order settles as a set, so a confirmation names a set:
+
+        budget walmart match --confirm 200014750356531:2628,2789
+    """
+    from .connectors.walmart import match as wm_match
+    db.init_schema()
+
+    if confirm_spec:
+        order, _, txn_part = confirm_spec.partition(":")
+        order = order.strip()
+        if not order or not txn_part.strip():
+            raise click.ClickException(
+                "use --confirm ORDER:TXN[,TXN…] — an order settles as a SET of "
+                "bank rows, so name every row that paid for it")
+        try:
+            txn_ids = [int(x) for x in txn_part.split(",") if x.strip()]
+        except ValueError as e:
+            raise click.ClickException(
+                "transaction ids must be whole numbers: "
+                "--confirm ORDER:TXN[,TXN…]") from e
+
+        with db.connect() as conn:
+            # Everything below is checked BEFORE writing, because `match._record`
+            # is an INSERT OR IGNORE against UNIQUE(txn_id): a row already
+            # claimed by another order would be skipped in silence, and the
+            # operator would walk away believing the attribution landed.
+            if not conn.execute("SELECT 1 FROM walmart_orders WHERE order_number=?",
+                                (order,)).fetchone():
+                raise click.ClickException(
+                    f"no Walmart order {order} — check `budget walmart match` "
+                    f"for the ambiguous ones")
+            holes = " OR ".join("txn_id = ?" for _ in txn_ids)
+            found = {r["txn_id"] for r in conn.execute(
+                f"SELECT txn_id FROM transactions WHERE {holes}", txn_ids)}
+            missing = [t for t in txn_ids if t not in found]
+            if missing:
+                raise click.ClickException(
+                    f"no such transaction(s): {', '.join(map(str, missing))}")
+            taken = conn.execute(
+                f"""SELECT txn_id, order_number FROM walmart_matches
+                     WHERE ({holes}) AND order_number <> ?""",
+                (*txn_ids, order)).fetchall()
+            if taken:
+                claims = "; ".join(f"{r['txn_id']} already explains order "
+                                   f"{r['order_number']}" for r in taken)
+                raise click.ClickException(
+                    f"a bank row explains at most one order — {claims}")
+            wm_match.confirm(conn, order, txn_ids)
+        click.echo(f"  ✓ order {order} -> transaction(s) "
+                   f"{', '.join(map(str, txn_ids))}")
+        return
+
+    with db.connect() as conn:
+        r = wm_match.run(conn)
+    click.echo(f"  ✓ matched {r['matched']} "
+               f"({r['exact']} exact, {r['split']} split settlements)")
+    if not r["ambiguous"]:
+        return
+    click.echo(f"\n  {len(r['ambiguous'])} order(s) could not be resolved — "
+               f"more than one set of charges sums to the total:")
+    for a in r["ambiguous"]:
+        click.echo(f"\n  ? order {a['order_number']} · {a['order_placed_date']} · "
+                   f"{dollars(a['amount_cents'])} · {a['channel'] or '—'}")
+        for s in a["solutions"]:
+            ids = ",".join(str(c["txn_id"]) for c in s)
+            rows = " + ".join(f"{c['posted_date']} {dollars(-c['amount_cents'])}"
+                              for c in s)
+            click.echo(f"      {rows}")
+            click.echo(f"        confirm with: budget walmart match "
+                       f"--confirm {a['order_number']}:{ids}")
+
+
+@walmart.command("items")
+@click.option("--month", default=None, help="YYYY-MM (default: all time)")
+def walmart_items(month: str | None) -> None:
+    """What you actually bought, behind the matched Walmart charges."""
+    from .connectors.walmart import match as wm_match
+    db.init_schema()
+    with db.connect() as conn:
+        rows = wm_match.breakdown(conn, month)
+        cov = wm_match.coverage(conn, month)
+    if not rows:
+        click.echo("  no matched Walmart items yet — run "
+                   "`budget walmart import <file.xlsx>`")
+        return
+    click.echo(f"Walmart items — {month or 'all time'}")
+    click.echo(f"  {'DATE':<11} {'AMOUNT':>10}  ITEM")
+    for r in rows:
+        qty = f" x{r['quantity']}" if (r["quantity"] or 1) > 1 else ""
+        title = (r["title"] or "—")[:58]
+        click.echo(f"  {r['posted_date']:<11} "
+                   f"{dollars(r['line_price_cents'] or 0):>10}  {title}{qty}")
+    if cov["coverage_pct"] < 100:
+        click.echo(f"\n  ! {100 - cov['coverage_pct']:.1f}% of Walmart spend is still "
+                   f"unexplained — `budget walmart status`")
+
+
+@walmart.command("unmatched")
+@click.option("--month", default=None, help="YYYY-MM (default: all time)")
+def walmart_unmatched(month: str | None) -> None:
+    """Walmart charges in the ledger with no item detail behind them."""
+    from .connectors.walmart.match import MERCHANT_LIKE
+    db.init_schema()
+    like = " OR ".join("merchant_norm LIKE ?" for _ in MERCHANT_LIKE)
+    where_month = " AND posted_date LIKE ?" if month else ""
+    params = (*MERCHANT_LIKE, *((f"{month}-%",) if month else ()))
+    with db.connect() as conn:
+        rows = conn.execute(
+            f"""SELECT txn_id, posted_date, merchant_norm, amount_cents
+                  FROM transactions
+                 WHERE status='posted' AND amount_cents < 0 AND ({like}){where_month}
+                   AND txn_id NOT IN (SELECT txn_id FROM walmart_matches)
+              ORDER BY amount_cents""", params).fetchall()
+    if not rows:
+        click.echo("  ✓ every Walmart charge has item detail behind it")
+        return
+    click.echo(f"Unexplained Walmart charges — {month or 'all time'}")
+    for r in rows:
+        click.echo(f"  {r['txn_id']:>5}  {r['posted_date']}  "
+                   f"{dollars(r['amount_cents']):>10}  {r['merchant_norm']}")
+
+
+@walmart.command("report")
+@click.option("--since", default=None, help="YYYY-MM-DD (default: all history)")
+@click.option("--until", default=None, help="YYYY-MM-DD")
+def walmart_report(since: str | None, until: str | None) -> None:
+    """Render a PRESS-branded PDF breaking down what was bought at Walmart."""
+    from .connectors.walmart import report as wm_report
+    db.init_schema()
+    try:
+        r = wm_report.render(since, until)
+    except Exception as e:
+        raise click.ClickException(str(e)) from e
+    click.echo(f"  ✓ {r['items']} items across {r['orders']} orders "
+               f"({dollars(r['spent_cents'])})")
+    click.echo(f"  ✓ saved to {r['path']}")
+
+
+# ── online spend (both connectors together) ──────────────────────────────────
+@main.group()
+def online() -> None:
+    """Amazon and Walmart.com together — what online spend actually bought.
+
+    Its own group rather than a subcommand of either connector: this reads both
+    and belongs to neither. The per-merchant reports answer "what did I buy from
+    this shop"; this one answers "what did I buy online", which is a question
+    about the household.
+    """
+
+
+@online.command("report")
+@click.option("--since", default=None, help="YYYY-MM-DD (default: the last 12 months)")
+@click.option("--until", default=None, help="YYYY-MM-DD")
+@click.option("--all", "all_history", is_flag=True,
+              help="every year on record instead of the last 12 months")
+def online_report(since: str | None, until: str | None, all_history: bool) -> None:
+    """Render a PRESS-branded PDF of online spend, by budget category.
+
+    The ledger categorises merchants, so every Walmart.com charge reads as
+    Groceries and every Amazon charge as Shopping. This groups the ITEMS behind
+    those charges into the same categories you budget in, which is the only way
+    to see how much of the grocery bill was not food.
+
+    Covers the last 12 months by default — a year is the window a household
+    reasons about, and it keeps the trend chart to twelve columns.
+    """
+    from .report import online as online_report_mod
+    db.init_schema()
+    try:
+        r = online_report_mod.render(since, until, all_history=all_history)
+    except Exception as e:
+        raise click.ClickException(str(e)) from e
+    click.echo(f"  ✓ {r['items']} items across {r['orders']} orders "
+               f"({dollars(r['spent_cents'])})")
+    click.echo(f"    food {dollars(r['food_cents'])} · "
+               f"everything else {dollars(r['non_food_cents'])}")
+    click.echo(f"  ✓ saved to {r['path']}")
 
 
 if __name__ == "__main__":
