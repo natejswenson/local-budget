@@ -68,7 +68,11 @@ def gather(conn: sqlite3.Connection, since: str | None = None,
                    i.line_price_cents AS line_cents
               FROM matched_orders mo
               JOIN walmart_orders o ON o.order_number = mo.order_number
-              JOIN walmart_items i  ON i.order_number = mo.order_number""", params)]
+              JOIN walmart_items i  ON i.order_number = mo.order_number
+             -- Never bought, so never spend. Cancelled lines stay in the table
+             -- as history but must not reach a category total.
+             WHERE (i.status IS NULL OR LOWER(i.status) NOT IN
+                    ('canceled','cancelled','unavailable'))""", params)]
 
     charges = conn.execute(
         f"""SELECT COUNT(*) n, COALESCE(-SUM(t.amount_cents),0) c

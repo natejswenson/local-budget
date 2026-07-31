@@ -40,6 +40,9 @@ def propose(conn: sqlite3.Connection, txn_id: int) -> dict:
     if txn is None:
         raise NoOrderBehind(f"no transaction {txn_id}")
 
+    # Cancelled and unavailable lines are excluded: they are real history but
+    # they were never paid for, and allocating a share of the charge to them
+    # would take that share away from goods that actually arrived.
     rows = conn.execute(
         """SELECT i.product_id, i.title, i.quantity, i.line_price_cents,
                   i.category AS source_category, o.order_number
@@ -47,6 +50,8 @@ def propose(conn: sqlite3.Connection, txn_id: int) -> dict:
              JOIN walmart_orders o ON o.order_number = m.order_number
              JOIN walmart_items i  ON i.order_number = o.order_number
             WHERE m.txn_id = ?
+              AND (i.status IS NULL OR LOWER(i.status) NOT IN
+                   ('canceled','cancelled','unavailable'))
          ORDER BY i.line_price_cents DESC""",
         (txn_id,)).fetchall()
     if not rows:
