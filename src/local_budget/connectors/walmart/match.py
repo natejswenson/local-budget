@@ -7,11 +7,11 @@ The chain this completes:
 **An order is not a charge.** Amazon publishes its own charge list at the
 granularity the bank posts, so its matcher pairs one charge to one bank row.
 Walmart publishes orders, and an order routinely settles as several partial
-charges it never enumerates. A pattern seen in a real ledger:
+charges it never enumerates. Illustrative, with invented figures:
 
-    2026-06-24  $118.42  ->  one bank row
-    2026-07-01  $164.20  ->  two:  $18.65 + $145.55
-    2026-07-17  $203.60  ->  five: $24.10 + $1.45 + $8.30 + $52.75 + $117.00
+    day 1   $100.00  ->  one bank row
+    day 8   $150.00  ->  two:   $20.00 + $130.00
+    day 20  $200.00  ->  five:  $25.00 + $5.00 + $10.00 + $50.00 + $110.00
 
 So matching is a subset-sum: find the set of unmatched Walmart bank rows near
 the order date that sums to the order total exactly. One-row matches are simply
@@ -21,7 +21,7 @@ before any multi-row combination is allowed to take it.
 **The governing rule is still: never guess.** Subset-sum is far more willing to
 find *an* answer than exact pairing is — with enough small charges in a window,
 several different subsets can hit the same total. So a match is recorded ONLY
-when the solution is UNIQUE. Two ways to sum to $203.60 means we do not know
+when the solution is UNIQUE. Two ways to sum to the same total means we do not know
 which was the order, and a wrong basket of items attributed to a charge is worse
 than an unexplained charge.
 

@@ -93,10 +93,10 @@ def _quantity(value):
     """A line quantity, keeping fractions.
 
     Weighed goods are sold in fractions and the sources say so — half a pound of
-    deli turkey arrives as `0.514`. This used to coerce to `int`, which read that
+    deli meat arrives as `0.514`. This used to coerce to `int`, which read that
     as ZERO: the line kept its price and lost its quantity, so a report could
-    show $5.58 of nothing. Whole numbers still store as ints so the common case
-    reads `2`, not `2.0`.
+    show money spent on nothing. Whole numbers still store as ints so the common
+    case reads `2`, not `2.0`.
     """
     if value in (None, ""):
         return 1

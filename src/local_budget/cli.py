@@ -972,7 +972,7 @@ def walmart_match(confirm_spec: str | None) -> None:
 
     An order settles as a set, so a confirmation names a set:
 
-        budget walmart match --confirm 200014750356531:2628,2789
+        budget walmart match --confirm <ORDER_NUMBER>:<TXN_ID>,<TXN_ID>
     """
     from .connectors.walmart import match as wm_match
     db.init_schema()
