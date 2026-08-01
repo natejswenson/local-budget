@@ -317,7 +317,7 @@ def test_monthly_trend_includes_income(data_dir, tmp_path):
     assert jun["spend_cents"] == 10000 and jun["income_cents"] == 200000
 
 
-def test_insights_over_budget_and_discretionary(data_dir, tmp_path):
+def test_insights_over_budget_and_discretionary(data_dir, tmp_path, clock_july_2026):
     db.init_schema()
     importer.import_file(write_ofx(tmp_path / "stmt.qfx", [
         {"trntype": "DEBIT", "dtposted": "20260603", "amount": "-300.00", "fitid": "D1", "name": "CHIPOTLE"},
@@ -334,7 +334,7 @@ def test_insights_over_budget_and_discretionary(data_dir, tmp_path):
     assert over["amount_cents"] == 20000   # $200 over
 
 
-def test_insights_floor_category_under_target(data_dir, tmp_path):
+def test_insights_floor_category_under_target(data_dir, tmp_path, clock_july_2026):
     # Investments: a floor category — spending LESS than the target is bad.
     db.init_schema()
     categories.mark_floor_category("Investments")
@@ -351,7 +351,7 @@ def test_insights_floor_category_under_target(data_dir, tmp_path):
     assert miss["amount_cents"] == 10000  # $100 short
 
 
-def test_insights_floor_category_at_or_above_target_is_silent(data_dir, tmp_path):
+def test_insights_floor_category_at_or_above_target_is_silent(data_dir, tmp_path, clock_july_2026):
     db.init_schema()
     categories.mark_floor_category("Investments")
     importer.import_file(write_ofx(tmp_path / "stmt.qfx", [
@@ -954,3 +954,32 @@ def test_budget_overview_exposes_onboarded_flag(data_dir):
     assert reports.budget_overview("all")["onboarded"] is False
     db.set_setting("budget_onboarded", "1")
     assert reports.budget_overview("all")["onboarded"] is True
+
+
+def test_budget_window_factor_grows_as_calendar_months_complete(data_dir, tmp_path, monkeypatch):
+    """The "all" budget window covers COMPLETED months, so its whole-month
+    `factor` grows by one every time the calendar rolls over.
+
+    That is deliberate — a monthly limit reviewed across six months is a
+    six-month target — and it is exactly why the insights tests above pin the
+    clock with `clock_july_2026`. Asserting it here keeps the reason visible: if
+    this behaviour ever changes, those pins are wrong too, and this test says so
+    instead of leaving four mysterious frozen dates behind.
+    """
+    db.init_schema()
+    importer.import_file(write_ofx(tmp_path / "stmt.qfx", [
+        {"trntype": "DEBIT", "dtposted": "20260603", "amount": "-200.00",
+         "fitid": "W1", "name": "529 PLAN"}]))
+
+    seen = {}
+    for now, expected in [("2026-07", 1), ("2026-08", 2), ("2026-12", 6)]:
+        monkeypatch.setattr(reports, "current_month", lambda now=now: now)
+        with db.connect() as conn:
+            start, end, factor = reports._budget_window(conn, "all")
+        seen[now] = (start, end, factor)
+        assert factor == expected, f"at {now}: window {start}..{end} gave factor {factor}"
+
+    # …and the window always ends the month BEFORE now, never including the
+    # in-progress month, which is the property the factor depends on.
+    for now, (_start, end, _f) in seen.items():
+        assert end < now, f"window ending {end} must exclude the live month {now}"
