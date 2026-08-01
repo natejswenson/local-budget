@@ -26,7 +26,7 @@
 * { box-sizing: border-box; }
 html { background: var(--paper); }
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, 'Helvetica Neue', Arial, sans-serif;
   color: var(--ink);
   background: var(--paper);
   font-size: 13.5px;
@@ -50,7 +50,7 @@ span.stamp {
   transform: rotate(-4deg);
 }
 span.eyebrow {
-  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-family: ui-monospace, 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Menlo, Consolas, monospace;
   font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.14em;
@@ -58,7 +58,7 @@ span.eyebrow {
 }
 span.byline {
   margin-left: auto;
-  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-family: ui-monospace, 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Menlo, Consolas, monospace;
   font-size: 0.68rem;
   letter-spacing: 0.05em;
   color: var(--dim);
@@ -71,7 +71,7 @@ header.masthead h1 {
   margin: 0.5rem 0 0.2rem;
 }
 p.standfirst {
-  font-family: 'New York', ui-serif, Georgia, 'Times New Roman', serif;
+  font-family: 'New York', ui-serif, Georgia, 'Iowan Old Style', 'Times New Roman', serif;
   font-style: italic;
   color: var(--dim);
   font-size: 1.02rem;
@@ -106,7 +106,7 @@ div.stat.focal .value { color: var(--accent); }
 div.stat .label {
   display: block;
   margin-top: 0.25rem;
-  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-family: ui-monospace, 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Menlo, Consolas, monospace;
   font-size: 0.6rem;
   letter-spacing: 0.11em;
   text-transform: uppercase;
@@ -116,7 +116,7 @@ div.stat .label {
 /* Section headings — mono, tracked caps, hairline rule. No emoji: PRESS has
    none anywhere in it. */
 h3.block-title {
-  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-family: ui-monospace, 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Menlo, Consolas, monospace;
   font-size: 0.68rem;
   font-weight: 700;
   letter-spacing: 0.14em;
@@ -174,14 +174,14 @@ span.clip {
   right: -0.72rem;
   top: 50%;
   transform: translateY(-50%);
-  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-family: ui-monospace, 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Menlo, Consolas, monospace;
   font-size: 0.62rem;
   font-weight: 700;
   color: var(--ink);
   line-height: 1;
 }
 div.sb-value {
-  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-family: ui-monospace, 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Menlo, Consolas, monospace;
   font-size: 0.68rem;
   color: var(--dim);
   text-align: right;
@@ -193,7 +193,7 @@ div.sb-value {
 table.data {
   width: 100%;
   border-collapse: collapse;
-  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-family: ui-monospace, 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Menlo, Consolas, monospace;
   font-size: 0.75rem;
   margin: 0.5rem 0 0;
 }
@@ -222,7 +222,7 @@ div.legend .key {
   display: inline-flex;
   align-items: center;
   gap: 0.35em;
-  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-family: ui-monospace, 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Menlo, Consolas, monospace;
   font-size: 0.63rem;
   letter-spacing: 0.05em;
   color: var(--ink);
@@ -230,18 +230,18 @@ div.legend .key {
 div.legend .key i { width: 0.7rem; height: 0.7rem; display: inline-block; }
 
 svg { display: block; max-width: 100%; height: auto; }
-text.axis { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 9px; fill: var(--dim); }
+text.axis { font-family: ui-monospace, 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Menlo, Consolas, monospace; font-size: 9px; fill: var(--dim); }
 text.axis.now { fill: var(--accent); font-weight: 700; }
 
 p.caption {
-  font-family: 'New York', ui-serif, Georgia, 'Times New Roman', serif;
+  font-family: 'New York', ui-serif, Georgia, 'Iowan Old Style', 'Times New Roman', serif;
   font-style: italic;
   color: var(--dim);
   font-size: 0.85rem;
   margin: 0.5rem 0 0;
 }
 p.empty {
-  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-family: ui-monospace, 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Menlo, Consolas, monospace;
   font-size: 0.7rem;
   letter-spacing: 0.04em;
   color: var(--dim);
@@ -254,7 +254,7 @@ footer.provenance {
   border-top: 2px solid var(--rule);
   padding-top: 0.8rem;
   margin-top: 2.6rem;
-  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-family: ui-monospace, 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Menlo, Consolas, monospace;
   font-size: 0.64rem;
   line-height: 1.7;
   color: var(--dim);
