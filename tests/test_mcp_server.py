@@ -140,7 +140,7 @@ def test_query_transactions_month_wins_when_days_also_given(data_dir):
     assert rows[0]["posted_date"] == "2026-07-15"
 
 
-def test_insights_under_target_rendered_separately_from_ways_to_save(data_dir, tmp_path):
+def test_insights_under_target_rendered_separately_from_ways_to_save(data_dir, tmp_path, clock_july_2026):
     """S1 regression: a floor category (e.g. Investments) short of its target must
     NOT render under '## Ways to save' with plain '- label: $amount' — that reads
     as 'cut this' when reports.insights() actually means 'add more'. It must render
