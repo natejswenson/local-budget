@@ -147,6 +147,70 @@ CREATE TABLE IF NOT EXISTS normalize_changes (
     created_at     TEXT
 );
 
+-- Host-only connector metadata. Secrets remain outside the ledger.
+CREATE TABLE IF NOT EXISTS plaid_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS plaid_items (
+ item_id INTEGER PRIMARY KEY,
+ environment TEXT NOT NULL CHECK(environment IN ('sandbox','production')),
+ provider_item_id TEXT NOT NULL, credential_ref TEXT NOT NULL,
+ user_handle TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'disabled', cursor TEXT,
+ mapping_generation INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
+ last_attempt_at TEXT, last_commit_at TEXT, provider_updated_at TEXT,
+ readiness TEXT, safe_error_code TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS plaid_item_identity ON plaid_items(environment,provider_item_id);
+CREATE TABLE IF NOT EXISTS plaid_link_sessions (
+ session_id TEXT PRIMARY KEY, environment TEXT NOT NULL CHECK(environment IN ('sandbox','production')),
+ credential_ref TEXT NOT NULL, expires_at TEXT NOT NULL, mode TEXT NOT NULL DEFAULT 'link',
+ item_id INTEGER REFERENCES plaid_items(item_id) ON DELETE RESTRICT,
+ completed INTEGER NOT NULL DEFAULT 0 CHECK(completed IN (0,1)),
+ created_at TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending'
+);
+CREATE TABLE IF NOT EXISTS plaid_accounts (
+ item_id INTEGER NOT NULL REFERENCES plaid_items(item_id) ON DELETE RESTRICT,
+ provider_account_id TEXT NOT NULL,
+ local_account_id INTEGER REFERENCES accounts(account_id) ON DELETE RESTRICT,
+ currency TEXT NOT NULL DEFAULT 'USD', account_type TEXT, mask TEXT,
+ enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)), start_date TEXT,
+ history_approved INTEGER NOT NULL DEFAULT 0 CHECK(history_approved IN (0,1)),
+ PRIMARY KEY(item_id,provider_account_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS plaid_active_account ON plaid_accounts(local_account_id) WHERE enabled=1;
+CREATE TABLE IF NOT EXISTS plaid_transactions (
+ item_id INTEGER NOT NULL, transaction_id TEXT NOT NULL, provider_account_id TEXT NOT NULL,
+ local_txn_id INTEGER REFERENCES transactions(txn_id) ON DELETE RESTRICT,
+ active_owner INTEGER NOT NULL DEFAULT 0 CHECK(active_owner IN (0,1)),
+ disposition TEXT NOT NULL DEFAULT 'unreviewed', posted_date TEXT, amount_cents INTEGER,
+ merchant_norm TEXT, payee TEXT, pending INTEGER CHECK(pending IN (0,1)), currency TEXT,
+ review_required INTEGER NOT NULL DEFAULT 0 CHECK(review_required IN (0,1)),
+ split_needs_review INTEGER NOT NULL DEFAULT 0 CHECK(split_needs_review IN (0,1)),
+ PRIMARY KEY(item_id,transaction_id),
+ FOREIGN KEY(item_id,provider_account_id) REFERENCES plaid_accounts(item_id,provider_account_id) ON DELETE RESTRICT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS plaid_active_txn ON plaid_transactions(local_txn_id) WHERE active_owner=1 AND local_txn_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS plaid_sync_runs (
+ run_id INTEGER PRIMARY KEY, item_id INTEGER NOT NULL REFERENCES plaid_items(item_id) ON DELETE RESTRICT,
+ started_at TEXT NOT NULL, completed_at TEXT, outcome TEXT NOT NULL DEFAULT 'running',
+ inserted INTEGER NOT NULL DEFAULT 0, updated INTEGER NOT NULL DEFAULT 0,
+ removed INTEGER NOT NULL DEFAULT 0, review_count INTEGER NOT NULL DEFAULT 0,
+ safe_error_code TEXT, request_id TEXT, readiness TEXT
+);
+CREATE TABLE IF NOT EXISTS plaid_changes (
+ change_id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL REFERENCES plaid_sync_runs(run_id) ON DELETE RESTRICT,
+ local_txn_id INTEGER REFERENCES transactions(txn_id) ON DELETE RESTRICT,
+ event_kind TEXT NOT NULL, before_facts TEXT, after_facts TEXT,
+ archived_splits TEXT, archived_matches TEXT, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS plaid_status_public (
+ local_account_id INTEGER PRIMARY KEY REFERENCES accounts(account_id) ON DELETE RESTRICT,
+ state TEXT NOT NULL DEFAULT 'disabled' CHECK(state IN (
+ 'disabled','awaiting_mapping','awaiting_history_review','initializing','healthy',
+ 'temporary_error','reconnect_required','credential_locked','credential_missing',
+ 'link_recovery_required','revocation_pending','revoked')),
+ last_attempt_at TEXT, last_commit_at TEXT, provider_updated_at TEXT, readiness TEXT,
+ review_count INTEGER NOT NULL DEFAULT 0, safe_error_code TEXT
+);
+
 -- ── Amazon connector ────────────────────────────────────────────────────────
 -- Item-level detail behind an otherwise opaque `AMAZON MKTPL` bank charge.
 -- These are IMPORTED FACTS, on the same footing as `transactions`: written by
@@ -441,6 +505,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE category_rules ADD COLUMN subcategory TEXT")
     if "subcategory" not in cols("budgets"):
         conn.execute("ALTER TABLE budgets ADD COLUMN subcategory TEXT")
+    if "invalidated_reason" not in cols("normalize_changes"):
+        conn.execute("ALTER TABLE normalize_changes ADD COLUMN invalidated_reason TEXT")
     # Intake provenance: the import_runs row that inserted this txn (for undo).
     if "import_run_id" not in cols("transactions"):
         conn.execute("ALTER TABLE transactions ADD COLUMN import_run_id INTEGER")
@@ -529,6 +595,10 @@ _AGENT_WRITE_COLS = {("transactions", "category"),
 # split is a DERIVED judgment about an imported fact, not the fact itself. The
 # bank row stays immutable; only its apportionment is editable.
 _AGENT_WRITE_TABLES = {"category_rules", "budgets", "settings", "txn_splits"}
+_AGENT_PRIVATE_TABLES = frozenset({
+    'plaid_meta', 'plaid_items', 'plaid_link_sessions', 'plaid_accounts',
+    'plaid_transactions', 'plaid_sync_runs', 'plaid_changes',
+})
 _AGENT_READ_DENY = {("transactions", "raw_ofx"), ("transactions", "payee"),
                     ("transactions", "memo"), ("accounts", "acct_hash"),
                     ("inbox_files", "filename"), ("import_runs", "source_name"),
@@ -560,6 +630,8 @@ def _agent_authorizer(write: bool):
         if action in (sqlite3.SQLITE_SELECT, sqlite3.SQLITE_FUNCTION):
             return sqlite3.SQLITE_OK
         if action == sqlite3.SQLITE_READ:
+            if arg1 in _AGENT_PRIVATE_TABLES:
+                return sqlite3.SQLITE_DENY
             return sqlite3.SQLITE_DENY if (arg1, arg2) in _AGENT_READ_DENY else sqlite3.SQLITE_OK
         if action == sqlite3.SQLITE_UPDATE:
             if not write:
@@ -662,6 +734,9 @@ def init_schema(db_path: Path | None = None) -> None:
         _drop_stale_walmart_tables(conn)
         conn.executescript(SCHEMA)
         _migrate(conn)
+        for key in ('ledger_namespace', 'user_handle'):
+            conn.execute('INSERT OR IGNORE INTO plaid_meta(key,value) VALUES(?,?)',
+                         (key, secrets.token_hex(16)))
         from . import merchants   # lazy: avoid import cycle (merchants imports db)
         merchants.seed_builtin_aliases(conn)
 
