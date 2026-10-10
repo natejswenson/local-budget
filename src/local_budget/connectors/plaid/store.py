@@ -40,3 +40,25 @@ def namespace(conn: sqlite3.Connection) -> str:
 def user_handle(conn: sqlite3.Connection) -> str:
     """Stable opaque user identity shared by links in this ledger."""
     return conn.execute("SELECT value FROM plaid_meta WHERE key='user_handle'").fetchone()[0]
+
+
+def add_link_session(conn: sqlite3.Connection, *, session_id: str, mode: str,
+                     item_id: int | None, credential_ref: str, expires_at: str,
+                     environment: str | None = None) -> None:
+    """Persist a nonsecret receipt; new links explicitly bind their environment."""
+    if mode not in {'link', 'update'} or (mode == 'update') != (item_id is not None):
+        raise ValueError('invalid_session')
+    if item_id is not None:
+        item_environment = item(conn, item_id)['environment']
+        if environment is not None and environment != item_environment:
+            raise ValueError('invalid_environment')
+        environment = item_environment
+    if environment not in {'sandbox', 'production'}:
+        raise ValueError('invalid_environment')
+    conn.execute(
+        'INSERT INTO plaid_link_sessions '
+        '(session_id,environment,mode,item_id,credential_ref,expires_at,created_at) '
+        'VALUES(?,?,?,?,?,?,?)',
+        (session_id, environment, mode, item_id, credential_ref, expires_at,
+         datetime.now(timezone.utc).isoformat(timespec='seconds')),
+    )

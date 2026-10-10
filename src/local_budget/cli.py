@@ -1149,5 +1149,10 @@ def online_report(since: str | None, until: str | None, all_history: bool) -> No
     click.echo(f"  ✓ saved to {r['path']}")
 
 
+from .connectors.plaid.cli import plaid
+
+main.add_command(plaid)
+
+
 if __name__ == "__main__":
     main()
