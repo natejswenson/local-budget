@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import time
 from datetime import date
@@ -64,16 +65,21 @@ def _reject_constant(value: str):
 
 
 class PlaidClient:
-    """One lifetime shares retries, bytes and a five-minute operation deadline."""
+    """One lifetime shares retries, bytes and a bounded operation deadline."""
 
-    def __init__(self, client_id: str, secret: str, environment: str, *, transport=None):
+    def __init__(self, client_id: str, secret: str, environment: str, *, transport=None,
+                 deadline: float | None = None):
         if environment not in HOSTS:
             raise PlaidError('INVALID_ENVIRONMENT')
+        now = _monotonic()
+        if deadline is not None and (type(deadline) not in (int, float)
+                                     or not math.isfinite(deadline) or deadline <= now):
+            raise PlaidError('INVALID_REQUEST')
+        self._deadline = now + 300 if deadline is None else min(deadline, now + 900)
         self.environment = environment
         self._credentials = {'client_id': client_id, 'secret': secret}
         self.bytes_received = 0
         self._retries_remaining = 3
-        self._deadline = _monotonic() + 300
         self._http = httpx.Client(transport=transport, verify=True, trust_env=False,
                                   follow_redirects=False, headers={'Plaid-Version': '2020-09-14'},
                                   timeout=httpx.Timeout(30, connect=10, pool=10, write=10))

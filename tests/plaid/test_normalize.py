@@ -46,3 +46,13 @@ def test_hostile_payee_is_bounded_redacted_and_without_controls():
     assert len(fact.payee) <= 200
     assert '\x00' not in fact.payee and '\x1b' not in fact.payee
     assert '4111' not in fact.payee
+
+
+@pytest.mark.parametrize('missing', ['transaction_id', 'account_id'])
+def test_missing_identifier_keys_fail_safely(missing):
+    transaction = row()
+    del transaction[missing]
+    with pytest.raises(PlaidError) as caught:
+        normalize_txn(transaction)
+    assert caught.value.code == 'INVALID_TRANSACTION'
+    assert caught.value.__cause__ is None and caught.value.__context__ is None

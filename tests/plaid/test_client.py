@@ -251,3 +251,68 @@ def test_deadline_checked_after_json_conversion(monkeypatch):
         with pytest.raises(PlaidError) as caught:
             api.call('/accounts/get', {}, deadline=1.0)
     assert caught.value.code == 'DEADLINE_EXCEEDED'
+
+
+def test_explicit_link_deadline_keeps_same_client_alive_after_five_minutes(monkeypatch):
+    now = [10.0]
+    monkeypatch.setattr(module, '_monotonic', lambda: now[0])
+    calls = []
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(503 if len(calls) in (1, 4, 5, 6) else 200, content=b'{}')
+    with PlaidClient('client', 'secret', 'sandbox', deadline=910.0,
+                     transport=httpx.MockTransport(handler)) as api:
+        api.call('/link/token/get', {})
+        now[0] = 311.0
+        assert api.call('/link/token/get', {}) == {}
+        assert api.bytes_received == 6
+        with pytest.raises(PlaidError):
+            api.call('/link/token/get', {})
+        assert len(calls) == 6 and api.bytes_received == 12
+        now[0] = 911.0
+        with pytest.raises(PlaidError) as caught:
+            api.call('/link/token/get', {})
+    assert caught.value.code == 'DEADLINE_EXCEEDED' and len(calls) == 6
+
+
+def test_call_deadline_only_shortens_explicit_operation_deadline(monkeypatch):
+    now = [10.0]
+    monkeypatch.setattr(module, '_monotonic', lambda: now[0])
+    calls = []
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, content=b'{}')
+    with PlaidClient('client', 'secret', 'sandbox', deadline=910.0,
+                     transport=httpx.MockTransport(handler)) as api:
+        now[0] = 400.0
+        with pytest.raises(PlaidError):
+            api.call('/link/token/get', {}, deadline=399.0)
+        assert api.call('/link/token/get', {}, deadline=600.0) == {}
+        now[0] = 911.0
+        with pytest.raises(PlaidError):
+            api.call('/link/token/get', {}, deadline=1200.0)
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize('bound', [float('nan'), float('inf'), float('-inf'),
+                                 'SECRET_SENTINEL', True, 9.0, 10.0])
+def test_invalid_constructor_deadline_is_safe(monkeypatch, bound):
+    monkeypatch.setattr(module, '_monotonic', lambda: 10.0)
+    with pytest.raises(PlaidError) as caught:
+        PlaidClient('client', 'secret', 'sandbox', deadline=bound,
+                    transport=httpx.MockTransport(lambda request: pytest.fail('invalid request')))
+    assert caught.value.code == 'INVALID_REQUEST'
+    assert 'SENTINEL' not in repr(caught.value)
+
+
+def test_explicit_operation_deadline_is_capped_to_fifteen_minutes(monkeypatch):
+    now = [10.0]
+    monkeypatch.setattr(module, '_monotonic', lambda: now[0])
+    with PlaidClient('client', 'secret', 'sandbox', deadline=10000.0,
+                    transport=httpx.MockTransport(lambda request: httpx.Response(200, content=b'{}'))) as api:
+        now[0] = 909.0
+        assert api.call('/link/token/get', {}) == {}
+        now[0] = 910.0
+        with pytest.raises(PlaidError) as caught:
+            api.call('/link/token/get', {})
+    assert caught.value.code == 'DEADLINE_EXCEEDED'
