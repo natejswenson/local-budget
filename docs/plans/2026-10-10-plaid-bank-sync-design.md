@@ -2,7 +2,7 @@
 
 Date: 2026-10-10
 
-Status: Draft for user review
+Status: Accepted for implementation planning on 2026-10-10
 
 Scope: Single-user macOS host connector for continued bank transaction updates
 
