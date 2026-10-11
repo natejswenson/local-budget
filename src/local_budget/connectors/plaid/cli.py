@@ -149,3 +149,27 @@ def reconnect(connection):
         except KeyError:
             raise click.ClickException('invalid_session') from None
     _run(item['environment'], item=connection)
+
+
+@plaid.command(name='map')
+@click.argument('connection', type=click.IntRange(1))
+@click.argument('provider_account')
+@click.option('--local-account', type=click.IntRange(1), required=True)
+@click.option('--start-date', required=True)
+def map_command(connection, provider_account, local_account, start_date):
+    """Map a discovered account with an inclusive date after reviewed statements."""
+    from .locks import item_locks
+
+    _host()
+    path = db.get_db_path()
+    try:
+        with item_locks(path, [connection]) as acquired:
+            if not acquired:
+                raise click.ClickException('item_busy')
+            with db.connect(path) as conn:
+                conn.execute('BEGIN IMMEDIATE')
+                store.map_account(conn, item_id=connection, provider_account_id=provider_account,
+                                  local_account_id=local_account, currency='USD', start_date=start_date)
+    except ValueError as error:
+        raise click.ClickException(str(error)) from None
+    click.echo('Mapping saved disabled; preview and activate after reviewing history.')
