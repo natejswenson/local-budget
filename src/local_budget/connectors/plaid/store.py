@@ -132,6 +132,15 @@ def create_local_account(conn: sqlite3.Connection, *, item_id: int, provider_acc
     return conn.execute('SELECT account_id FROM accounts WHERE acct_hash=?', (account_hash,)).fetchone()[0]
 
 
+def _assert_account_type(conn: sqlite3.Connection, local_account_id: int, provider_type: str) -> None:
+    local = conn.execute('SELECT acct_type FROM accounts WHERE account_id=?', (local_account_id,)).fetchone()
+    local_type = (local['acct_type'] or '').lower() if local else ''
+    if local_type in {'creditcard', 'card'}:
+        local_type = 'credit'
+    if local_type != provider_type:
+        raise ValueError('account_type_mismatch')
+
+
 def map_account(conn: sqlite3.Connection, *, item_id: int, provider_account_id: str,
                 local_account_id: int, currency: str, start_date: str) -> None:
     """Set an explicitly supplied inclusive boundary; always disable until review."""
@@ -144,14 +153,9 @@ def map_account(conn: sqlite3.Connection, *, item_id: int, provider_account_id: 
     except (ValueError, TypeError):
         raise ValueError('invalid_start_date') from None
     account = _account(conn, item_id, provider_account_id)
-    local = conn.execute('SELECT acct_type FROM accounts WHERE account_id=?', (local_account_id,)).fetchone()
     if currency != 'USD' or account['currency'] != currency or account['account_type'] is None:
         raise ValueError('unsupported_account')
-    local_type = (local['acct_type'] or '').lower() if local else ''
-    if local_type in {'creditcard', 'card'}:
-        local_type = 'credit'
-    if local_type != account['account_type']:
-        raise ValueError('account_type_mismatch')
+    _assert_account_type(conn, local_account_id, account['account_type'])
     if conn.execute('SELECT 1 FROM plaid_accounts WHERE local_account_id=? AND enabled=1 '
                     'AND NOT (item_id=? AND provider_account_id=?)',
                     (local_account_id, item_id, provider_account_id)).fetchone():
@@ -227,6 +231,7 @@ def enable_account(conn: sqlite3.Connection, *, item_id: int, provider_account_i
     account = _account(conn, item_id, provider_account_id)
     if account['local_account_id'] is None or account['start_date'] is None or account['currency'] != 'USD' or account['account_type'] is None:
         raise ValueError('unmapped_account')
+    _assert_account_type(conn, account['local_account_id'], account['account_type'])
     review = preview(conn, item_id, batch)
     if any(r['candidate_txn_ids'] for r in review['transactions'] if r['provider_account_id'] == provider_account_id):
         raise ValueError('unresolved_overlap')

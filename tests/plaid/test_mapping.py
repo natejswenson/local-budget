@@ -187,3 +187,16 @@ def test_preview_event_replay_and_returned_coverage(plaid_db, seed_item):
         assert review['incoming_total_cents'] == -2000
         assert review['returned_coverage'] == {'first_date': '2026-10-01', 'last_date': '2026-10-01'}
         assert len(review['transactions']) == 1
+
+
+def test_activation_rejects_rediscovered_incompatible_type(plaid_db, seed_item):
+    item = seed_item()
+    with db.connect(plaid_db) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        mapped(conn, item)
+        discovery(conn, item, subtype='savings')
+        generation = store.item(conn, item)['mapping_generation']
+        with pytest.raises(ValueError, match='account_type_mismatch'):
+            store.enable_account(conn, item_id=item, provider_account_id='a1',
+                                 reviewed_generation=generation, batch=batch())
+        assert conn.execute('SELECT enabled FROM plaid_accounts').fetchone()[0] == 0

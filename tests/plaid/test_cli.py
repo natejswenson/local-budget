@@ -23,7 +23,7 @@ def test_linux_commands_fail_before_native_import(monkeypatch):
 def test_setup_saves_verified_secret_separately(plaid_db, monkeypatch):
     from local_budget.connectors.plaid import cli, credentials, store
     from local_budget import db, paths
-    from test_link import Vault
+    from .test_link import Vault
     vault = Vault()
     monkeypatch.setattr(cli.sys, 'platform', 'darwin')
     monkeypatch.setattr(cli, 'KeychainCredentials', lambda namespace, environment: vault)
@@ -44,7 +44,7 @@ def test_link_poll_uses_one_client_and_resume_never_creates(plaid_db, monkeypatc
     import httpx
     from local_budget.connectors.plaid import cli, link
     from local_budget import db
-    from test_link import Vault, NOW
+    from .test_link import Vault, NOW
     vault = Vault()
     requests = []
     clock = [NOW]

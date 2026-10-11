@@ -5,7 +5,7 @@ import stat
 
 def hold(path, acquired, release):
     from local_budget.connectors.plaid import locks
-    with locks.item_locks(path, [2, 1, 2]) as success:
+    with locks.item_locks(path, [3]) as success:
         acquired.set() if success else None
         release.wait(5)
 
@@ -18,9 +18,9 @@ def test_process_contention_releases_partial_locks(plaid_db):
     process.start()
     try:
         assert acquired.wait(5)
-        with locks.item_locks(plaid_db, [3, 2]) as success:
+        with locks.item_locks(plaid_db, [2, 3]) as success:
             assert not success
-        with locks.item_locks(plaid_db, [3]) as success:
+        with locks.item_locks(plaid_db, [2]) as success:
             assert success
     finally:
         release.set()
