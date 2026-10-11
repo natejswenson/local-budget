@@ -258,3 +258,40 @@ def test_partial_transfer_can_be_reviewed_again_and_preserves_approval(plaid_db,
         assert conn.execute('SELECT disposition FROM plaid_transactions WHERE item_id=? AND transaction_id=?', (new, 'new-1')).fetchone()[0] == 'adopted'
         assert conn.execute('SELECT status FROM transactions WHERE txn_id=?', (tids[0],)).fetchone()[0] == 'posted'
         assert conn.execute('SELECT COUNT(*) FROM transactions').fetchone()[0] == 2
+
+
+def test_rotation_cannot_resume_after_confirmed_disconnect_cleanup(plaid_db, seed_item):
+    item = seed_item()
+    enabled(plaid_db, item)
+    apply(plaid_db, item, ('added', fact('owned')))
+    old_ref = current(plaid_db, item)['credential_ref']
+    vault = Vault(old_ref)
+    vault.fail_delete = True
+    client = Client({'new_access_token': 'FABRICATED_NEW'})
+    assert rotate_token(plaid_db, item, client, vault) == 'cleanup_needed'
+    new_ref = current(plaid_db, item)['credential_ref']
+    client.reply = {'request_id': 'safe'}
+    assert disconnect(plaid_db, item, client, vault) == 'cleanup_needed'
+    before = current(plaid_db, item)
+    assert before['safe_error_code'] == 'removal_confirmed'
+    with db.connect(plaid_db) as conn:
+        receipt = dict(conn.execute('SELECT * FROM plaid_rotation_receipts WHERE item_id=?', (item,)).fetchone())
+        assert receipt['state'] == 'switched'
+        assert conn.execute('SELECT enabled FROM plaid_accounts WHERE item_id=?', (item,)).fetchone()[0] == 0
+    vault.fail_delete = False
+    calls = list(client.calls)
+    assert rotate_token(plaid_db, item, client, vault) == 'cleanup_needed'
+    assert current(plaid_db, item) == before
+    assert vault.deleted == []
+    assert client.calls == calls
+    with db.connect(plaid_db) as conn:
+        assert dict(conn.execute('SELECT * FROM plaid_rotation_receipts WHERE item_id=?', (item,)).fetchone()) == receipt
+        assert conn.execute('SELECT enabled FROM plaid_accounts WHERE item_id=?', (item,)).fetchone()[0] == 0
+        assert conn.execute('SELECT amount_cents,status FROM transactions').fetchone()[:] == (-1200, 'posted')
+    assert before['credential_ref'] == new_ref
+    assert disconnect(plaid_db, item, client, vault) == 'disconnected'
+    assert client.calls == calls == ['/item/access_token/invalidate', '/item/remove']
+    assert set(vault.deleted) == {old_ref, new_ref}
+    with db.connect(plaid_db) as conn:
+        assert conn.execute('SELECT COUNT(*) FROM plaid_rotation_receipts').fetchone()[0] == 0
+        assert conn.execute('SELECT enabled FROM plaid_accounts WHERE item_id=?', (item,)).fetchone()[0] == 0

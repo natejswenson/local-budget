@@ -109,7 +109,10 @@ def rotate_token(db_path: Path, item_id: int, client: PlaidClient, vault: Keycha
                 store.set_lifecycle(conn, item_id, 'recovery_required', safe_error_code='rotation_pending')
             else:
                 receipt = dict(row)
-                if current['state'] in {'disconnect_pending', 'disconnected', 'replaced'}:
+                # Confirmed removal owns cleanup, even with an old rotation receipt.
+                if (current['state'] in {'disconnect_pending', 'disconnected', 'replaced'}
+                        or (current['state'] == 'cleanup_needed'
+                            and current['safe_error_code'] == 'removal_confirmed')):
                     return current['state']
         try:
             if new_request:
