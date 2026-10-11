@@ -37,6 +37,7 @@ _EXPECTED_TOOLS = {
     "mark_floor_category", "unmark_floor_category",
     "set_budget_limit", "clear_budget_limit", "set_expected_income", "split_subscriptions",
     "save_brief",
+    "budget_bank_sync_status",
     # read (Phase 4)
     "budget_overview", "income_by_source", "income_transactions", "subcategory_breakdown",
     "insights", "monthly_trend", "review_queue", "open_conflicts",

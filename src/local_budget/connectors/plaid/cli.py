@@ -389,7 +389,15 @@ def sync_command(connection, all_items, non_interactive, as_json):
     if (connection is None) == (not all_items):
         raise click.UsageError('Choose a connection or --all')
     with db.connect() as conn:
-        ids = [r[0] for r in conn.execute("SELECT DISTINCT i.item_id FROM plaid_items i JOIN plaid_accounts a USING(item_id) WHERE a.enabled=1 AND a.history_approved=1 AND i.state IN ('disabled','active') ORDER BY i.item_id")] if all_items else [connection]
+        ids = [connection]
+        if all_items:
+            ids = [r[0] for r in conn.execute(
+                "SELECT DISTINCT i.item_id FROM plaid_items i JOIN plaid_accounts a USING(item_id) "
+                "WHERE a.enabled=1 AND a.history_approved=1 AND "
+                "(i.state IN ('disabled','active') OR (i.state='reconnect_required' AND EXISTS "
+                "(SELECT 1 FROM plaid_link_sessions l WHERE l.item_id=i.item_id AND l.mode='update' "
+                "AND l.completed=1 AND l.state='completed' AND (i.last_attempt_at IS NULL OR "
+                "julianday(l.created_at)>=julianday(i.last_attempt_at))))) ORDER BY i.item_id")]
     results = []
     for item_id in ids:
         try:
@@ -411,7 +419,7 @@ def sync_command(connection, all_items, non_interactive, as_json):
     else:
         for row in results:
             click.echo(f"Connection {row['connection']}: {row['outcome']}")
-    if any(row['outcome'] == 'failed' for row in results):
+    if any(row['outcome'] in {'failed', 'reconnect_required', 'awaiting_history_review'} for row in results):
         raise click.exceptions.Exit(1)
 
 
@@ -607,3 +615,22 @@ def replace_connection(old, new):
     except ValueError as error:
         safe = str(error) if str(error) in {'stale_review', 'stale_generation', 'invalid_replacement', 'duplicate_match', 'active_source', 'account_type_mismatch'} else 'invalid_review'
         raise click.ClickException(safe) from None
+
+
+@plaid.command(name='status')
+@click.option('--json', 'as_json', is_flag=True)
+def status(as_json):
+    """Read safe local connection health without contacting the bank."""
+    import json
+    from ... import reports
+    rows = reports.bank_sync_status()
+    if as_json:
+        click.echo(json.dumps(rows))
+    else:
+        for row in rows:
+            click.echo(f"Account {row['local_account_id']}: {row['state']}; "
+                       f"history readiness: {row['readiness'] or 'unknown'}; stale: {row['stale']}; "
+                       f"local attempt: {row['last_attempt_at'] or 'unavailable'}; "
+                       f"committed sync: {row['last_commit_at'] or 'unavailable'}; "
+                       f"provider update: {row['provider_updated_at'] or 'unavailable'}; "
+                       f"reviews: {row['review_count']}")

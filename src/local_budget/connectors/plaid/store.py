@@ -311,6 +311,112 @@ def assert_file_import_allowed(conn: sqlite3.Connection, rows: list[tuple[int, s
             raise ProviderOwnershipError('source_overlap')
 
 
+def owns_public_status(conn, item_id: int, local_account_id: int) -> bool:
+    """A disabled/retired alternative cannot replace the enabled owner's health."""
+    return not conn.execute('SELECT 1 FROM plaid_accounts WHERE local_account_id=? '
+                            'AND enabled=1 AND item_id<>?',
+                            (local_account_id, item_id)).fetchone()
+
+
+def reconnect_completed(conn, current: dict) -> bool:
+    return conn.execute("SELECT 1 FROM plaid_link_sessions WHERE item_id=? "
+                        "AND mode='update' AND completed=1 AND state='completed' "
+                        "AND (? IS NULL OR julianday(created_at)>=julianday(?)) LIMIT 1",
+                        (current['item_id'], current['last_attempt_at'],
+                         current['last_attempt_at'])).fetchone() is not None
+
+
+def validated_health_accounts(current, item_response, accounts_response):
+    """Validate complete matching responses before discovery or fetching deltas."""
+    from .client import PlaidError
+
+    for response in (item_response, accounts_response):
+        provider_item = response.get('item') if isinstance(response, dict) else None
+        if not isinstance(provider_item, dict) or provider_item.get('item_id') != current['provider_item_id']:
+            raise PlaidError('INVALID_RESPONSE')
+        if provider_item.get('error') is not None:
+            error = provider_item['error']
+            raise PlaidError(error.get('error_code') if isinstance(error, dict) else 'PROVIDER_ERROR')
+    accounts = accounts_response.get('accounts')
+    if not isinstance(accounts, list):
+        raise PlaidError('INVALID_RESPONSE')
+    ids = set()
+    for account in accounts:
+        if (not isinstance(account, dict) or not isinstance(account.get('account_id'), str)
+                or not account['account_id'] or account['account_id'] in ids
+                or not isinstance(account.get('balances'), dict)):
+            raise PlaidError('INVALID_RESPONSE')
+        ids.add(account['account_id'])
+    return accounts
+
+
+def health_allows_sync(conn, current, item_response, accounts_response) -> bool:
+    accounts = validated_health_accounts(current, item_response, accounts_response)
+    if current['state'] == 'reconnect_required' and not reconnect_completed(conn, current):
+        return False
+    known = {r['provider_account_id']: dict(r) for r in conn.execute(
+        'SELECT * FROM plaid_accounts WHERE item_id=? AND enabled=1 AND history_approved=1',
+        (current['item_id'],))}
+    for account in accounts:
+        old = known.get(account['account_id'])
+        account_type = (account.get('subtype') if account.get('type') == 'depository'
+                        else 'credit' if account.get('type') == 'credit' else None)
+        if (old and account['balances'].get('iso_currency_code') == old['currency']
+                and account_type == old['account_type']):
+            return True
+    return False
+
+
+def refresh_item_health(conn, *, item_id: int, item_response: dict,
+                        accounts_response: dict, now: datetime) -> None:
+    """Apply complete successful health under Item/intake locks and immediate.
+
+    Missing accounts in a validated complete /accounts/get list revoke access;
+    transaction absence never does. Newly discovered accounts remain disabled.
+    """
+    from ...reports import _health_timestamp
+
+    _require_transaction(conn)
+    current = item(conn, item_id)
+    accounts = validated_health_accounts(current, item_response, accounts_response)
+    ids = {a['account_id'] for a in accounts}
+    # Never change mappings or eligibility in recovery/terminal lifecycle states.
+    if current['state'] not in {'active', 'disabled', 'reconnect_required'}:
+        return
+    previous = [dict(r) for r in conn.execute('SELECT * FROM plaid_accounts WHERE item_id=?', (item_id,))]
+    discover_accounts(conn, item_id=item_id, accounts=accounts)
+    for account in previous:
+        if account['enabled'] and account['provider_account_id'] not in ids:
+            conn.execute('UPDATE plaid_accounts SET enabled=0,history_approved=0 '
+                         'WHERE item_id=? AND provider_account_id=?',
+                         (item_id, account['provider_account_id']))
+            conn.execute('UPDATE plaid_items SET mapping_generation=mapping_generation+1 WHERE item_id=?', (item_id,))
+    status = item_response.get('status')
+    transactions = status.get('transactions') if isinstance(status, dict) else None
+    stamp = _health_timestamp(transactions.get('last_successful_update')) if isinstance(transactions, dict) else None
+    provider_updated_at = stamp.isoformat(timespec='seconds') if stamp else None
+    conn.execute('UPDATE plaid_items SET provider_updated_at=? WHERE item_id=?', (provider_updated_at, item_id))
+    # Update completion alone is insufficient: mapped approved accounts must still
+    # have access, and the update receipt must follow the reconnect failure.
+    if (current['state'] == 'reconnect_required' and reconnect_completed(conn, current)
+            and conn.execute('SELECT 1 FROM plaid_accounts WHERE item_id=? AND enabled=1 AND history_approved=1', (item_id,)).fetchone()):
+        set_lifecycle(conn, item_id, 'active')
+        # Consume the health-verified receipt so a later reconnect failure cannot
+        # reuse it, even when both events share a second-resolution timestamp.
+        conn.execute("UPDATE plaid_link_sessions SET state='health_verified' WHERE item_id=? AND mode='update' AND completed=1 AND state='completed'", (item_id,))
+    for account in previous:
+        local = account['local_account_id']
+        if local is None or not owns_public_status(conn, item_id, local):
+            continue
+        conn.execute('INSERT INTO plaid_status_public(local_account_id,state,provider_updated_at) '
+                     "VALUES(?,'disabled',?) ON CONFLICT(local_account_id) DO UPDATE SET provider_updated_at=excluded.provider_updated_at",
+                     (local, provider_updated_at))
+        if account['enabled'] and account['provider_account_id'] not in ids:
+            conn.execute("UPDATE plaid_status_public SET state='reconnect_required',safe_error_code='ACCESS_NOT_GRANTED' WHERE local_account_id=?", (local,))
+        elif account['enabled'] and not _account(conn, item_id, account['provider_account_id'])['enabled']:
+            conn.execute("UPDATE plaid_status_public SET state='awaiting_history_review' WHERE local_account_id=?", (local,))
+
+
 def set_lifecycle(conn: sqlite3.Connection, item_id: int, state: str, *, safe_error_code=None) -> None:
     """Caller owns Item/intake locks and immediate. Public health has its own enum."""
     _require_transaction(conn)
@@ -327,6 +433,6 @@ def set_lifecycle(conn: sqlite3.Connection, item_id: int, state: str, *, safe_er
         public = 'link_recovery_required'
     for row in conn.execute('SELECT DISTINCT local_account_id FROM plaid_accounts WHERE item_id=? AND local_account_id IS NOT NULL', (item_id,)):
         # Do not overwrite another active source's public health after replacement.
-        if conn.execute('SELECT 1 FROM plaid_accounts WHERE local_account_id=? AND enabled=1 AND item_id<>?', (row[0], item_id)).fetchone():
+        if not owns_public_status(conn, item_id, row[0]):
             continue
         conn.execute('INSERT INTO plaid_status_public(local_account_id,state,safe_error_code) VALUES(?,?,?) ON CONFLICT(local_account_id) DO UPDATE SET state=excluded.state,safe_error_code=excluded.safe_error_code', (row[0], public, safe_error_code))

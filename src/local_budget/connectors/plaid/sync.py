@@ -272,7 +272,7 @@ def apply_batch(conn: sqlite3.Connection, item_id: int, batch: SyncBatch, *, exp
     conn.execute('UPDATE plaid_sync_runs SET completed_at=?,outcome=?,inserted=?,updated=?,removed=?,review_count=?,request_id=?,readiness=? WHERE run_id=?',
                  (stamp, outcome, counts['inserted'], counts['updated'], counts['removed'], review_count, _request_id({'request_id': batch.request_id}, {}), batch.readiness, run_id))
     for account in accounts.values():
-        if account['enabled']:
+        if account['enabled'] and store.owns_public_status(conn, item_id, account['local_account_id']):
             local_review = conn.execute('SELECT COUNT(*) FROM plaid_transactions WHERE item_id=? AND provider_account_id=? AND review_required=1', (item_id, account['provider_account_id'])).fetchone()[0]
             conn.execute('INSERT INTO plaid_status_public(local_account_id,state,last_attempt_at,last_commit_at,readiness,review_count) VALUES(?,?,?,?,?,?) ON CONFLICT(local_account_id) DO UPDATE SET state=excluded.state,last_attempt_at=excluded.last_attempt_at,last_commit_at=excluded.last_commit_at,readiness=excluded.readiness,review_count=excluded.review_count,safe_error_code=NULL',
                          (account['local_account_id'], outcome, stamp, stamp, batch.readiness, local_review))
@@ -312,6 +312,8 @@ def record_failure(conn, item_id, error, *, now):
     conn.execute('INSERT INTO plaid_sync_runs(item_id,started_at,completed_at,outcome,safe_error_code) VALUES(?,?,?,\'failed\',?)', (item_id, stamp, stamp, code))
     conn.execute('UPDATE plaid_items SET last_attempt_at=?,state=?,safe_error_code=? WHERE item_id=?', (stamp, private_state, code, item_id))
     for row in conn.execute('SELECT local_account_id FROM plaid_accounts WHERE item_id=? AND enabled=1', (item_id,)):
+        if not store.owns_public_status(conn, item_id, row[0]):
+            continue
         conn.execute('INSERT INTO plaid_status_public(local_account_id,state,last_attempt_at,safe_error_code) VALUES(?,?,?,?) ON CONFLICT(local_account_id) DO UPDATE SET state=excluded.state,last_attempt_at=excluded.last_attempt_at,safe_error_code=excluded.safe_error_code', (row[0], state, stamp, code))
 
 
@@ -328,18 +330,47 @@ def sync_item(db_path: Path, item_id: int, client: PlaidClient, vault: KeychainC
         try:
             with db.connect(db_path) as conn:
                 snapshot = store.item(conn, item_id)
-                _eligible_item(snapshot)
-                if not conn.execute('SELECT 1 FROM plaid_accounts WHERE item_id=? AND enabled=1 AND history_approved=1', (item_id,)).fetchone():
+                if snapshot['state'] != 'reconnect_required' or not store.reconnect_completed(conn, snapshot):
+                    _eligible_item(snapshot)
+                mapped_ids = {r[0] for r in conn.execute('SELECT provider_account_id FROM plaid_accounts WHERE item_id=? AND enabled=1 AND history_approved=1', (item_id,))}
+                if not mapped_ids:
                     raise SyncStateError('item_disabled')
             token = vault.get(snapshot['credential_ref'], interactive=False)
-            batch = fetch_batch(client, token, cursor=snapshot['cursor'], deadline=_monotonic()+300)
+            deadline = min(_monotonic()+300, getattr(client, '_deadline', float('inf')))
+            client._sync_deadline = deadline
+            item_health = client.call('/item/get', {'access_token': token}, deadline=deadline)
+            account_health = client.call('/accounts/get', {'access_token': token}, deadline=deadline)
+            with db.connect(db_path) as conn:
+                eligible = store.health_allows_sync(conn, snapshot, item_health, account_health)
+            batch = fetch_batch(client, token, cursor=snapshot['cursor'], deadline=deadline) if eligible else None
             with inbox_adapter.intake_lock() as intake:
                 if not intake:
                     raise SyncStateError('intake_busy')
                 with db.connect(db_path) as conn:
                     conn.execute('BEGIN IMMEDIATE')
-                    result = apply_batch(conn, item_id, batch, expected_generation=snapshot['mapping_generation'],
-                                         deadline=client._sync_deadline)
+                    current = store.item(conn, item_id)
+                    require_generation(current, snapshot['mapping_generation'])
+                    if current['cursor'] != snapshot['cursor']:
+                        raise SyncStateError('cursor_changed')
+                    if current['state'] != snapshot['state']:
+                        raise SyncStateError('item_disabled')
+                    store.refresh_item_health(conn, item_id=item_id, item_response=item_health,
+                                              accounts_response=account_health, now=now)
+                    if batch is None:
+                        stamp = now.isoformat(timespec='seconds')
+                        available_ids = {a['account_id'] for a in account_health['accounts']}
+                        outcome = ('reconnect_required' if mapped_ids - available_ids
+                                   or store.item(conn, item_id)['state'] == 'reconnect_required'
+                                   else 'awaiting_history_review')
+                        conn.execute('UPDATE plaid_items SET last_attempt_at=? WHERE item_id=?', (stamp, item_id))
+                        for row in conn.execute('SELECT local_account_id FROM plaid_accounts WHERE item_id=? AND local_account_id IS NOT NULL', (item_id,)):
+                            if store.owns_public_status(conn, item_id, row[0]):
+                                conn.execute('UPDATE plaid_status_public SET last_attempt_at=? WHERE local_account_id=?', (stamp, row[0]))
+                        conn.execute('INSERT INTO plaid_sync_runs(item_id,started_at,completed_at,outcome) VALUES(?,?,?,?)', (item_id, stamp, stamp, outcome))
+                        result = SyncResult(outcome)
+                    else:
+                        result = apply_batch(conn, item_id, batch, expected_generation=store.item(conn, item_id)['mapping_generation'],
+                                             deadline=client._sync_deadline)
                     require_deadline(client._sync_deadline)
                 return result
         except (PlaidError, CredentialError, SyncStateError) as error:

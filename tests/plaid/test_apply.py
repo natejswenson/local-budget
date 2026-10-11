@@ -11,6 +11,14 @@ from .test_mapping import fact, mapped
 NOW = datetime(2026, 10, 10, tzinfo=timezone.utc)
 
 
+def health_response(endpoint):
+    if endpoint == '/item/get':
+        return {'item': {'item_id': 'test-item', 'error': None}}
+    if endpoint == '/accounts/get':
+        return {'item': {'item_id': 'test-item'}, 'accounts': [dict(account_id='a1', type='depository', subtype='checking', balances={'iso_currency_code': 'USD'})]}
+    return None
+
+
 def enabled(path, item):
     with db.connect(path) as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -279,12 +287,14 @@ def test_sync_item_network_outside_write_and_failure_health_preserves_cursor(
         bytes_received = 0
 
         def call(self, endpoint, body, **kwargs):
-            assert endpoint == "/transactions/sync"
             with db.connect(plaid_db) as conn:
                 conn.execute("BEGIN IMMEDIATE")
                 conn.execute(
                     "INSERT OR REPLACE INTO settings(key,value) VALUES('network-probe','unlocked')"
                 )
+            health = health_response(endpoint)
+            if health is not None:
+                return health
             return dict(
                 added=[],
                 modified=[],
@@ -433,7 +443,10 @@ def test_sync_failure_after_apply_rolls_back_then_records_safe_health(
     class Client:
         bytes_received = 0
 
-        def call(self, *args, **kwargs):
+        def call(self, endpoint, *args, **kwargs):
+            health = health_response(endpoint)
+            if health is not None:
+                return health
             return dict(
                 added=[
                     dict(
@@ -564,7 +577,10 @@ def test_credential_failure_state_can_retry_after_credentials_available(
     class Client:
         bytes_received = 0
 
-        def call(self, *args, **kwargs):
+        def call(self, endpoint, *args, **kwargs):
+            health = health_response(endpoint)
+            if health is not None:
+                return health
             return dict(
                 added=[],
                 modified=[],

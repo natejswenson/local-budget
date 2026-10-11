@@ -174,7 +174,8 @@ def test_scheduled_sync_outputs_only_safe_counts_and_local_handles(
 ):
     item = seed_item()
     enabled(plaid_db, item)
-    mock_provider(monkeypatch, [page([transaction()])])
+    from .test_apply import health_response
+    mock_provider(monkeypatch, [health_response('/item/get'), health_response('/accounts/get'), page([transaction()])])
     result = CliRunner().invoke(
         cli.plaid, ["sync", "--all", "--non-interactive", "--json"]
     )
