@@ -118,6 +118,10 @@ Install the commit guard so personal data can't slip into git:
 ln -sf ../../scripts/secret-scan.sh .git/hooks/pre-commit
 ```
 
+## Plaid bank sync
+
+For the macOS host-only connector, see [Plaid operations](docs/plaid-operations.md): setup, explicit transition review, recovery, confidential backups and separately authorized scheduling/pilot.
+
 ## Requirements
 
 Python 3.12. MIT licensed (see `LICENSE`).

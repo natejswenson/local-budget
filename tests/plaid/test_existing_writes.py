@@ -133,7 +133,8 @@ def test_reconcile_protected_destructive_paths(plaid_db, seed_item, action):
         assert conn.execute("SELECT resolved FROM import_conflicts").fetchone()[0] == 0
 
 
-def test_undo_refuses_entire_owned_batch(plaid_db, seed_item):
+@pytest.mark.parametrize("active_owner", [0, 1])
+def test_undo_refuses_entire_owned_batch(plaid_db, seed_item, active_owner):
     item = seed_item()
     with db.connect(plaid_db) as conn:
         run = conn.execute(
@@ -142,6 +143,7 @@ def test_undo_refuses_entire_owned_batch(plaid_db, seed_item):
         transaction(conn, run=run)
         b = transaction(conn, "t2", run)
         own(conn, item, b)
+        conn.execute("UPDATE plaid_transactions SET active_owner=?", (active_owner,))
     result = intake.undo_last_import()
     assert result["undone"] is False and "provider_owned" in result["reason"]
     with db.connect(plaid_db) as conn:
@@ -180,13 +182,15 @@ def test_normalize_stale_batch_is_atomic(plaid_db):
         assert conn.execute("SELECT COUNT(*) FROM normalize_changes").fetchone()[0] == 2
 
 
+@pytest.mark.parametrize("active_owner", [0, 1])
 def test_inactive_provider_collision_rejects_import(
-    plaid_db, seed_item, monkeypatch, tmp_path
+    plaid_db, seed_item, monkeypatch, tmp_path, active_owner
 ):
     item = seed_item()
     with db.connect(plaid_db) as conn:
         txn = transaction(conn)
         own(conn, item, txn)
+        conn.execute("UPDATE plaid_transactions SET active_owner=?", (active_owner,))
         conn.execute(
             "UPDATE accounts SET acct_hash=? WHERE account_id=1",
             (db.acct_hash("b", "a"),),

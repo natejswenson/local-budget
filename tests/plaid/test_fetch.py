@@ -143,6 +143,7 @@ def test_expiry_prevents_request_and_checks_after_page(monkeypatch):
     with pytest.raises(PlaidError):
         fetch_batch(api, 'token', cursor=None, deadline=0)
     assert not api.calls
+    api = Client([page()])
     original = api.call
     def call(*args, **kwargs):
         result = original(*args, **kwargs)
@@ -152,6 +153,7 @@ def test_expiry_prevents_request_and_checks_after_page(monkeypatch):
     with pytest.raises(PlaidError) as caught:
         fetch_batch(api, 'token', cursor=None, deadline=10)
     assert caught.value.code == 'sync_deadline'
+    assert len(api.calls) == 1
 
 
 def test_byte_budget_after_page():
