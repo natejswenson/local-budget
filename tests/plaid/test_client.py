@@ -316,3 +316,30 @@ def test_explicit_operation_deadline_is_capped_to_fifteen_minutes(monkeypatch):
         with pytest.raises(PlaidError) as caught:
             api.call('/link/token/get', {})
     assert caught.value.code == 'DEADLINE_EXCEEDED'
+
+
+@pytest.mark.parametrize('request_id', ['SECRET_SENTINEL', 'CLIENT_SENTINEL',
+    'FABRICATED_ACCESS_TOKEN', 'x'*65, 'bad\n', 'é'])
+def test_success_request_id_is_sanitized(request_id):
+    with client(lambda request: httpx.Response(200, json={'request_id': request_id})) as api:
+        assert api.call('/transactions/sync', {'access_token': 'FABRICATED_ACCESS_TOKEN'})['request_id'] is None
+
+
+def test_injected_retry_jitter_and_deadline_without_waiting(monkeypatch):
+    now = [0.0]
+    sleeps = []
+    calls = []
+    monkeypatch.setattr(module, '_monotonic', lambda: now[0])
+    def sleep(seconds):
+        sleeps.append(seconds)
+        now[0] += seconds
+    monkeypatch.setattr(module, '_sleep', sleep)
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(503, content=b'{}')
+    with PlaidClient('client', 'secret', 'sandbox', transport=httpx.MockTransport(handler),
+                     jitter=lambda: 0.25) as api:
+        with pytest.raises(PlaidError) as caught:
+            api.call('/transactions/sync', {}, deadline=2.0)
+    assert sleeps == [1.25] and len(calls) == 2
+    assert caught.value.code == 'DEADLINE_EXCEEDED' and now[0] < 2.0

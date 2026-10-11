@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import random
 import time
 from datetime import date
 from decimal import Decimal
@@ -68,7 +69,7 @@ class PlaidClient:
     """One lifetime shares retries, bytes and a bounded operation deadline."""
 
     def __init__(self, client_id: str, secret: str, environment: str, *, transport=None,
-                 deadline: float | None = None):
+                 deadline: float | None = None, jitter=None):
         if environment not in HOSTS:
             raise PlaidError('INVALID_ENVIRONMENT')
         now = _monotonic()
@@ -79,6 +80,9 @@ class PlaidClient:
         self.environment = environment
         self._credentials = {'client_id': client_id, 'secret': secret}
         self.bytes_received = 0
+        self.updates_received = 0
+        self.pagination_restarts = 0
+        self._jitter = jitter if jitter is not None else random.random
         self._retries_remaining = 3
         self._http = httpx.Client(transport=transport, verify=True, trust_env=False,
                                   follow_redirects=False, headers={'Plaid-Version': '2020-09-14'},
@@ -105,10 +109,13 @@ class PlaidClient:
                 raise PlaidError('DEADLINE_EXCEEDED')
             result, retryable, retry_after = self._attempt(endpoint, request_body, end, remaining)
             if isinstance(result, dict):
+                if 'request_id' in result:
+                    result['request_id'] = _request_id(result, request_body)
                 return result
             if endpoint not in _READS or not retryable or not self._retries_remaining:
                 raise result
             self._retries_remaining -= 1
+            retry_after = min(30.0, retry_after + self._jitter())
             remaining = end - _monotonic()
             if remaining <= retry_after:
                 raise PlaidError('DEADLINE_EXCEEDED')
