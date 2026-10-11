@@ -14,6 +14,17 @@ from local_budget import db
 from local_budget.connectors.amazon import autosync
 
 
+@pytest.fixture(autouse=True)
+def july_clock(monkeypatch):
+    # These fixtures describe July 2026; keep implicit today consistent with them.
+    class JulyDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 7, 29)
+
+    monkeypatch.setattr(autosync, "date", JulyDate)
+
+
 @pytest.fixture()
 def env(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCAL_BUDGET_DATA_DIR", str(tmp_path))

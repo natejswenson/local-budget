@@ -44,7 +44,11 @@ def setup() -> None:
 def import_cmd(file: Path, detect_duplicates: bool) -> None:
     """Import a bank OFX/QFX (or CSV) statement export (rule-based categorization)."""
     db.init_schema()
-    r = importer.import_file(file, detect_near_duplicates=detect_duplicates)
+    from .connectors.plaid.store import ProviderOwnershipError
+    try:
+        r = importer.import_file(file, detect_near_duplicates=detect_duplicates)
+    except ProviderOwnershipError as e:
+        raise click.ClickException(f"Plaid source protection: {e.code}") from e
     line = f"  {r['inserted']} new · {r['skipped']} duplicates"
     if r["conflicts"]:
         line += f" · {r['conflicts']} conflicts (run `budget reconcile`)"
@@ -64,6 +68,11 @@ def reset(yes: bool) -> None:
         click.echo("aborted")
         return
     with db.connect() as conn:
+        db.begin_immediate(conn)
+        if (conn.execute("SELECT 1 FROM plaid_accounts LIMIT 1").fetchone()
+                or conn.execute("SELECT 1 FROM plaid_transactions LIMIT 1").fetchone()):
+            raise click.ClickException(
+                "Plaid mappings exist; reset is unavailable. Use documented restore recovery.")
         conn.execute("DELETE FROM import_conflicts")
         conn.execute("DELETE FROM transactions")
         conn.execute("DELETE FROM import_runs")
@@ -517,6 +526,7 @@ def split_cmd(txn_id: int, dry_run: bool, cats: tuple[str, ...], rest: str | Non
     """
     db.init_schema()
     with db.connect() as conn:
+        db.begin_immediate(conn)
         source, p = propose_from_any_connector(conn, txn_id)
 
         assigned = dict(c.split("=", 1) for c in cats if "=" in c)
@@ -1147,6 +1157,11 @@ def online_report(since: str | None, until: str | None, all_history: bool) -> No
     click.echo(f"    food {dollars(r['food_cents'])} · "
                f"everything else {dollars(r['non_food_cents'])}")
     click.echo(f"  ✓ saved to {r['path']}")
+
+
+from .connectors.plaid.cli import plaid
+
+main.add_command(plaid)
 
 
 if __name__ == "__main__":

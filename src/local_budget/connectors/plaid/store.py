@@ -1,0 +1,522 @@
+"""Private persistence and explicitly allowlisted public connection health."""
+from datetime import datetime, timezone
+import sqlite3
+
+from .types import LIFECYCLE_STATES, SyncBatch, TxnFact
+
+
+def add_item(conn: sqlite3.Connection, *, environment: str,
+             provider_item_id: str, credential_ref: str) -> int:
+    """Create a disabled connection within the caller's transaction."""
+    row = conn.execute(
+        'INSERT INTO plaid_items(environment,provider_item_id,credential_ref,user_handle,created_at) '
+        'VALUES(?,?,?,?,?) RETURNING item_id',
+        (environment, provider_item_id, credential_ref, user_handle(conn),
+         datetime.now(timezone.utc).isoformat(timespec='seconds')),
+    ).fetchone()
+    return row[0]
+
+
+def item(conn: sqlite3.Connection, item_id: int) -> dict:
+    """Internal metadata only; callers must not log or publicly serialize it."""
+    row = conn.execute('SELECT * FROM plaid_items WHERE item_id=?', (item_id,)).fetchone()
+    if row is None:
+        raise KeyError(item_id)
+    result = dict(row)
+    if result['state'] not in LIFECYCLE_STATES:
+        raise ValueError('invalid_state')
+    return result
+
+
+def public_status(conn: sqlite3.Connection) -> list[dict]:
+    """Read health without provider calls or exposing private identifiers."""
+    return [dict(row) for row in conn.execute(
+        'SELECT local_account_id,state,last_attempt_at,last_commit_at,'
+        'provider_updated_at,readiness,review_count,safe_error_code '
+        'FROM plaid_status_public ORDER BY local_account_id'
+    )]
+
+
+def namespace(conn: sqlite3.Connection) -> str:
+    """The persisted ledger identity, retained in consistent database backups."""
+    return conn.execute("SELECT value FROM plaid_meta WHERE key='ledger_namespace'").fetchone()[0]
+
+
+def user_handle(conn: sqlite3.Connection) -> str:
+    """Stable opaque user identity shared by links in this ledger."""
+    return conn.execute("SELECT value FROM plaid_meta WHERE key='user_handle'").fetchone()[0]
+
+
+def add_link_session(conn: sqlite3.Connection, *, session_id: str, mode: str,
+                     item_id: int | None, credential_ref: str, expires_at: str,
+                     environment: str | None = None) -> None:
+    """Persist a nonsecret receipt; new links explicitly bind their environment."""
+    if mode not in {'link', 'update'} or (mode == 'update') != (item_id is not None):
+        raise ValueError('invalid_session')
+    if item_id is not None:
+        item_environment = item(conn, item_id)['environment']
+        if environment is not None and environment != item_environment:
+            raise ValueError('invalid_environment')
+        environment = item_environment
+    if environment not in {'sandbox', 'production'}:
+        raise ValueError('invalid_environment')
+    conn.execute(
+        'INSERT INTO plaid_link_sessions '
+        '(session_id,environment,mode,item_id,credential_ref,expires_at,created_at) '
+        'VALUES(?,?,?,?,?,?,?)',
+        (session_id, environment, mode, item_id, credential_ref, expires_at,
+         datetime.now(timezone.utc).isoformat(timespec='seconds')),
+    )
+
+
+# All mapping mutators require caller-owned Item locks and BEGIN IMMEDIATE
+# BEFORE the first dependent read, held through caller commit/rollback. They
+# never start/commit transactions or acquire/release locks themselves. The
+# in_transaction guard is structural only: it cannot prove an immediate reserve.
+def _require_transaction(conn: sqlite3.Connection) -> None:
+    if not conn.in_transaction:
+        raise ValueError('transaction_required')
+
+
+def _account(conn, item_id, provider_account_id) -> dict:
+    row = conn.execute('SELECT * FROM plaid_accounts WHERE item_id=? AND provider_account_id=?',
+                       (item_id, provider_account_id)).fetchone()
+    if row is None:
+        raise ValueError('unknown_account')
+    return dict(row)
+
+
+def discover_accounts(conn: sqlite3.Connection, *, item_id: int, accounts: list[dict]) -> None:
+    """Normalize /accounts/get accounts; never persist names, balances or raw data.
+
+    Caller holds Item lock and immediate transaction. Existing mappings remain
+    intact; changed compatibility metadata disables them and invalidates review.
+    """
+    _require_transaction(conn)
+    item(conn, item_id)
+    for account in accounts:
+        provider_id = account['account_id']
+        account_type = (account.get('subtype') if account.get('type') == 'depository'
+                        else 'credit' if account.get('type') == 'credit' else None)
+        if account_type not in {'checking', 'savings', 'money market', 'credit'}:
+            account_type = None
+        currency = account.get('balances', {}).get('iso_currency_code') or 'UNKNOWN'
+        mask = account.get('mask')
+        existing = conn.execute('SELECT * FROM plaid_accounts WHERE item_id=? AND provider_account_id=?',
+                                (item_id, provider_id)).fetchone()
+        changed = existing is not None and (existing['currency'], existing['account_type']) != (currency, account_type)
+        conn.execute('INSERT INTO plaid_accounts(item_id,provider_account_id,currency,account_type,mask) '
+                     'VALUES(?,?,?,?,?) ON CONFLICT(item_id,provider_account_id) DO UPDATE SET '
+                     'currency=excluded.currency,account_type=excluded.account_type,mask=excluded.mask',
+                     (item_id, provider_id, currency, account_type, mask))
+        if changed:
+            conn.execute('UPDATE plaid_accounts SET enabled=0,history_approved=0 WHERE item_id=? AND provider_account_id=?',
+                         (item_id, provider_id))
+            conn.execute('UPDATE plaid_items SET mapping_generation=mapping_generation+1 WHERE item_id=?', (item_id,))
+            project_mapping_review(conn, item_id, existing['local_account_id'])
+
+
+def create_local_account(conn: sqlite3.Connection, *, item_id: int, provider_account_id: str) -> int:
+    """Create an unmapped provider-only identity, never derive identity from mask."""
+    import hashlib
+    import hmac
+    import json
+    from ... import db
+
+    _require_transaction(conn)
+    account = _account(conn, item_id, provider_account_id)
+    if account['currency'] != 'USD' or account['account_type'] is None:
+        raise ValueError('unsupported_account')
+    identity = json.dumps(['plaid', namespace(conn), item(conn, item_id)['environment'],
+                           item(conn, item_id)['provider_item_id'], provider_account_id])
+    account_hash = hmac.new(db.get_or_create_local_key(), identity.encode(), hashlib.sha256).hexdigest()
+    conn.execute('INSERT OR IGNORE INTO accounts(institution,acct_type,acct_last4,acct_hash,created_at) VALUES(?,?,?,?,?)',
+                 ('Plaid', account['account_type'], account['mask'], account_hash,
+                  datetime.now(timezone.utc).isoformat(timespec='seconds')))
+    return conn.execute('SELECT account_id FROM accounts WHERE acct_hash=?', (account_hash,)).fetchone()[0]
+
+
+def _assert_account_type(conn: sqlite3.Connection, local_account_id: int, provider_type: str) -> None:
+    local = conn.execute('SELECT acct_type FROM accounts WHERE account_id=?', (local_account_id,)).fetchone()
+    local_type = (local['acct_type'] or '').lower() if local else ''
+    if local_type in {'creditcard', 'card'}:
+        local_type = 'credit'
+    if local_type != provider_type:
+        raise ValueError('account_type_mismatch')
+
+
+def map_account(conn: sqlite3.Connection, *, item_id: int, provider_account_id: str,
+                local_account_id: int, currency: str, start_date: str) -> None:
+    """Set an explicitly supplied inclusive boundary; always disable until review."""
+    from datetime import date
+
+    _require_transaction(conn)
+    try:
+        if date.fromisoformat(start_date).isoformat() != start_date:
+            raise ValueError()
+    except (ValueError, TypeError):
+        raise ValueError('invalid_start_date') from None
+    account = _account(conn, item_id, provider_account_id)
+    if currency != 'USD' or account['currency'] != currency or account['account_type'] is None:
+        raise ValueError('unsupported_account')
+    _assert_account_type(conn, local_account_id, account['account_type'])
+    conn.execute('UPDATE plaid_accounts SET local_account_id=?,start_date=?,enabled=0,history_approved=0 '
+                 'WHERE item_id=? AND provider_account_id=?',
+                 (local_account_id, start_date, item_id, provider_account_id))
+    conn.execute('UPDATE plaid_items SET mapping_generation=mapping_generation+1 WHERE item_id=?', (item_id,))
+    project_mapping_review(conn, item_id, local_account_id)
+    if account['local_account_id'] != local_account_id:
+        project_mapping_review(conn, item_id, account['local_account_id'])
+
+
+def eligible(fact: TxnFact, account: dict) -> bool:
+    return (account['enabled'] == 1 and not fact.pending and fact.currency == 'USD'
+            and account['start_date'] is not None and fact.posted_date >= account['start_date'])
+
+
+def preview(conn: sqlite3.Connection, item_id: int, batch: SyncBatch) -> dict:
+    """Read a completed SyncBatch without writing facts, reviews or cursor.
+
+    Results contain financial/private IDs for interactive review only. Candidates
+    are advisory. Replayed events collapse by provider ID, never by charge facts.
+    """
+    current = item(conn, item_id)
+    if current['cursor'] != batch.original_cursor:
+        raise ValueError('stale_cursor')
+    facts = {}
+    removed = set()
+    for operation, value in with_deferred_events(conn, item_id, batch).events:
+        if operation == 'removed':
+            facts.pop(value, None)
+            removed.add(value)
+        elif operation in {'added', 'modified'} and isinstance(value, TxnFact):
+            facts[value.transaction_id] = value
+            removed.discard(value.transaction_id)
+        else:
+            raise ValueError('invalid_batch')
+    rows = []
+    for fact in facts.values():
+        account = conn.execute('SELECT * FROM plaid_accounts WHERE item_id=? AND provider_account_id=?',
+                               (item_id, fact.account_id)).fetchone()
+        reason = None
+        if account is None or account['local_account_id'] is None or account['start_date'] is None:
+            reason = 'unmapped'
+        elif fact.pending:
+            reason = 'pending'
+        elif fact.currency != 'USD' or account['currency'] != 'USD':
+            reason = 'currency'
+        elif fact.posted_date < account['start_date']:
+            reason = 'before_start'
+        owned = conn.execute('SELECT local_txn_id FROM plaid_transactions WHERE item_id=? AND transaction_id=? '
+                             'AND active_owner=1', (item_id, fact.transaction_id)).fetchone()
+        candidates = []
+        if reason is None and owned is None:
+            candidates = [r[0] for r in conn.execute(
+                "SELECT txn_id FROM transactions WHERE account_id=? AND posted_date=? AND amount_cents=? "
+                "AND merchant_norm=? AND status='posted' AND NOT EXISTS ("
+                "SELECT 1 FROM plaid_transactions p WHERE p.local_txn_id=transactions.txn_id "
+                "AND p.item_id=? AND p.active_owner=1 AND p.transaction_id<>?) ORDER BY txn_id",
+                (account['local_account_id'], fact.posted_date, fact.amount_cents, fact.merchant_norm,
+                 item_id, fact.transaction_id))]
+        rows.append(dict(transaction_id=fact.transaction_id, provider_account_id=fact.account_id,
+                         posted_date=fact.posted_date, amount_cents=fact.amount_cents,
+                         merchant_norm=fact.merchant_norm, candidate_txn_ids=candidates, excluded_reason=reason))
+    dates = [r['posted_date'] for r in rows]
+    return dict(mapping_generation=current['mapping_generation'], readiness=batch.readiness,
+                returned_coverage=dict(first_date=min(dates) if dates else None,
+                                       last_date=max(dates) if dates else None),
+                removed_local_txn_ids=[r[0] for r in conn.execute(
+                    'SELECT local_txn_id,transaction_id FROM plaid_transactions WHERE item_id=? '
+                    'AND local_txn_id IS NOT NULL ORDER BY local_txn_id', (item_id,)) if r[1] in removed],
+                transactions=rows, unresolved_overlap_count=sum(bool(r['candidate_txn_ids']) for r in rows),
+                incoming_total_cents=sum(r['amount_cents'] for r in rows if r['excluded_reason'] is None))
+
+
+def enable_account(conn: sqlite3.Connection, *, item_id: int, provider_account_id: str,
+                   reviewed_generation: int, batch: SyncBatch) -> None:
+    """Activate after fresh full history review inside caller's protected transaction."""
+    _require_transaction(conn)
+    if item(conn, item_id)['mapping_generation'] != reviewed_generation:
+        raise ValueError('stale_generation')
+    if batch.readiness != 'HISTORICAL_UPDATE_COMPLETE':
+        raise ValueError('history_incomplete')
+    account = _account(conn, item_id, provider_account_id)
+    if account['local_account_id'] is None or account['start_date'] is None or account['currency'] != 'USD' or account['account_type'] is None:
+        raise ValueError('unmapped_account')
+    _assert_account_type(conn, account['local_account_id'], account['account_type'])
+    review = preview(conn, item_id, batch)
+    if any(r['candidate_txn_ids'] for r in review['transactions'] if r['provider_account_id'] == provider_account_id):
+        raise ValueError('unresolved_overlap')
+    if conn.execute('SELECT 1 FROM plaid_accounts WHERE local_account_id=? AND enabled=1 '
+                    'AND NOT (item_id=? AND provider_account_id=?)',
+                    (account['local_account_id'], item_id, provider_account_id)).fetchone():
+        raise ValueError('active_source')
+    conn.execute('UPDATE plaid_accounts SET enabled=1,history_approved=1 WHERE item_id=? AND provider_account_id=?',
+                 (item_id, provider_account_id))
+    conn.execute('UPDATE plaid_items SET mapping_generation=mapping_generation+1 WHERE item_id=?', (item_id,))
+
+
+def save_fact(conn, *, item_id, fact, local_txn_id=None, active_owner=0, disposition,
+              split_needs_review=0, category_needs_review=0):
+    """Retain normalized private observations; caller owns locks and transaction."""
+    conn.execute('INSERT INTO plaid_transactions(item_id,transaction_id,provider_account_id,'
+                 'local_txn_id,active_owner,disposition,posted_date,amount_cents,merchant_norm,payee,pending,currency,split_needs_review,category_needs_review,review_required) '
+                 'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(item_id,transaction_id) DO UPDATE SET '
+                 'provider_account_id=excluded.provider_account_id,local_txn_id=excluded.local_txn_id,'
+                 'active_owner=excluded.active_owner,disposition=excluded.disposition,posted_date=excluded.posted_date,'
+                 'amount_cents=excluded.amount_cents,merchant_norm=excluded.merchant_norm,payee=excluded.payee,'
+                 'pending=excluded.pending,currency=excluded.currency,split_needs_review=excluded.split_needs_review,'
+                 'category_needs_review=excluded.category_needs_review,review_required=excluded.review_required,deferred_event=NULL',
+                 (item_id, fact.transaction_id, fact.account_id, local_txn_id, active_owner, disposition,
+                  fact.posted_date, fact.amount_cents, fact.merchant_norm, fact.payee, fact.pending, fact.currency,
+                  split_needs_review, category_needs_review, bool(split_needs_review or category_needs_review)))
+
+
+def adopt_transaction(conn: sqlite3.Connection, *, item_id: int,
+                      provider_transaction_id: str, local_txn_id: int, fact: TxnFact) -> None:
+    """Bind one fresh reviewed exact match. Caller holds Item/intake locks and immediate."""
+    _require_transaction(conn)
+    if provider_transaction_id != fact.transaction_id or fact.pending or fact.currency != 'USD':
+        raise ValueError('stale_review')
+    if item(conn, item_id)['state'] not in {'disabled', 'active'}:
+        raise ValueError('item_disabled')
+    account = _account(conn, item_id, fact.account_id)
+    if account['currency'] != 'USD' or account['account_type'] is None or account['local_account_id'] is None:
+        raise ValueError('unsupported_account')
+    _assert_account_type(conn, account['local_account_id'], account['account_type'])
+    if conn.execute('SELECT 1 FROM plaid_accounts WHERE local_account_id=? AND enabled=1 '
+                    'AND NOT (item_id=? AND provider_account_id=?)',
+                    (account['local_account_id'], item_id, fact.account_id)).fetchone():
+        raise ValueError('active_source')
+    local = conn.execute('SELECT * FROM transactions WHERE txn_id=?', (local_txn_id,)).fetchone()
+    if (local is None or local['status'] != 'posted' or local['account_id'] != account['local_account_id']
+            or any(local[key] != getattr(fact, key) for key in ('posted_date', 'amount_cents', 'merchant_norm'))):
+        raise ValueError('stale_review')
+    if conn.execute('SELECT 1 FROM plaid_transactions WHERE local_txn_id=? OR (item_id=? AND transaction_id=? AND local_txn_id IS NOT NULL)',
+                    (local_txn_id, item_id, provider_transaction_id)).fetchone():
+        raise ValueError('already_owned')
+    save_fact(conn, item_id=item_id, fact=fact, local_txn_id=local_txn_id, active_owner=1, disposition='adopted')
+    stamp = datetime.now(timezone.utc).isoformat(timespec='seconds')
+    run = conn.execute("INSERT INTO plaid_sync_runs(item_id,started_at,completed_at,outcome) VALUES(?,?,?,'adopted') RETURNING run_id", (item_id, stamp, stamp)).fetchone()[0]
+    conn.execute("INSERT INTO plaid_changes(run_id,local_txn_id,event_kind,created_at) VALUES(?,?,'adopted',?)", (run, local_txn_id, stamp))
+
+
+class ProviderOwnershipError(ValueError):
+    """Safe source-protection code suitable for CLI/intake boundaries."""
+
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(code)
+
+
+def is_provider_owned(conn: sqlite3.Connection, txn_id: int) -> bool:
+    # Retired mappings still protect facts required by recovery.
+    return conn.execute('SELECT 1 FROM plaid_transactions WHERE local_txn_id=? LIMIT 1',
+                        (txn_id,)).fetchone() is not None
+
+
+def assert_file_import_allowed(conn: sqlite3.Connection, rows: list[tuple[int, str]]) -> None:
+    """Caller holds intake lock and immediate reservation for the complete file."""
+    for account_id, posted_date in rows:
+        if conn.execute('SELECT 1 FROM plaid_accounts WHERE local_account_id=? '
+                        'AND enabled=1 AND start_date<=? LIMIT 1',
+                        (account_id, posted_date)).fetchone():
+            raise ProviderOwnershipError('source_overlap')
+
+
+def owns_public_status(conn, item_id: int, local_account_id: int) -> bool:
+    """A disabled/retired alternative cannot replace the enabled owner's health."""
+    return not conn.execute('SELECT 1 FROM plaid_accounts WHERE local_account_id=? '
+                            'AND enabled=1 AND item_id<>?',
+                            (local_account_id, item_id)).fetchone()
+
+
+def reconnect_completed(conn, current: dict) -> bool:
+    return conn.execute("SELECT 1 FROM plaid_link_sessions WHERE item_id=? "
+                        "AND mode='update' AND completed=1 AND state='completed' "
+                        "AND (? IS NULL OR julianday(created_at)>=julianday(?)) LIMIT 1",
+                        (current['item_id'], current['last_attempt_at'],
+                         current['last_attempt_at'])).fetchone() is not None
+
+
+def validated_health_accounts(current, item_response, accounts_response):
+    """Validate complete matching responses before discovery or fetching deltas."""
+    from .client import PlaidError
+
+    for response in (item_response, accounts_response):
+        provider_item = response.get('item') if isinstance(response, dict) else None
+        if not isinstance(provider_item, dict) or provider_item.get('item_id') != current['provider_item_id']:
+            raise PlaidError('INVALID_RESPONSE')
+        if provider_item.get('error') is not None:
+            error = provider_item['error']
+            raise PlaidError(error.get('error_code') if isinstance(error, dict) else 'PROVIDER_ERROR')
+    accounts = accounts_response.get('accounts')
+    if not isinstance(accounts, list):
+        raise PlaidError('INVALID_RESPONSE')
+    ids = set()
+    for account in accounts:
+        if (not isinstance(account, dict) or not isinstance(account.get('account_id'), str)
+                or not account['account_id'] or account['account_id'] in ids
+                or not isinstance(account.get('balances'), dict)):
+            raise PlaidError('INVALID_RESPONSE')
+        ids.add(account['account_id'])
+    return accounts
+
+
+def health_allows_sync(conn, current, item_response, accounts_response) -> bool:
+    accounts = validated_health_accounts(current, item_response, accounts_response)
+    if current['state'] == 'reconnect_required' and not reconnect_completed(conn, current):
+        return False
+    known = {r['provider_account_id']: dict(r) for r in conn.execute(
+        'SELECT * FROM plaid_accounts WHERE item_id=? AND enabled=1 AND history_approved=1',
+        (current['item_id'],))}
+    for account in accounts:
+        old = known.get(account['account_id'])
+        account_type = (account.get('subtype') if account.get('type') == 'depository'
+                        else 'credit' if account.get('type') == 'credit' else None)
+        if (old and account['balances'].get('iso_currency_code') == old['currency']
+                and account_type == old['account_type']):
+            return True
+    return False
+
+
+def refresh_item_health(conn, *, item_id: int, item_response: dict,
+                        accounts_response: dict, now: datetime) -> None:
+    """Apply complete successful health under Item/intake locks and immediate.
+
+    Missing accounts in a validated complete /accounts/get list revoke access;
+    transaction absence never does. Newly discovered accounts remain disabled.
+    """
+    from ...reports import _health_timestamp
+
+    _require_transaction(conn)
+    current = item(conn, item_id)
+    accounts = validated_health_accounts(current, item_response, accounts_response)
+    ids = {a['account_id'] for a in accounts}
+    # Never change mappings or eligibility in recovery/terminal lifecycle states.
+    if current['state'] not in {'active', 'disabled', 'reconnect_required'}:
+        return
+    previous = [dict(r) for r in conn.execute('SELECT * FROM plaid_accounts WHERE item_id=?', (item_id,))]
+    discover_accounts(conn, item_id=item_id, accounts=accounts)
+    for account in previous:
+        if account['enabled'] and account['provider_account_id'] not in ids:
+            conn.execute('UPDATE plaid_accounts SET enabled=0,history_approved=0 '
+                         'WHERE item_id=? AND provider_account_id=?',
+                         (item_id, account['provider_account_id']))
+            conn.execute('UPDATE plaid_items SET mapping_generation=mapping_generation+1 WHERE item_id=?', (item_id,))
+    status = item_response.get('status')
+    transactions = status.get('transactions') if isinstance(status, dict) else None
+    stamp = _health_timestamp(transactions.get('last_successful_update')) if isinstance(transactions, dict) else None
+    provider_updated_at = stamp.isoformat(timespec='seconds') if stamp else None
+    conn.execute('UPDATE plaid_items SET provider_updated_at=? WHERE item_id=?', (provider_updated_at, item_id))
+    # Verified update restores lifecycle eligibility, not history approval.
+    # Without eligible mappings the Item returns to disabled mapping review.
+    if current['state'] == 'reconnect_required' and reconnect_completed(conn, current):
+        has_enabled = conn.execute('SELECT 1 FROM plaid_accounts WHERE item_id=? AND enabled=1 AND history_approved=1', (item_id,)).fetchone()
+        set_lifecycle(conn, item_id, 'active' if has_enabled else 'disabled')
+        # Consume the health-verified receipt so a later reconnect failure cannot
+        # reuse it, even when both events share a second-resolution timestamp.
+        conn.execute("UPDATE plaid_link_sessions SET state='health_verified' WHERE item_id=? AND mode='update' AND completed=1 AND state='completed'", (item_id,))
+    for account in previous:
+        local = account['local_account_id']
+        if local is None or not owns_public_status(conn, item_id, local):
+            continue
+        conn.execute('INSERT INTO plaid_status_public(local_account_id,state,provider_updated_at) '
+                     "VALUES(?,'disabled',?) ON CONFLICT(local_account_id) DO UPDATE SET provider_updated_at=excluded.provider_updated_at",
+                     (local, provider_updated_at))
+        if account['enabled'] and account['provider_account_id'] not in ids:
+            conn.execute("UPDATE plaid_status_public SET state='reconnect_required',safe_error_code='ACCESS_NOT_GRANTED' WHERE local_account_id=?", (local,))
+        elif account['enabled'] and not _account(conn, item_id, account['provider_account_id'])['enabled']:
+            conn.execute("UPDATE plaid_status_public SET state='awaiting_history_review' WHERE local_account_id=?", (local,))
+
+
+def set_lifecycle(conn: sqlite3.Connection, item_id: int, state: str, *, safe_error_code=None) -> None:
+    """Caller owns Item/intake locks and immediate. Public health has its own enum."""
+    _require_transaction(conn)
+    if state not in LIFECYCLE_STATES:
+        raise ValueError('invalid_state')
+    item(conn, item_id)
+    conn.execute('UPDATE plaid_items SET state=?,safe_error_code=? WHERE item_id=?', (state, safe_error_code, item_id))
+    public = {'disabled': 'disabled', 'active': 'healthy', 'reconnect_required': 'reconnect_required',
+              'recovery_required': 'link_recovery_required', 'disconnect_pending': 'revocation_pending',
+              'disconnected': 'revoked', 'replaced': 'disabled', 'cleanup_needed': 'revocation_pending'}.get(state)
+    if state == 'active' and item(conn, item_id)['readiness'] != 'HISTORICAL_UPDATE_COMPLETE':
+        public = 'initializing'
+    if state == 'cleanup_needed' and safe_error_code == 'rotation_cleanup':
+        public = 'link_recovery_required'
+    for row in conn.execute('SELECT DISTINCT local_account_id FROM plaid_accounts WHERE item_id=? AND local_account_id IS NOT NULL', (item_id,)):
+        # Do not overwrite another active source's public health after replacement.
+        if not owns_public_status(conn, item_id, row[0]):
+            continue
+        account_public = public
+        if state == 'active' and not conn.execute(
+                'SELECT 1 FROM plaid_accounts WHERE item_id=? AND local_account_id=? AND enabled=1 AND history_approved=1',
+                (item_id, row[0])).fetchone():
+            account_public = 'awaiting_history_review'
+        conn.execute('INSERT INTO plaid_status_public(local_account_id,state,safe_error_code) VALUES(?,?,?) ON CONFLICT(local_account_id) DO UPDATE SET state=excluded.state,safe_error_code=excluded.safe_error_code', (row[0], account_public, safe_error_code))
+
+
+def project_mapping_review(conn, item_id, local_account_id):
+    """Mapping edits project loss of eligibility without fabricating timestamps."""
+    if local_account_id is None or not owns_public_status(conn, item_id, local_account_id):
+        return
+    if conn.execute('SELECT 1 FROM plaid_accounts WHERE local_account_id=? AND enabled=1',
+                    (local_account_id,)).fetchone():
+        return
+    conn.execute("INSERT INTO plaid_status_public(local_account_id,state) VALUES(?,'awaiting_history_review') "
+                 "ON CONFLICT(local_account_id) DO UPDATE SET state=excluded.state,safe_error_code=NULL",
+                 (local_account_id,))
+
+
+def with_deferred_events(conn, item_id, batch):
+    """Replay retained normalized events before fresh observations (fresh wins)."""
+    import json
+
+    events = []
+    for row in conn.execute('SELECT transaction_id,deferred_event FROM plaid_transactions '
+                            'WHERE item_id=? AND deferred_event IS NOT NULL ORDER BY transaction_id', (item_id,)):
+        event = json.loads(row['deferred_event'])
+        events.append((event['operation'], row['transaction_id'] if event['operation'] == 'removed'
+                       else TxnFact(**event['fact'])))
+    return SyncBatch(batch.original_cursor, batch.next_cursor, tuple(events) + batch.events,
+                     batch.readiness, batch.request_id)
+
+
+def correction_reviews(conn, item_id):
+    """Host-only local facts and independent review reasons; no provider IDs."""
+    return [dict(row) for row in conn.execute(
+        'SELECT t.txn_id,t.account_id,t.posted_date,t.amount_cents,t.merchant_norm,t.payee,t.status,'
+        't.category,t.subcategory,t.category_source,p.split_needs_review,p.category_needs_review '
+        'FROM plaid_transactions p JOIN transactions t ON t.txn_id=p.local_txn_id '
+        'WHERE p.item_id=? AND p.active_owner=1 AND p.review_required=1 ORDER BY t.txn_id', (item_id,))]
+
+
+def correction_review_snapshot(conn, item_id, txn_id):
+    """Include ownership, all current facts and splits for protected revalidation."""
+    current = item(conn, item_id)
+    mapping = conn.execute('SELECT * FROM plaid_transactions WHERE item_id=? AND local_txn_id=? '
+                           'AND active_owner=1 AND review_required=1', (item_id, txn_id)).fetchone()
+    if mapping is None:
+        raise ValueError('review_changed')
+    local = conn.execute('SELECT * FROM transactions WHERE txn_id=?', (txn_id,)).fetchone()
+    splits = [dict(r) for r in conn.execute('SELECT * FROM txn_splits WHERE txn_id=? ORDER BY split_id', (txn_id,))]
+    return dict(generation=current['mapping_generation'], state=current['state'], mapping=dict(mapping),
+                facts=dict(local), splits=splits)
+
+
+def acknowledge_correction(conn, item_id, txn_id, reviewed):
+    """Caller holds Item/intake locks and immediate after interactive confirmation."""
+    _require_transaction(conn)
+    fresh = correction_review_snapshot(conn, item_id, txn_id)
+    if fresh != reviewed:
+        raise ValueError('review_changed')
+    if fresh['splits'] and sum(r['amount_cents'] for r in fresh['splits']) != fresh['facts']['amount_cents']:
+        raise ValueError('invalid_splits')
+    conn.execute('UPDATE plaid_transactions SET split_needs_review=0,category_needs_review=0,review_required=0 '
+                 'WHERE item_id=? AND local_txn_id=? AND active_owner=1', (item_id, txn_id))
+    local_account_id = fresh['facts']['account_id']
+    if owns_public_status(conn, item_id, local_account_id):
+        count = conn.execute('SELECT COUNT(*) FROM plaid_transactions p JOIN transactions t ON t.txn_id=p.local_txn_id '
+                             'WHERE p.item_id=? AND t.account_id=? AND p.active_owner=1 AND p.review_required=1',
+                             (item_id, local_account_id)).fetchone()[0]
+        conn.execute('UPDATE plaid_status_public SET review_count=? WHERE local_account_id=?', (count, local_account_id))

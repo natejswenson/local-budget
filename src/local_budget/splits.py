@@ -17,7 +17,7 @@ import sqlite3
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 
-from . import categories
+from . import categories, db
 
 
 class SplitError(ValueError):
@@ -94,6 +94,7 @@ def apply(conn: sqlite3.Connection, txn_id: int, lines: list[dict],
     ["note"]}``. Validated in full BEFORE anything is deleted, so a rejected
     split leaves the previous state intact rather than clearing it and failing.
     """
+    db.begin_immediate(conn)
     _validate(conn, txn_id, lines)
     now = datetime.now().isoformat(timespec="seconds")
     conn.execute("DELETE FROM txn_splits WHERE txn_id = ?", (txn_id,))
@@ -137,8 +138,9 @@ def verify(conn: sqlite3.Connection) -> list[dict]:
 
 def for_txn(conn: sqlite3.Connection, txn_id: int) -> list[dict]:
     return [dict(r) for r in conn.execute(
-        "SELECT split_id, amount_cents, category, subcategory, source, item_ref, note "
-        "FROM txn_splits WHERE txn_id = ? ORDER BY ABS(amount_cents) DESC",
+        "SELECT s.split_id, s.amount_cents, s.category, s.subcategory, s.source, s.item_ref, s.note "
+        "FROM txn_splits s JOIN transactions t ON t.txn_id=s.txn_id "
+        "WHERE s.txn_id = ? AND t.status='posted' ORDER BY ABS(s.amount_cents) DESC",
         (txn_id,)).fetchall()]
 
 
@@ -151,6 +153,6 @@ def list_split_txns(conn: sqlite3.Connection, month: str | None = None) -> list[
         f"""SELECT DISTINCT t.txn_id, t.posted_date, t.merchant_norm,
                    t.amount_cents, t.category AS original_category
               FROM txn_splits s JOIN transactions t ON t.txn_id = s.txn_id
-             WHERE 1=1{where}
+             WHERE t.status='posted'{where}
           ORDER BY t.posted_date DESC, t.txn_id""", params).fetchall()
     return [dict(p) | {"splits": for_txn(conn, p["txn_id"])} for p in parents]

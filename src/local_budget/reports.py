@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from datetime import date
+from datetime import date, datetime, timezone
 
 from . import categories, db
 
@@ -702,3 +702,35 @@ def subcategory_breakdown(category: str, month: str | None = None) -> list[dict]
             "limit_cents": limits.get(sub),
         })
     return out
+
+
+def is_stale(last_commit_at: datetime | None, now: datetime,
+             provider_updated_at: datetime | None = None) -> bool:
+    observed = provider_updated_at or last_commit_at
+    return observed is None or (now - observed).total_seconds() >= 48 * 3600
+
+
+def _health_timestamp(value: str | None) -> datetime | None:
+    try:
+        stamp = datetime.fromisoformat(value) if value else None
+        return stamp if stamp is not None and stamp.tzinfo is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def bank_sync_status(conn=None, *, now: datetime | None = None) -> list[dict]:
+    """Safe local health: no provider access or private connector table reads."""
+    if conn is None:
+        with db.agent_connect() as conn:
+            return bank_sync_status(conn, now=now)
+    now = now or datetime.now(timezone.utc)
+    rows = [dict(row) for row in conn.execute(
+        'SELECT s.local_account_id,a.institution,a.acct_type,a.acct_last4,'
+        's.state,s.last_attempt_at,s.last_commit_at,s.provider_updated_at,'
+        's.readiness,s.review_count,s.safe_error_code '
+        'FROM plaid_status_public s JOIN accounts a ON a.account_id=s.local_account_id '
+        'ORDER BY s.local_account_id')]
+    for row in rows:
+        row['stale'] = is_stale(_health_timestamp(row['last_commit_at']), now,
+                                _health_timestamp(row['provider_updated_at']))
+    return rows

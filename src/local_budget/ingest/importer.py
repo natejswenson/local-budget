@@ -95,7 +95,8 @@ def finish_batch_run(run_id: int, status: str, seen: int, inserted: int,
 
 def import_file(path: Path, detect_near_duplicates: bool = False,
                 run_id: int | None = None, content_hash: str | None = None,
-                source_filename: str | None = None) -> ImportResult:
+                source_filename: str | None = None, *,
+                _intake_locked: bool = False) -> ImportResult:
     """Import an OFX/QFX/CSV file.
 
     `detect_near_duplicates` (default False): the near-duplicate QUARANTINE layer
@@ -121,6 +122,13 @@ def import_file(path: Path, detect_near_duplicates: bool = False,
     `budget import` passes no content_hash → no seen-record is written (current
     behavior, unaffected).
     """
+    if not _intake_locked:
+        from .. import inbox_adapter
+        with inbox_adapter.intake_lock() as got:
+            if not got:
+                raise ValueError("another intake is in progress")
+            return import_file(path, detect_near_duplicates, run_id, content_hash,
+                               source_filename, _intake_locked=True)
     accounts = parse.parse_file(path)
 
     # Rows ofxparse discarded that we could NOT recover (malformed amount/date).
@@ -133,6 +141,12 @@ def import_file(path: Path, detect_near_duplicates: bool = False,
     collisions_no_insert = 0   # fitid_collision rows that inserted nothing (S-2)
     started = db.now_iso()
     with db.connect() as conn:
+        db.begin_immediate(conn)
+        from ..connectors.plaid import store
+        resolved = [(pacct, _upsert_account(conn, pacct)) for pacct in accounts]
+        store.assert_file_import_allowed(conn, [
+            (account_id, txn.posted_date)
+            for pacct, account_id in resolved for txn in pacct.txns])
         rules.seed_builtin_rules(conn)
         from .. import merchants
         merchants.seed_builtin_aliases(conn)
@@ -149,8 +163,7 @@ def import_file(path: Path, detect_near_duplicates: bool = False,
         # seen-record to the OWNING batch instead of this 0-row batch (red-team F7-1).
         skip_owner_runs: set[int] = set()
         try:
-            for pacct in accounts:
-                account_id = _upsert_account(conn, pacct)
+            for pacct, account_id in resolved:
                 for ptxn in pacct.txns:
                     seen += 1
                     outcome = _ingest_txn(conn, account_id, ptxn, run_id, occ,
@@ -300,6 +313,9 @@ def _ingest_txn(conn: sqlite3.Connection, account_id: int, ptxn: parse.ParsedTxn
             # 0-row batch — keeping undo coupled to the real spend (red-team F7-1).
             return {"inserted": 0, "skipped": 1, "conflict": 0, "possible_dup": 0,
                     "collision_no_insert": 0, "owning_run_id": existing["import_run_id"]}
+        from ..connectors.plaid import store
+        if store.is_provider_owned(conn, existing["txn_id"]):
+            raise store.ProviderOwnershipError("provider_owned")
         # Materially changed -> fitid_collision, never silently overwrite.
         _record_conflict(conn, account_id, "fitid_collision", fitid,
                          existing["txn_id"], None, existing["amount_cents"],

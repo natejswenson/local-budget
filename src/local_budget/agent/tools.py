@@ -77,6 +77,7 @@ def _with_rw_conn(fn):
     async def wrapper(args: dict) -> dict:
         try:
             with db.agent_connect(write=True) as conn:
+                db.begin_immediate(conn)
                 return await fn(args, conn)
         except Exception as e:  # noqa: BLE001 — tool boundary
             # Name the failing tool so a multi-write turn reads unambiguously.
@@ -867,6 +868,24 @@ async def monthly_trend(args: dict, conn) -> dict:
     return {"data": {"trend": data}, "rendered": rendered}
 
 
+@_with_ro_conn
+async def bank_sync_status(_args: dict, conn) -> dict:
+    rows = reports.bank_sync_status(conn)
+    displayed = [dict(Account=f"{r['institution']} {r['acct_type']} ••••{r['acct_last4'] or ''}",
+                      State=r['state'], Readiness=r['readiness'] or 'unknown',
+                      Attempt=r['last_attempt_at'] or 'unavailable',
+                      Commit=r['last_commit_at'] or 'unavailable',
+                      Provider=r['provider_updated_at'] or 'unavailable',
+                      Stale='yes' if r['stale'] else 'no', Reviews=r['review_count'])
+                 for r in rows]
+    columns = [(k, label) for k, label in [('Account', 'Account'), ('State', 'Access health'),
+               ('Readiness', 'History readiness'), ('Attempt', 'Local attempt'),
+               ('Commit', 'Committed sync'), ('Provider', 'Provider update'),
+               ('Stale', 'Stale'), ('Reviews', 'Reviews')]]
+    return {'data': {'bank_sync_status': rows},
+            'rendered': render.table(displayed, columns)}
+
+
 async def list_categories(_args: dict) -> dict:
     """The assignable category vocabulary — every write tool validates against
     exact names from this set, so the agent needs a way to discover it instead
@@ -939,6 +958,10 @@ async def open_conflicts(_args: dict, conn) -> dict:
 
 
 TOOL_SPECS: list[ToolSpec] = [
+    ToolSpec("budget_bank_sync_status",
+             "Read safe local bank sync access health, history readiness, freshness and review counts. "
+             "Local attempts, committed syncs and provider update times are distinct; no provider calls.",
+             _obj(), bank_sync_status),
     ToolSpec("get_month_summary",
              "Spend summary for a month (YYYY-MM, default current): spend total, "
              "per-category breakdown, income, transfers, and any unresolved conflicts. "

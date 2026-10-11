@@ -29,7 +29,7 @@ def propose(conn: sqlite3.Connection, txn_id: int) -> dict:
     """
     txn = conn.execute(
         "SELECT txn_id, posted_date, merchant_norm, amount_cents, category "
-        "FROM transactions WHERE txn_id = ?", (txn_id,)).fetchone()
+        "FROM transactions WHERE txn_id = ? AND status='posted'", (txn_id,)).fetchone()
     if txn is None:
         raise NoOrderBehind(f"no transaction {txn_id}")
 
