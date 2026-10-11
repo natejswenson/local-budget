@@ -59,7 +59,7 @@ def gather(conn: sqlite3.Connection, since: str | None = None,
                        MIN(t.txn_id)      AS txn_id
                   FROM walmart_matches m
                   JOIN transactions t ON t.txn_id = m.txn_id
-                 WHERE 1=1{where}
+                 WHERE t.status='posted'{where}
               GROUP BY m.order_number)
             SELECT mo.posted_date, mo.txn_id, mo.order_number,
                    o.channel, i.product_id, i.title, i.seller,
@@ -77,7 +77,7 @@ def gather(conn: sqlite3.Connection, since: str | None = None,
     charges = conn.execute(
         f"""SELECT COUNT(*) n, COALESCE(-SUM(t.amount_cents),0) c
               FROM walmart_matches m JOIN transactions t ON t.txn_id = m.txn_id
-             WHERE 1=1{where}""", params).fetchone()
+             WHERE t.status='posted'{where}""", params).fetchone()
 
     # Coverage must be scoped to the SAME window as the rest of the page.
     # Reporting the all-time figure on a two-month report describes a different

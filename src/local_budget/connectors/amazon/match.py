@@ -181,7 +181,7 @@ def breakdown(conn: sqlite3.Connection, month: str | None = None) -> list[dict]:
               JOIN transactions t        ON t.txn_id = m.txn_id
               JOIN amazon_orders o       ON o.order_number = a.order_number
               JOIN amazon_items i        ON i.order_number = o.order_number
-             WHERE 1=1{where_month}
+             WHERE t.status='posted'{where_month}
           ORDER BY (i.unit_price_cents * COALESCE(i.quantity,1)) DESC""",
         params).fetchall()
     return [dict(r) for r in rows]

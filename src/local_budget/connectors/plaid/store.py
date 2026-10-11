@@ -242,3 +242,48 @@ def enable_account(conn: sqlite3.Connection, *, item_id: int, provider_account_i
     conn.execute('UPDATE plaid_accounts SET enabled=1,history_approved=1 WHERE item_id=? AND provider_account_id=?',
                  (item_id, provider_account_id))
     conn.execute('UPDATE plaid_items SET mapping_generation=mapping_generation+1 WHERE item_id=?', (item_id,))
+
+
+def save_fact(conn, *, item_id, fact, local_txn_id=None, active_owner=0, disposition,
+              split_needs_review=0):
+    """Retain normalized private observations; caller owns locks and transaction."""
+    conn.execute('INSERT INTO plaid_transactions(item_id,transaction_id,provider_account_id,'
+                 'local_txn_id,active_owner,disposition,posted_date,amount_cents,merchant_norm,payee,pending,currency,split_needs_review,review_required) '
+                 'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(item_id,transaction_id) DO UPDATE SET '
+                 'provider_account_id=excluded.provider_account_id,local_txn_id=excluded.local_txn_id,'
+                 'active_owner=excluded.active_owner,disposition=excluded.disposition,posted_date=excluded.posted_date,'
+                 'amount_cents=excluded.amount_cents,merchant_norm=excluded.merchant_norm,payee=excluded.payee,'
+                 'pending=excluded.pending,currency=excluded.currency,split_needs_review=excluded.split_needs_review,'
+                 'review_required=excluded.review_required',
+                 (item_id, fact.transaction_id, fact.account_id, local_txn_id, active_owner, disposition,
+                  fact.posted_date, fact.amount_cents, fact.merchant_norm, fact.payee, fact.pending, fact.currency,
+                  split_needs_review, split_needs_review))
+
+
+def adopt_transaction(conn: sqlite3.Connection, *, item_id: int,
+                      provider_transaction_id: str, local_txn_id: int, fact: TxnFact) -> None:
+    """Bind one fresh reviewed exact match. Caller holds Item/intake locks and immediate."""
+    _require_transaction(conn)
+    if provider_transaction_id != fact.transaction_id or fact.pending or fact.currency != 'USD':
+        raise ValueError('stale_review')
+    if item(conn, item_id)['state'] not in {'disabled', 'active'}:
+        raise ValueError('item_disabled')
+    account = _account(conn, item_id, fact.account_id)
+    if account['currency'] != 'USD' or account['account_type'] is None or account['local_account_id'] is None:
+        raise ValueError('unsupported_account')
+    _assert_account_type(conn, account['local_account_id'], account['account_type'])
+    if conn.execute('SELECT 1 FROM plaid_accounts WHERE local_account_id=? AND enabled=1 '
+                    'AND NOT (item_id=? AND provider_account_id=?)',
+                    (account['local_account_id'], item_id, fact.account_id)).fetchone():
+        raise ValueError('active_source')
+    local = conn.execute('SELECT * FROM transactions WHERE txn_id=?', (local_txn_id,)).fetchone()
+    if (local is None or local['status'] != 'posted' or local['account_id'] != account['local_account_id']
+            or any(local[key] != getattr(fact, key) for key in ('posted_date', 'amount_cents', 'merchant_norm'))):
+        raise ValueError('stale_review')
+    if conn.execute('SELECT 1 FROM plaid_transactions WHERE local_txn_id=? OR (item_id=? AND transaction_id=? AND local_txn_id IS NOT NULL)',
+                    (local_txn_id, item_id, provider_transaction_id)).fetchone():
+        raise ValueError('already_owned')
+    save_fact(conn, item_id=item_id, fact=fact, local_txn_id=local_txn_id, active_owner=1, disposition='adopted')
+    stamp = datetime.now(timezone.utc).isoformat(timespec='seconds')
+    run = conn.execute("INSERT INTO plaid_sync_runs(item_id,started_at,completed_at,outcome) VALUES(?,?,?,'adopted') RETURNING run_id", (item_id, stamp, stamp)).fetchone()[0]
+    conn.execute("INSERT INTO plaid_changes(run_id,local_txn_id,event_kind,created_at) VALUES(?,?,'adopted',?)", (run, local_txn_id, stamp))

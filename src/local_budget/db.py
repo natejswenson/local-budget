@@ -177,7 +177,7 @@ CREATE TABLE IF NOT EXISTS plaid_accounts (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS plaid_active_account ON plaid_accounts(local_account_id) WHERE enabled=1;
 CREATE TABLE IF NOT EXISTS plaid_transactions (
- item_id INTEGER NOT NULL, transaction_id TEXT NOT NULL, provider_account_id TEXT NOT NULL,
+ item_id INTEGER NOT NULL REFERENCES plaid_items(item_id) ON DELETE RESTRICT, transaction_id TEXT NOT NULL, provider_account_id TEXT,
  local_txn_id INTEGER REFERENCES transactions(txn_id) ON DELETE RESTRICT,
  active_owner INTEGER NOT NULL DEFAULT 0 CHECK(active_owner IN (0,1)),
  disposition TEXT NOT NULL DEFAULT 'unreviewed', posted_date TEXT, amount_cents INTEGER,
@@ -498,6 +498,20 @@ def _migrate(conn: sqlite3.Connection) -> None:
         return conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
             (name,)).fetchone() is not None
+
+    # Earlier private Plaid schemas required an account even for ID-only removals.
+    if has_table("plaid_transactions") and any(
+            r[1] == "provider_account_id" and r[3]
+            for r in conn.execute("PRAGMA table_info(plaid_transactions)")):
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+        definition = SCHEMA.split("CREATE TABLE IF NOT EXISTS plaid_transactions (")[1].split(";", 1)[0]
+        conn.execute("CREATE TABLE plaid_transactions_new (" + definition)
+        conn.execute("INSERT INTO plaid_transactions_new SELECT * FROM plaid_transactions")
+        conn.execute("DROP TABLE plaid_transactions")
+        conn.execute("ALTER TABLE plaid_transactions_new RENAME TO plaid_transactions")
+        conn.execute("CREATE UNIQUE INDEX plaid_active_txn ON plaid_transactions(local_txn_id) "
+                     "WHERE active_owner=1 AND local_txn_id IS NOT NULL")
 
     if "subcategory" not in cols("transactions"):
         conn.execute("ALTER TABLE transactions ADD COLUMN subcategory TEXT")

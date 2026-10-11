@@ -261,7 +261,7 @@ def split_settlements(conn: sqlite3.Connection, month: str | None = None) -> dic
         f"""SELECT m.order_number, COUNT(*) AS n
               FROM walmart_matches m
               JOIN transactions t ON t.txn_id = m.txn_id
-             WHERE 1=1{where_month}
+             WHERE t.status='posted'{where_month}
           GROUP BY m.order_number""", params).fetchall()
     multi = [r for r in rows if r["n"] > 1]
     return {"orders": len(rows), "split_orders": len(multi),
@@ -314,7 +314,7 @@ def breakdown(conn: sqlite3.Connection, month: str | None = None) -> list[dict]:
               JOIN transactions t   ON t.txn_id = m.txn_id
               JOIN walmart_orders o ON o.order_number = m.order_number
               JOIN walmart_items i  ON i.order_number = o.order_number
-             WHERE 1=1{where_month}
+             WHERE t.status='posted'{where_month}
           GROUP BY i.item_id
           ORDER BY i.line_price_cents DESC""", params).fetchall()
     return [dict(r) for r in rows]

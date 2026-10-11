@@ -201,7 +201,7 @@ def undo_last() -> dict:
             return {"undone": False, "reason": "nothing to undo"}
         changes = conn.execute(
             "SELECT txn_id, old_canonical, old_subcategory, new_pattern "
-            "FROM normalize_changes WHERE batch_id=?", (batch,)).fetchall()
+            "FROM normalize_changes WHERE batch_id=? AND invalidated_reason IS NULL", (batch,)).fetchall()
         restored = 0
         for c in changes:
             if c["txn_id"] and c["txn_id"] > 0:          # real txn snapshot (skip pattern sentinels)
