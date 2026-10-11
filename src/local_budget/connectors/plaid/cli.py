@@ -411,7 +411,8 @@ def sync_command(connection, all_items, non_interactive, as_json):
                 result = syncing.sync_item(db.get_db_path(), item_id, client, vault, now=_now())
             results.append(dict(connection=item_id, **asdict(result)))
         except (CredentialError, PlaidError, syncing.SyncStateError) as error:
-            results.append(dict(connection=item_id, outcome='failed', safe_error_code=error.code))
+            outcome = 'skipped' if error.code in {'item_busy', 'intake_busy'} else 'failed'
+            results.append(dict(connection=item_id, outcome=outcome, safe_error_code=error.code))
         except click.ClickException:
             results.append(dict(connection=item_id, outcome='failed', safe_error_code='unknown_item'))
     if as_json:
