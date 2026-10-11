@@ -79,6 +79,7 @@ def test_rebuild_requires_complete_no_overlap(plaid_db, seed_item):
         conn.execute('BEGIN IMMEDIATE')
         store.set_lifecycle(conn, item, 'recovery_required')
         current = store.item(conn, item)
+        conn.execute("INSERT INTO transactions(account_id,fitid,posted_date,amount_cents,merchant_norm,imported_at) VALUES(1,'unclaimed','2026-10-01',-1200,'SHOP','now')")
         for batch in [SyncBatch('next', 'full', (), 'INITIAL_UPDATE_COMPLETE', None),
                       SyncBatch('next', 'full', (('added', fact('overlap')),), 'HISTORICAL_UPDATE_COMPLETE', None)]:
             with pytest.raises(ValueError, match='history_incomplete|unresolved_overlap'):

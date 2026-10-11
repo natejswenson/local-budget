@@ -175,7 +175,7 @@ def apply_batch(conn: sqlite3.Connection, item_id: int, batch: SyncBatch, *, exp
     _eligible_item(current)
     if (not isinstance(batch.next_cursor, str) or batch.readiness not in _READINESS | {'unknown'}):
         raise SyncStateError('invalid_batch')
-    final = final_events(batch)
+    final = final_events(store.with_deferred_events(conn, item_id, batch))
     accounts = {r['provider_account_id']: dict(r) for r in conn.execute('SELECT * FROM plaid_accounts WHERE item_id=?', (item_id,))}
     if not any(a['enabled'] and a['history_approved'] for a in accounts.values()):
         raise SyncStateError('item_disabled')
@@ -208,15 +208,13 @@ def apply_batch(conn: sqlite3.Connection, item_id: int, batch: SyncBatch, *, exp
             account = accounts.get(value.account_id)
             if account is None:
                 raise SyncStateError('unknown_account')
-            if (account['currency'] != 'USD' or account['account_type'] is None
-                    or (mapping is not None and mapping['provider_account_id'] is not None and mapping['provider_account_id'] != value.account_id)):
+            if (mapping is not None and mapping['provider_account_id'] is not None
+                    and mapping['provider_account_id'] != value.account_id):
                 raise SyncStateError('account_changed')
             if old is not None and old['account_id'] != account['local_account_id']:
                 raise SyncStateError('ownership_changed')
         else:
             account = accounts.get(mapping['provider_account_id']) if mapping else None
-        if old is not None and (account is None or not account['enabled'] or not account['history_approved']):
-            raise SyncStateError('account_changed')
         prepared.append((provider_id, operation, value, mapping, old, account))
     stamp = datetime.now(timezone.utc).isoformat(timespec='seconds')
     run_id = conn.execute('INSERT INTO plaid_sync_runs(item_id,started_at) VALUES(?,?) RETURNING run_id', (item_id, stamp)).fetchone()[0]
@@ -227,6 +225,15 @@ def apply_batch(conn: sqlite3.Connection, item_id: int, batch: SyncBatch, *, exp
         txn_id = old['txn_id'] if old else None
         archived_splits = archived_matches = None
         split_review = mapping['split_needs_review'] if mapping else 0
+        category_review = mapping['category_needs_review'] if mapping else 0
+        if account is not None and not (account['enabled'] and account['history_approved']):
+            from dataclasses import asdict
+            deferred = json.dumps(dict(operation=operation, fact=asdict(value) if operation != 'removed' else None))
+            if mapping is None:
+                store.save_fact(conn, item_id=item_id, fact=value, disposition='excluded')
+            conn.execute('UPDATE plaid_transactions SET deferred_event=? WHERE item_id=? AND transaction_id=?',
+                         (deferred, item_id, provider_id))
+            continue
         if operation == 'removed':
             if old is not None and old['status'] != 'removed':
                 archived_splits, archived_matches, review = derived.invalidate(conn, old, None, status='removed')
@@ -234,8 +241,8 @@ def apply_batch(conn: sqlite3.Connection, item_id: int, batch: SyncBatch, *, exp
                 conn.execute("UPDATE transactions SET status='removed' WHERE txn_id=?", (txn_id,))
                 counts['removed'] += 1
             conn.execute("INSERT INTO plaid_transactions(item_id,transaction_id,disposition) VALUES(?,?,'removed') "
-                         "ON CONFLICT(item_id,transaction_id) DO UPDATE SET disposition=CASE WHEN disposition IN ('adopted','pending_adopted','removed_adopted') THEN 'removed_adopted' ELSE 'removed' END,review_required=0,split_needs_review=?",
-                         (item_id, provider_id, split_review))
+                         "ON CONFLICT(item_id,transaction_id) DO UPDATE SET disposition=CASE WHEN disposition IN ('adopted','pending_adopted','removed_adopted') THEN 'removed_adopted' ELSE 'removed' END,review_required=?,split_needs_review=?,deferred_event=NULL",
+                         (item_id, provider_id, bool(split_review or category_review), split_review))
         else:
             adopted = mapping is not None and mapping['disposition'] in {'adopted', 'pending_adopted', 'removed_adopted'}
             eligible = store.eligible(value, account) or (adopted and not value.pending and account['enabled'])
@@ -251,6 +258,7 @@ def apply_batch(conn: sqlite3.Connection, item_id: int, batch: SyncBatch, *, exp
                 if changed:
                     archived_splits, archived_matches, review = derived.invalidate(conn, old, value, status=status)
                     split_review |= review
+                    category_review |= derived.category_needs_review(old, value)
                     cat, sub, source, canonical = derived.categories(conn, value, old)
                     conn.execute('UPDATE transactions SET posted_date=?,amount_cents=?,merchant_norm=?,payee=?,status=?,category=?,subcategory=?,category_source=?,canonical_merchant=? WHERE txn_id=?',
                                  (value.posted_date, value.amount_cents, value.merchant_norm, value.payee, status, cat, sub, source, canonical, txn_id))
@@ -263,10 +271,14 @@ def apply_batch(conn: sqlite3.Connection, item_id: int, batch: SyncBatch, *, exp
                                       (account['local_account_id'], fitid, value.posted_date, value.amount_cents, value.payee, value.merchant_norm, cat, sub, source, canonical, stamp)).fetchone()[0]
                 counts['inserted'] += 1
             store.save_fact(conn, item_id=item_id, fact=value, local_txn_id=txn_id,
-                            active_owner=int(txn_id is not None), disposition=disposition, split_needs_review=split_review)
+                            active_owner=int(txn_id is not None), disposition=disposition, split_needs_review=split_review,
+                            category_needs_review=category_review)
         after = conn.execute('SELECT * FROM transactions WHERE txn_id=?', (txn_id,)).fetchone() if txn_id else None
-        conn.execute('INSERT INTO plaid_changes(run_id,local_txn_id,event_kind,before_facts,after_facts,archived_splits,archived_matches,created_at) VALUES(?,?,?,?,?,?,?,?)',
-                     (run_id, txn_id, operation, _facts_json(old) if old else None, _facts_json(after) if after else None, archived_splits, archived_matches, stamp))
+        new_mapping = conn.execute('SELECT * FROM plaid_transactions WHERE item_id=? AND transaction_id=?', (item_id, provider_id)).fetchone()
+        if (dict(old) if old else None) != (dict(after) if after else None) or (
+                dict(mapping) if mapping else None) != dict(new_mapping):
+            conn.execute('INSERT INTO plaid_changes(run_id,local_txn_id,event_kind,before_facts,after_facts,archived_splits,archived_matches,created_at) VALUES(?,?,?,?,?,?,?,?)',
+                         (run_id, txn_id, operation, _facts_json(old) if old else None, _facts_json(after) if after else None, archived_splits, archived_matches, stamp))
     review_count = conn.execute('SELECT COUNT(*) FROM plaid_transactions WHERE item_id=? AND review_required=1', (item_id,)).fetchone()[0]
     outcome = 'healthy' if batch.readiness == 'HISTORICAL_UPDATE_COMPLETE' else 'initializing'
     conn.execute('UPDATE plaid_sync_runs SET completed_at=?,outcome=?,inserted=?,updated=?,removed=?,review_count=?,request_id=?,readiness=? WHERE run_id=?',
@@ -333,7 +345,7 @@ def sync_item(db_path: Path, item_id: int, client: PlaidClient, vault: KeychainC
                 if snapshot['state'] != 'reconnect_required' or not store.reconnect_completed(conn, snapshot):
                     _eligible_item(snapshot)
                 mapped_ids = {r[0] for r in conn.execute('SELECT provider_account_id FROM plaid_accounts WHERE item_id=? AND enabled=1 AND history_approved=1', (item_id,))}
-                if not mapped_ids:
+                if not mapped_ids and not (snapshot['state'] == 'reconnect_required' and store.reconnect_completed(conn, snapshot)):
                     raise SyncStateError('item_disabled')
             token = vault.get(snapshot['credential_ref'], interactive=False)
             deadline = min(_monotonic()+300, getattr(client, '_deadline', float('inf')))

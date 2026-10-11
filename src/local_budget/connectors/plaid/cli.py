@@ -212,6 +212,7 @@ def _show_review(review):
         click.echo(f"{row['transaction_id']} | {row['posted_date']} | {row['amount_cents']} cents | "
                    f"{row['merchant_norm']} | excluded={row['excluded_reason']} | "
                    f"local candidates={row['candidate_txn_ids']}")
+    click.echo(f"Explicit removals of local transactions: {review.get('removed_local_txn_ids', [])}")
     click.echo(f"Incoming eligible total: {review['incoming_total_cents']} cents")
     click.echo(f"Unresolved overlaps: {review['unresolved_overlap_count']}")
 
@@ -243,7 +244,8 @@ def _review_command(connection, *, provider_account=None, provider_transaction=N
                 return
             value = None
             if provider_transaction is not None:
-                final = syncing.final_events(batch).get(provider_transaction)
+                with db.connect(path) as conn:
+                    final = syncing.final_events(store.with_deferred_events(conn, connection, batch)).get(provider_transaction)
                 if final is None or final[0] == 'removed':
                     raise click.ClickException('unknown_transaction')
                 value = final[1]
@@ -392,12 +394,13 @@ def sync_command(connection, all_items, non_interactive, as_json):
         ids = [connection]
         if all_items:
             ids = [r[0] for r in conn.execute(
-                "SELECT DISTINCT i.item_id FROM plaid_items i JOIN plaid_accounts a USING(item_id) "
-                "WHERE a.enabled=1 AND a.history_approved=1 AND "
-                "(i.state IN ('disabled','active') OR (i.state='reconnect_required' AND EXISTS "
+                "SELECT i.item_id FROM plaid_items i WHERE "
+                "(i.state IN ('disabled','active') AND EXISTS (SELECT 1 FROM plaid_accounts a "
+                "WHERE a.item_id=i.item_id AND a.enabled=1 AND a.history_approved=1)) "
+                "OR (i.state='reconnect_required' AND EXISTS "
                 "(SELECT 1 FROM plaid_link_sessions l WHERE l.item_id=i.item_id AND l.mode='update' "
                 "AND l.completed=1 AND l.state='completed' AND (i.last_attempt_at IS NULL OR "
-                "julianday(l.created_at)>=julianday(i.last_attempt_at))))) ORDER BY i.item_id")]
+                "julianday(l.created_at)>=julianday(i.last_attempt_at)))) ORDER BY i.item_id")]
     results = []
     for item_id in ids:
         try:
@@ -562,7 +565,7 @@ def replace_connection(old, new):
                 batch = syncing.fetch_review_batch(client, token, cursor=snapshot['cursor'], deadline=deadline)
                 with db.connect(path) as conn:
                     review = store.preview(conn, new, batch)
-                    owners = {r['local_txn_id'] for r in conn.execute('SELECT local_txn_id FROM plaid_transactions WHERE item_id=? AND active_owner=1 AND local_txn_id IS NOT NULL', (old,))}
+                    owners = {r['local_txn_id']: dict(r) for r in conn.execute('SELECT * FROM plaid_transactions WHERE item_id=? AND active_owner=1 AND local_txn_id IS NOT NULL', (old,))}
                     locals_ = {r['txn_id']: dict(r) for r in conn.execute('SELECT * FROM transactions') if r['txn_id'] in owners}
                 _show_review(review)
                 if batch.readiness != 'HISTORICAL_UPDATE_COMPLETE':
@@ -577,6 +580,17 @@ def replace_connection(old, new):
                         click.echo(f"Local candidate {tid} | account={local['account_id']} | {local['posted_date']} | "
                                    f"{local['amount_cents']} cents | {local['merchant_norm']} | {local['status']} | "
                                    f"payee={local['payee'] or ''} | category={local['category'] or ''}")
+                        if owners[tid]['deferred_event'] is not None:
+                            import json
+                            deferred = json.loads(owners[tid]['deferred_event'])
+                            if deferred['operation'] == 'removed':
+                                click.echo(f'Deferred old-source removal for local transaction {tid}.')
+                            else:
+                                observed = deferred['fact']
+                                click.echo(f"Deferred old-source {deferred['operation']} for local transaction {tid} | "
+                                           f"{observed['posted_date']} | {observed['amount_cents']} cents | "
+                                           f"{observed['merchant_norm']} | payee={observed['payee']} | "
+                                           f"pending={observed['pending']} | currency={observed['currency']}")
                     chosen = click.prompt(f"Explicit local match for {row['transaction_id']} (0 skips)", type=int, default=0)
                     if chosen == 0:
                         continue
@@ -587,7 +601,8 @@ def replace_connection(old, new):
                 if not matches:
                     raise click.ClickException('no_matches')
                 click.confirm('Retire the old source and transfer these exact matches? New mappings stay disabled; '
-                              'unresolved overlaps need further review before activation.', abort=True)
+                              'fresh replacement facts take precedence over the displayed old-source deferred observations. '
+                              'Unresolved overlaps need further review before activation.', abort=True)
                 with inbox_adapter.intake_lock() as intake:
                     if not intake:
                         raise syncing.SyncStateError('intake_busy')
@@ -597,9 +612,10 @@ def replace_connection(old, new):
                             raise click.ClickException('stale_review')
                         for tid in matches.values():
                             fresh = conn.execute('SELECT * FROM transactions WHERE txn_id=?', (tid,)).fetchone()
-                            if fresh is None or dict(fresh) != locals_[tid]:
+                            owner = conn.execute('SELECT * FROM plaid_transactions WHERE item_id=? AND local_txn_id=? AND active_owner=1', (old, tid)).fetchone()
+                            if fresh is None or dict(fresh) != locals_[tid] or owner is None or dict(owner) != owners[tid]:
                                 raise click.ClickException('stale_review')
-                        for provider_id, (operation, value) in syncing.final_events(batch).items():
+                        for provider_id, (operation, value) in syncing.final_events(store.with_deferred_events(conn, new, batch)).items():
                             if operation == 'removed':
                                 continue
                             syncing._validate_fact(value)
@@ -635,3 +651,54 @@ def status(as_json):
                        f"committed sync: {row['last_commit_at'] or 'unavailable'}; "
                        f"provider update: {row['provider_updated_at'] or 'unavailable'}; "
                        f"reviews: {row['review_count']}")
+
+
+@plaid.command(name='review')
+@click.argument('connection', type=click.IntRange(1))
+@click.option('--txn', type=click.IntRange(1), help='Interactively acknowledge one local transaction.')
+def review_corrections(connection, txn):
+    """List correction flags or review and acknowledge current local facts."""
+    from ... import inbox_adapter
+    from .locks import item_locks
+
+    _host()
+    if txn is not None:
+        _interactive()
+    path = db.get_db_path()
+    try:
+        with item_locks(path, [connection]) as acquired:
+            if not acquired:
+                raise click.ClickException('item_busy')
+            with db.connect(path) as conn:
+                store.item(conn, connection)
+                rows = store.correction_reviews(conn, connection)
+                reviewed = store.correction_review_snapshot(conn, connection, txn) if txn is not None else None
+            for row in rows:
+                if txn is None or row['txn_id'] == txn:
+                    reasons = [name for name in ('category', 'split') if row[name + '_needs_review']]
+                    click.echo(f"Local transaction {row['txn_id']} | account={row['account_id']} | {row['posted_date']} | "
+                               f"{row['amount_cents']} cents | {row['merchant_norm']} | {row['status']} | "
+                               f"payee={row['payee'] or ''} | category={row['category'] or ''} | "
+                               f"subcategory={row['subcategory'] or ''} | review={','.join(reasons)}")
+            if reviewed is None:
+                if not rows:
+                    click.echo('No correction reviews pending.')
+                return
+            for split in reviewed['splits']:
+                click.echo(f"Split {split['split_id']} | {split['amount_cents']} cents | "
+                           f"{split['category']} | {split['subcategory'] or ''}")
+            if not reviewed['splits']:
+                click.echo('No splits: the corrected parent amount is used.')
+            click.confirm('Acknowledge these current facts, category and splits?', abort=True)
+            with inbox_adapter.intake_lock() as intake:
+                if not intake:
+                    raise click.ClickException('intake_busy')
+                with db.connect(path) as conn:
+                    conn.execute('BEGIN IMMEDIATE')
+                    store.acknowledge_correction(conn, connection, txn, reviewed)
+            click.echo('Correction review acknowledged.')
+    except KeyError:
+        raise click.ClickException('unknown_item') from None
+    except ValueError as error:
+        safe = str(error) if str(error) in {'review_changed', 'invalid_splits'} else 'invalid_review'
+        raise click.ClickException(safe) from None

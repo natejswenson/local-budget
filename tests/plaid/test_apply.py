@@ -190,9 +190,10 @@ def test_outer_failure_rolls_back_facts_maps_audit_health_and_cursor(
             "plaid_transactions",
             "plaid_changes",
             "plaid_sync_runs",
-            "plaid_status_public",
         ]:
             assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+        assert store.public_status(conn)[0]["state"] == "awaiting_history_review"
+        assert store.public_status(conn)[0]["last_commit_at"] is None
         assert store.item(conn, item)["cursor"] is None
 
 
@@ -692,13 +693,14 @@ def test_application_budget_expiry_rolls_back_before_cursor_commit(
                 deadline=300,
             )
     with db.connect(plaid_db) as conn:
+        assert store.public_status(conn)[0]["state"] == "awaiting_history_review"
+        assert store.public_status(conn)[0]["last_commit_at"] is None
         assert store.item(conn, item)["cursor"] is None
         for table in [
             "transactions",
             "plaid_transactions",
             "plaid_changes",
             "plaid_sync_runs",
-            "plaid_status_public",
         ]:
             assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
 

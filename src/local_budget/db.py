@@ -201,6 +201,8 @@ CREATE TABLE IF NOT EXISTS plaid_transactions (
  merchant_norm TEXT, payee TEXT, pending INTEGER CHECK(pending IN (0,1)), currency TEXT,
  review_required INTEGER NOT NULL DEFAULT 0 CHECK(review_required IN (0,1)),
  split_needs_review INTEGER NOT NULL DEFAULT 0 CHECK(split_needs_review IN (0,1)),
+ category_needs_review INTEGER NOT NULL DEFAULT 0 CHECK(category_needs_review IN (0,1)),
+ deferred_event TEXT,
  PRIMARY KEY(item_id,transaction_id),
  FOREIGN KEY(item_id,provider_account_id) REFERENCES plaid_accounts(item_id,provider_account_id) ON DELETE RESTRICT
 );
@@ -524,11 +526,20 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute("BEGIN IMMEDIATE")
         definition = SCHEMA.split("CREATE TABLE IF NOT EXISTS plaid_transactions (")[1].split(";", 1)[0]
         conn.execute("CREATE TABLE plaid_transactions_new (" + definition)
-        conn.execute("INSERT INTO plaid_transactions_new SELECT * FROM plaid_transactions")
+        columns = ",".join(r[1] for r in conn.execute("PRAGMA table_info(plaid_transactions)"))
+        conn.execute(f"INSERT INTO plaid_transactions_new ({columns}) SELECT {columns} FROM plaid_transactions")
         conn.execute("DROP TABLE plaid_transactions")
         conn.execute("ALTER TABLE plaid_transactions_new RENAME TO plaid_transactions")
         conn.execute("CREATE UNIQUE INDEX plaid_active_txn ON plaid_transactions(local_txn_id) "
                      "WHERE active_owner=1 AND local_txn_id IS NOT NULL")
+
+    if has_table("plaid_transactions"):
+        for name, definition in (
+            ("category_needs_review", "INTEGER NOT NULL DEFAULT 0 CHECK(category_needs_review IN (0,1))"),
+            ("deferred_event", "TEXT"),
+        ):
+            if name not in cols("plaid_transactions"):
+                conn.execute(f"ALTER TABLE plaid_transactions ADD COLUMN {name} {definition}")
 
     if "subcategory" not in cols("transactions"):
         conn.execute("ALTER TABLE transactions ADD COLUMN subcategory TEXT")

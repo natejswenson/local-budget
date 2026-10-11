@@ -78,3 +78,11 @@ def invalidate(conn, old, fact, *, status):
         json.dumps(archived_matches) if archived_matches else None,
         bool(archived_splits),
     )
+
+
+def category_needs_review(old, fact):
+    """Preserve manual labels but flag a changed merchant or charge direction."""
+    return old['category_source'] == 'manual' and (
+        old['merchant_norm'] != fact.merchant_norm
+        or (old['amount_cents'] < 0) != (fact.amount_cents < 0)
+    )

@@ -178,7 +178,7 @@ def transfer_ownership(conn, *, old_item_id: int, new_item_id: int,
     run = conn.execute("INSERT INTO plaid_sync_runs(item_id,started_at,completed_at,outcome) VALUES(?,?,?,'replaced') RETURNING run_id", (new_item_id, stamp, stamp)).fetchone()[0]
     for provider_id, local_id, owner in prepared:
         conn.execute('UPDATE plaid_transactions SET active_owner=0 WHERE item_id=? AND transaction_id=?', (old_item_id, owner['transaction_id']))
-        conn.execute("UPDATE plaid_transactions SET local_txn_id=?,active_owner=1,disposition='adopted',split_needs_review=?,review_required=? WHERE item_id=? AND transaction_id=?", (local_id, owner['split_needs_review'], owner['review_required'], new_item_id, provider_id))
+        conn.execute("UPDATE plaid_transactions SET local_txn_id=?,active_owner=1,disposition='adopted',split_needs_review=?,category_needs_review=?,review_required=? WHERE item_id=? AND transaction_id=?", (local_id, owner['split_needs_review'], owner['category_needs_review'], owner['review_required'], new_item_id, provider_id))
         conn.execute("INSERT INTO plaid_changes(run_id,local_txn_id,event_kind,created_at) VALUES(?,?,'ownership_transferred',?)", (run, local_id, stamp))
     conn.execute('UPDATE plaid_accounts SET enabled=0 WHERE item_id IN (?,?)', (old_item_id, new_item_id))
     conn.execute('UPDATE plaid_items SET mapping_generation=mapping_generation+1 WHERE item_id IN (?,?)', (old_item_id, new_item_id))

@@ -1,5 +1,6 @@
 """Fabricated end-to-end host acceptance; no network or native Keychain access."""
 import subprocess
+import logging
 import sys
 import json
 import sqlite3
@@ -73,6 +74,9 @@ def cursor_commits(path):
 def test_host_lifecycle_atomic_corrections_backup_replay_and_privacy(
     plaid_db, seed_item, host, caplog
 ):
+    caplog.set_level(logging.DEBUG)
+    caplog.set_level(logging.DEBUG, logger="httpx")
+    caplog.set_level(logging.DEBUG, logger="httpcore")
     replies, requests, vault = host
     item = seed_item()
     connection = str(item)
@@ -162,7 +166,9 @@ def test_host_lifecycle_atomic_corrections_backup_replay_and_privacy(
         assert reports.month_summary("2026-10", conn=conn)["spend_total_cents"] == 1600
     assert requests[-2:] == [("/transactions/sync", "posted"), ("/transactions/sync", "partial")]
     assert not replies
-    assert ACCESS not in caplog.text and SECRET not in caplog.text
+    assert any(r.name == "httpx" and r.levelno == logging.INFO for r in caplog.records)
+    for sentinel in (ACCESS, SECRET, "test-ref-test-item", "FABRICATED_CLIENT", "before-boundary", "never-committed", "CORRECTED SHOP"):
+        assert sentinel not in caplog.text
 
 
 def test_native_imports_remain_lazy_under_simulated_linux():

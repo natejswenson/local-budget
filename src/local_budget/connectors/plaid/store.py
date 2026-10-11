@@ -113,6 +113,7 @@ def discover_accounts(conn: sqlite3.Connection, *, item_id: int, accounts: list[
             conn.execute('UPDATE plaid_accounts SET enabled=0,history_approved=0 WHERE item_id=? AND provider_account_id=?',
                          (item_id, provider_id))
             conn.execute('UPDATE plaid_items SET mapping_generation=mapping_generation+1 WHERE item_id=?', (item_id,))
+            project_mapping_review(conn, item_id, existing['local_account_id'])
 
 
 def create_local_account(conn: sqlite3.Connection, *, item_id: int, provider_account_id: str) -> int:
@@ -163,6 +164,9 @@ def map_account(conn: sqlite3.Connection, *, item_id: int, provider_account_id: 
                  'WHERE item_id=? AND provider_account_id=?',
                  (local_account_id, start_date, item_id, provider_account_id))
     conn.execute('UPDATE plaid_items SET mapping_generation=mapping_generation+1 WHERE item_id=?', (item_id,))
+    project_mapping_review(conn, item_id, local_account_id)
+    if account['local_account_id'] != local_account_id:
+        project_mapping_review(conn, item_id, account['local_account_id'])
 
 
 def eligible(fact: TxnFact, account: dict) -> bool:
@@ -180,11 +184,14 @@ def preview(conn: sqlite3.Connection, item_id: int, batch: SyncBatch) -> dict:
     if current['cursor'] != batch.original_cursor:
         raise ValueError('stale_cursor')
     facts = {}
-    for operation, value in batch.events:
+    removed = set()
+    for operation, value in with_deferred_events(conn, item_id, batch).events:
         if operation == 'removed':
             facts.pop(value, None)
+            removed.add(value)
         elif operation in {'added', 'modified'} and isinstance(value, TxnFact):
             facts[value.transaction_id] = value
+            removed.discard(value.transaction_id)
         else:
             raise ValueError('invalid_batch')
     rows = []
@@ -206,8 +213,11 @@ def preview(conn: sqlite3.Connection, item_id: int, batch: SyncBatch) -> dict:
         if reason is None and owned is None:
             candidates = [r[0] for r in conn.execute(
                 "SELECT txn_id FROM transactions WHERE account_id=? AND posted_date=? AND amount_cents=? "
-                "AND merchant_norm=? AND status='posted' ORDER BY txn_id",
-                (account['local_account_id'], fact.posted_date, fact.amount_cents, fact.merchant_norm))]
+                "AND merchant_norm=? AND status='posted' AND NOT EXISTS ("
+                "SELECT 1 FROM plaid_transactions p WHERE p.local_txn_id=transactions.txn_id "
+                "AND p.item_id=? AND p.active_owner=1 AND p.transaction_id<>?) ORDER BY txn_id",
+                (account['local_account_id'], fact.posted_date, fact.amount_cents, fact.merchant_norm,
+                 item_id, fact.transaction_id))]
         rows.append(dict(transaction_id=fact.transaction_id, provider_account_id=fact.account_id,
                          posted_date=fact.posted_date, amount_cents=fact.amount_cents,
                          merchant_norm=fact.merchant_norm, candidate_txn_ids=candidates, excluded_reason=reason))
@@ -215,6 +225,9 @@ def preview(conn: sqlite3.Connection, item_id: int, batch: SyncBatch) -> dict:
     return dict(mapping_generation=current['mapping_generation'], readiness=batch.readiness,
                 returned_coverage=dict(first_date=min(dates) if dates else None,
                                        last_date=max(dates) if dates else None),
+                removed_local_txn_ids=[r[0] for r in conn.execute(
+                    'SELECT local_txn_id,transaction_id FROM plaid_transactions WHERE item_id=? '
+                    'AND local_txn_id IS NOT NULL ORDER BY local_txn_id', (item_id,)) if r[1] in removed],
                 transactions=rows, unresolved_overlap_count=sum(bool(r['candidate_txn_ids']) for r in rows),
                 incoming_total_cents=sum(r['amount_cents'] for r in rows if r['excluded_reason'] is None))
 
@@ -244,19 +257,19 @@ def enable_account(conn: sqlite3.Connection, *, item_id: int, provider_account_i
 
 
 def save_fact(conn, *, item_id, fact, local_txn_id=None, active_owner=0, disposition,
-              split_needs_review=0):
+              split_needs_review=0, category_needs_review=0):
     """Retain normalized private observations; caller owns locks and transaction."""
     conn.execute('INSERT INTO plaid_transactions(item_id,transaction_id,provider_account_id,'
-                 'local_txn_id,active_owner,disposition,posted_date,amount_cents,merchant_norm,payee,pending,currency,split_needs_review,review_required) '
-                 'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(item_id,transaction_id) DO UPDATE SET '
+                 'local_txn_id,active_owner,disposition,posted_date,amount_cents,merchant_norm,payee,pending,currency,split_needs_review,category_needs_review,review_required) '
+                 'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(item_id,transaction_id) DO UPDATE SET '
                  'provider_account_id=excluded.provider_account_id,local_txn_id=excluded.local_txn_id,'
                  'active_owner=excluded.active_owner,disposition=excluded.disposition,posted_date=excluded.posted_date,'
                  'amount_cents=excluded.amount_cents,merchant_norm=excluded.merchant_norm,payee=excluded.payee,'
                  'pending=excluded.pending,currency=excluded.currency,split_needs_review=excluded.split_needs_review,'
-                 'review_required=excluded.review_required',
+                 'category_needs_review=excluded.category_needs_review,review_required=excluded.review_required,deferred_event=NULL',
                  (item_id, fact.transaction_id, fact.account_id, local_txn_id, active_owner, disposition,
                   fact.posted_date, fact.amount_cents, fact.merchant_norm, fact.payee, fact.pending, fact.currency,
-                  split_needs_review, split_needs_review))
+                  split_needs_review, category_needs_review, bool(split_needs_review or category_needs_review)))
 
 
 def adopt_transaction(conn: sqlite3.Connection, *, item_id: int,
@@ -396,11 +409,11 @@ def refresh_item_health(conn, *, item_id: int, item_response: dict,
     stamp = _health_timestamp(transactions.get('last_successful_update')) if isinstance(transactions, dict) else None
     provider_updated_at = stamp.isoformat(timespec='seconds') if stamp else None
     conn.execute('UPDATE plaid_items SET provider_updated_at=? WHERE item_id=?', (provider_updated_at, item_id))
-    # Update completion alone is insufficient: mapped approved accounts must still
-    # have access, and the update receipt must follow the reconnect failure.
-    if (current['state'] == 'reconnect_required' and reconnect_completed(conn, current)
-            and conn.execute('SELECT 1 FROM plaid_accounts WHERE item_id=? AND enabled=1 AND history_approved=1', (item_id,)).fetchone()):
-        set_lifecycle(conn, item_id, 'active')
+    # Verified update restores lifecycle eligibility, not history approval.
+    # Without eligible mappings the Item returns to disabled mapping review.
+    if current['state'] == 'reconnect_required' and reconnect_completed(conn, current):
+        has_enabled = conn.execute('SELECT 1 FROM plaid_accounts WHERE item_id=? AND enabled=1 AND history_approved=1', (item_id,)).fetchone()
+        set_lifecycle(conn, item_id, 'active' if has_enabled else 'disabled')
         # Consume the health-verified receipt so a later reconnect failure cannot
         # reuse it, even when both events share a second-resolution timestamp.
         conn.execute("UPDATE plaid_link_sessions SET state='health_verified' WHERE item_id=? AND mode='update' AND completed=1 AND state='completed'", (item_id,))
@@ -435,4 +448,75 @@ def set_lifecycle(conn: sqlite3.Connection, item_id: int, state: str, *, safe_er
         # Do not overwrite another active source's public health after replacement.
         if not owns_public_status(conn, item_id, row[0]):
             continue
-        conn.execute('INSERT INTO plaid_status_public(local_account_id,state,safe_error_code) VALUES(?,?,?) ON CONFLICT(local_account_id) DO UPDATE SET state=excluded.state,safe_error_code=excluded.safe_error_code', (row[0], public, safe_error_code))
+        account_public = public
+        if state == 'active' and not conn.execute(
+                'SELECT 1 FROM plaid_accounts WHERE item_id=? AND local_account_id=? AND enabled=1 AND history_approved=1',
+                (item_id, row[0])).fetchone():
+            account_public = 'awaiting_history_review'
+        conn.execute('INSERT INTO plaid_status_public(local_account_id,state,safe_error_code) VALUES(?,?,?) ON CONFLICT(local_account_id) DO UPDATE SET state=excluded.state,safe_error_code=excluded.safe_error_code', (row[0], account_public, safe_error_code))
+
+
+def project_mapping_review(conn, item_id, local_account_id):
+    """Mapping edits project loss of eligibility without fabricating timestamps."""
+    if local_account_id is None or not owns_public_status(conn, item_id, local_account_id):
+        return
+    if conn.execute('SELECT 1 FROM plaid_accounts WHERE local_account_id=? AND enabled=1',
+                    (local_account_id,)).fetchone():
+        return
+    conn.execute("INSERT INTO plaid_status_public(local_account_id,state) VALUES(?,'awaiting_history_review') "
+                 "ON CONFLICT(local_account_id) DO UPDATE SET state=excluded.state,safe_error_code=NULL",
+                 (local_account_id,))
+
+
+def with_deferred_events(conn, item_id, batch):
+    """Replay retained normalized events before fresh observations (fresh wins)."""
+    import json
+
+    events = []
+    for row in conn.execute('SELECT transaction_id,deferred_event FROM plaid_transactions '
+                            'WHERE item_id=? AND deferred_event IS NOT NULL ORDER BY transaction_id', (item_id,)):
+        event = json.loads(row['deferred_event'])
+        events.append((event['operation'], row['transaction_id'] if event['operation'] == 'removed'
+                       else TxnFact(**event['fact'])))
+    return SyncBatch(batch.original_cursor, batch.next_cursor, tuple(events) + batch.events,
+                     batch.readiness, batch.request_id)
+
+
+def correction_reviews(conn, item_id):
+    """Host-only local facts and independent review reasons; no provider IDs."""
+    return [dict(row) for row in conn.execute(
+        'SELECT t.txn_id,t.account_id,t.posted_date,t.amount_cents,t.merchant_norm,t.payee,t.status,'
+        't.category,t.subcategory,t.category_source,p.split_needs_review,p.category_needs_review '
+        'FROM plaid_transactions p JOIN transactions t ON t.txn_id=p.local_txn_id '
+        'WHERE p.item_id=? AND p.active_owner=1 AND p.review_required=1 ORDER BY t.txn_id', (item_id,))]
+
+
+def correction_review_snapshot(conn, item_id, txn_id):
+    """Include ownership, all current facts and splits for protected revalidation."""
+    current = item(conn, item_id)
+    mapping = conn.execute('SELECT * FROM plaid_transactions WHERE item_id=? AND local_txn_id=? '
+                           'AND active_owner=1 AND review_required=1', (item_id, txn_id)).fetchone()
+    if mapping is None:
+        raise ValueError('review_changed')
+    local = conn.execute('SELECT * FROM transactions WHERE txn_id=?', (txn_id,)).fetchone()
+    splits = [dict(r) for r in conn.execute('SELECT * FROM txn_splits WHERE txn_id=? ORDER BY split_id', (txn_id,))]
+    return dict(generation=current['mapping_generation'], state=current['state'], mapping=dict(mapping),
+                facts=dict(local), splits=splits)
+
+
+def acknowledge_correction(conn, item_id, txn_id, reviewed):
+    """Caller holds Item/intake locks and immediate after interactive confirmation."""
+    _require_transaction(conn)
+    fresh = correction_review_snapshot(conn, item_id, txn_id)
+    if fresh != reviewed:
+        raise ValueError('review_changed')
+    if fresh['splits'] and sum(r['amount_cents'] for r in fresh['splits']) != fresh['facts']['amount_cents']:
+        raise ValueError('invalid_splits')
+    conn.execute('UPDATE plaid_transactions SET split_needs_review=0,category_needs_review=0,review_required=0 '
+                 'WHERE item_id=? AND local_txn_id=? AND active_owner=1', (item_id, txn_id))
+    local_account_id = fresh['facts']['account_id']
+    if owns_public_status(conn, item_id, local_account_id):
+        count = conn.execute('SELECT COUNT(*) FROM plaid_transactions p JOIN transactions t ON t.txn_id=p.local_txn_id '
+                             'WHERE p.item_id=? AND t.account_id=? AND p.active_owner=1 AND p.review_required=1',
+                             (item_id, local_account_id)).fetchone()[0]
+        conn.execute('UPDATE plaid_status_public SET review_count=? WHERE local_account_id=?', (count, local_account_id))
