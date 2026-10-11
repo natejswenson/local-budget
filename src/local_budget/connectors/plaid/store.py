@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 import sqlite3
 
-from .types import SyncBatch, TxnFact
+from .types import LIFECYCLE_STATES, SyncBatch, TxnFact
 
 
 def add_item(conn: sqlite3.Connection, *, environment: str,
@@ -22,7 +22,10 @@ def item(conn: sqlite3.Connection, item_id: int) -> dict:
     row = conn.execute('SELECT * FROM plaid_items WHERE item_id=?', (item_id,)).fetchone()
     if row is None:
         raise KeyError(item_id)
-    return dict(row)
+    result = dict(row)
+    if result['state'] not in LIFECYCLE_STATES:
+        raise ValueError('invalid_state')
+    return result
 
 
 def public_status(conn: sqlite3.Connection) -> list[dict]:
@@ -156,10 +159,6 @@ def map_account(conn: sqlite3.Connection, *, item_id: int, provider_account_id: 
     if currency != 'USD' or account['currency'] != currency or account['account_type'] is None:
         raise ValueError('unsupported_account')
     _assert_account_type(conn, local_account_id, account['account_type'])
-    if conn.execute('SELECT 1 FROM plaid_accounts WHERE local_account_id=? AND enabled=1 '
-                    'AND NOT (item_id=? AND provider_account_id=?)',
-                    (local_account_id, item_id, provider_account_id)).fetchone():
-        raise ValueError('active_source')
     conn.execute('UPDATE plaid_accounts SET local_account_id=?,start_date=?,enabled=0,history_approved=0 '
                  'WHERE item_id=? AND provider_account_id=?',
                  (local_account_id, start_date, item_id, provider_account_id))
@@ -310,3 +309,24 @@ def assert_file_import_allowed(conn: sqlite3.Connection, rows: list[tuple[int, s
                         'AND enabled=1 AND start_date<=? LIMIT 1',
                         (account_id, posted_date)).fetchone():
             raise ProviderOwnershipError('source_overlap')
+
+
+def set_lifecycle(conn: sqlite3.Connection, item_id: int, state: str, *, safe_error_code=None) -> None:
+    """Caller owns Item/intake locks and immediate. Public health has its own enum."""
+    _require_transaction(conn)
+    if state not in LIFECYCLE_STATES:
+        raise ValueError('invalid_state')
+    item(conn, item_id)
+    conn.execute('UPDATE plaid_items SET state=?,safe_error_code=? WHERE item_id=?', (state, safe_error_code, item_id))
+    public = {'disabled': 'disabled', 'active': 'healthy', 'reconnect_required': 'reconnect_required',
+              'recovery_required': 'link_recovery_required', 'disconnect_pending': 'revocation_pending',
+              'disconnected': 'revoked', 'replaced': 'disabled', 'cleanup_needed': 'revocation_pending'}.get(state)
+    if state == 'active' and item(conn, item_id)['readiness'] != 'HISTORICAL_UPDATE_COMPLETE':
+        public = 'initializing'
+    if state == 'cleanup_needed' and safe_error_code == 'rotation_cleanup':
+        public = 'link_recovery_required'
+    for row in conn.execute('SELECT DISTINCT local_account_id FROM plaid_accounts WHERE item_id=? AND local_account_id IS NOT NULL', (item_id,)):
+        # Do not overwrite another active source's public health after replacement.
+        if conn.execute('SELECT 1 FROM plaid_accounts WHERE local_account_id=? AND enabled=1 AND item_id<>?', (row[0], item_id)).fetchone():
+            continue
+        conn.execute('INSERT INTO plaid_status_public(local_account_id,state,safe_error_code) VALUES(?,?,?) ON CONFLICT(local_account_id) DO UPDATE SET state=excluded.state,safe_error_code=excluded.safe_error_code', (row[0], public, safe_error_code))

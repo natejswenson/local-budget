@@ -30,3 +30,9 @@ class SyncResult:
     updated: int = 0
     removed: int = 0
     review_count: int = 0
+
+
+LIFECYCLE_STATES = frozenset({
+    'disabled', 'active', 'reconnect_required', 'recovery_required',
+    'disconnect_pending', 'disconnected', 'replaced', 'cleanup_needed',
+})

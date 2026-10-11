@@ -177,6 +177,12 @@ CREATE TABLE IF NOT EXISTS plaid_link_sessions (
  completed INTEGER NOT NULL DEFAULT 0 CHECK(completed IN (0,1)),
  created_at TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending'
 );
+CREATE TABLE IF NOT EXISTS plaid_rotation_receipts (
+ item_id INTEGER PRIMARY KEY REFERENCES plaid_items(item_id) ON DELETE RESTRICT,
+ old_ref TEXT NOT NULL, new_ref TEXT NOT NULL,
+ resume_state TEXT NOT NULL CHECK(resume_state IN ('disabled','active')),
+ state TEXT NOT NULL CHECK(state IN ('requested','stored','switched')), created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS plaid_accounts (
  item_id INTEGER NOT NULL REFERENCES plaid_items(item_id) ON DELETE RESTRICT,
  provider_account_id TEXT NOT NULL,
@@ -655,7 +661,7 @@ def _agent_authorizer(write: bool):
         if action in (sqlite3.SQLITE_SELECT, sqlite3.SQLITE_FUNCTION):
             return sqlite3.SQLITE_OK
         if action == sqlite3.SQLITE_READ:
-            if arg1 in _AGENT_PRIVATE_TABLES:
+            if arg1 in _AGENT_PRIVATE_TABLES or (arg1.startswith('plaid_') and arg1 != 'plaid_status_public'):
                 return sqlite3.SQLITE_DENY
             return sqlite3.SQLITE_DENY if (arg1, arg2) in _AGENT_READ_DENY else sqlite3.SQLITE_OK
         if action == sqlite3.SQLITE_UPDATE:

@@ -305,7 +305,10 @@ def record_failure(conn, item_id, error, *, now):
     # A raced lifecycle transition must not be overwritten by an old failure.
     if current['state'] not in {'disabled', 'active'}:
         return
-    private_state = 'reconnect_required' if state == 'reconnect_required' else current['state']
+    private_state = ('recovery_required' if code == 'INVALID_FIELD' else
+                     'reconnect_required' if state == 'reconnect_required' else current['state'])
+    if code == 'INVALID_FIELD':
+        state = 'link_recovery_required'
     conn.execute('INSERT INTO plaid_sync_runs(item_id,started_at,completed_at,outcome,safe_error_code) VALUES(?,?,?,\'failed\',?)', (item_id, stamp, stamp, code))
     conn.execute('UPDATE plaid_items SET last_attempt_at=?,state=?,safe_error_code=? WHERE item_id=?', (stamp, private_state, code, item_id))
     for row in conn.execute('SELECT local_account_id FROM plaid_accounts WHERE item_id=? AND enabled=1', (item_id,)):

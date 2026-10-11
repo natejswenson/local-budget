@@ -45,7 +45,7 @@ def _poll(path, client, vault, session):
     """One transport instance and one receipt expiry bound every poll."""
     click.echo(f'Session: {session}')
     while True:
-        result = hosted_link.resume(path, client, vault, session, now=_now())
+        result = hosted_link._resume(path, client, vault, session, now=_now())
         if result is not None:
             click.echo(f'Connection: {result}')
             return
@@ -60,7 +60,7 @@ def _poll(path, client, vault, session):
             time.sleep(min(5, remaining))
 
 
-def _run(environment, *, country='US', days_requested=90, session=None, item=None):
+def _run_locked(environment, *, country='US', days_requested=90, session=None, item=None):
     _host()
     path = db.get_db_path()
     try:
@@ -84,13 +84,27 @@ def _run(environment, *, country='US', days_requested=90, session=None, item=Non
         with PlaidClient(config['client_id'], secret, environment,
                          deadline=time.monotonic() + remaining) as client:
             if session is None:
-                session = hosted_link.start(path, client, vault, country=country, now=_now(),
+                session = hosted_link._start(path, client, vault, country=country, now=_now(),
                                             days_requested=days_requested, existing_item=item)
             _poll(path, client, vault, session)
     except (CredentialError, PlaidError, hosted_link.LinkError) as error:
         if isinstance(error, hosted_link.LinkError) and error.session_id is not None:
             click.echo(f'Session: {error.session_id}')
         raise click.ClickException(error.code) from None
+
+
+def _run(environment, *, country='US', days_requested=90, session=None, item=None):
+    from .locks import item_locks
+    path = db.get_db_path()
+    if session is not None:
+        with db.connect(path) as conn:
+            row = conn.execute('SELECT mode,item_id FROM plaid_link_sessions WHERE session_id=?', (session,)).fetchone()
+        if row is not None and row['mode'] == 'update':
+            item = row['item_id']
+    with item_locks(path, [] if item is None else [item]) as acquired:
+        if not acquired:
+            raise click.ClickException('item_busy')
+        _run_locked(environment, country=country, days_requested=days_requested, session=session, item=item)
 
 
 @click.group()
@@ -417,3 +431,179 @@ def _record_config_failure(item_id, error):
                             syncing.record_failure(conn, item_id, error, now=_now())
     except Exception:
         pass  # Keep the original allowlisted credential error safe.
+
+
+def _lifecycle_command(connection, operation):
+    from . import lifecycle, sync as syncing
+    _host()
+    _interactive()
+    snapshot = _connection(connection)
+    click.confirm('Disable this connection locally and revoke its Plaid token?' if operation == 'disconnect'
+                  else 'Rotate this connection token, preserving a durable recovery receipt?', abort=True)
+    try:
+        config, vault, secret = _configured(snapshot['environment'])
+        with PlaidClient(config['client_id'], secret, snapshot['environment']) as client:
+            action = lifecycle.disconnect if operation == 'disconnect' else lifecycle.rotate_token
+            result = action(db.get_db_path(), connection, client, vault)
+        click.echo(f'Connection {connection}: {result}')
+        if result in {'disconnect_pending', 'recovery_required', 'cleanup_needed'}:
+            click.echo('Recovery credential retained. Retry this command to finish known local stages; '
+                       'an uncertain rotation is never sent again. Missing credentials require restoring '
+                       'the original host Keychain or explicit connection replacement.')
+    except (CredentialError, PlaidError, syncing.SyncStateError) as error:
+        raise click.ClickException(error.code) from None
+
+
+@plaid.command()
+@click.argument('connection', type=click.IntRange(1))
+def disconnect(connection):
+    """Disable locally, revoke remotely, then clean host credentials."""
+    _lifecycle_command(connection, 'disconnect')
+
+
+@plaid.command()
+@click.argument('connection', type=click.IntRange(1))
+def rotate(connection):
+    """Rotate a token with a durable receipt and recover known local stages."""
+    _lifecycle_command(connection, 'rotate')
+
+
+@plaid.command()
+@click.argument('connection', type=click.IntRange(1))
+def rebuild(connection):
+    """Review full available history before rebuilding a rejected cursor."""
+    from dataclasses import replace as replace_batch
+    from ... import inbox_adapter
+    from . import lifecycle, sync as syncing
+    from .locks import item_locks
+
+    _host()
+    _interactive()
+    path = db.get_db_path()
+    try:
+        with item_locks(path, [connection]) as acquired:
+            if not acquired:
+                raise syncing.SyncStateError('item_busy')
+            snapshot = _connection(connection)
+            if snapshot['state'] != 'recovery_required':
+                raise click.ClickException('recovery_not_required')
+            with db.connect(path) as conn:
+                if conn.execute('SELECT 1 FROM plaid_rotation_receipts WHERE item_id=?', (connection,)).fetchone():
+                    raise click.ClickException('rotation_recovery_required')
+            config, vault, secret = _configured(snapshot['environment'])
+            token = vault.get(snapshot['credential_ref'], interactive=True)
+            with PlaidClient(config['client_id'], secret, snapshot['environment']) as client:
+                deadline = time.monotonic()+300
+                full = syncing.fetch_batch(client, token, cursor=None, deadline=deadline)
+                batch = replace_batch(full, original_cursor=snapshot['cursor'])
+                with db.connect(path) as conn:
+                    review = store.preview(conn, connection, batch)
+                _show_review(review)
+                click.echo('Unknown coverage: the provider may omit older history. Absence from this full '
+                           'fetch does not remove existing history or prove complete statement coverage.')
+                if batch.readiness != 'HISTORICAL_UPDATE_COMPLETE':
+                    raise click.ClickException('history_incomplete')
+                if review['unresolved_overlap_count']:
+                    raise click.ClickException('unresolved_overlap')
+                click.confirm('Approve this full history review and atomically rebuild the cursor?', abort=True)
+                with inbox_adapter.intake_lock() as intake:
+                    if not intake:
+                        raise syncing.SyncStateError('intake_busy')
+                    with db.connect(path) as conn:
+                        conn.execute('BEGIN IMMEDIATE')
+                        lifecycle.apply_rebuild(conn, connection, batch, snapshot=snapshot,
+                                                reviewed=review, deadline=deadline)
+                        syncing.require_deadline(deadline)
+        click.echo('Reviewed history and rebuilt cursor committed.')
+    except (CredentialError, PlaidError, syncing.SyncStateError) as error:
+        message = error.code
+        if message == 'credential_missing':
+            message += ': restore the original host Keychain or explicitly link and replace; no automatic new link'
+        raise click.ClickException(message) from None
+    except ValueError as error:
+        safe = str(error) if str(error) in {'stale_review', 'stale_cursor', 'history_incomplete', 'unresolved_overlap'} else 'invalid_review'
+        raise click.ClickException(safe) from None
+
+
+@plaid.command(name='replace')
+@click.argument('old', type=click.IntRange(1))
+@click.argument('new', type=click.IntRange(1))
+def replace_connection(old, new):
+    """Review fresh facts and explicitly transfer selected transaction ownership."""
+    from ... import inbox_adapter
+    from . import lifecycle, sync as syncing
+    from .locks import item_locks
+
+    _host()
+    _interactive()
+    if old == new:
+        raise click.ClickException('invalid_replacement')
+    path = db.get_db_path()
+    try:
+        with item_locks(path, [old, new]) as acquired:
+            if not acquired:
+                raise syncing.SyncStateError('item_busy')
+            old_snapshot, snapshot = _connection(old), _connection(new)
+            if snapshot['state'] != 'disabled' or old_snapshot['environment'] != snapshot['environment']:
+                raise click.ClickException('invalid_replacement')
+            config, vault, secret = _configured(snapshot['environment'])
+            token = vault.get(snapshot['credential_ref'], interactive=True)
+            with PlaidClient(config['client_id'], secret, snapshot['environment']) as client:
+                deadline = time.monotonic()+300
+                batch = syncing.fetch_review_batch(client, token, cursor=snapshot['cursor'], deadline=deadline)
+                with db.connect(path) as conn:
+                    review = store.preview(conn, new, batch)
+                    owners = {r['local_txn_id'] for r in conn.execute('SELECT local_txn_id FROM plaid_transactions WHERE item_id=? AND active_owner=1 AND local_txn_id IS NOT NULL', (old,))}
+                    locals_ = {r['txn_id']: dict(r) for r in conn.execute('SELECT * FROM transactions') if r['txn_id'] in owners}
+                _show_review(review)
+                if batch.readiness != 'HISTORICAL_UPDATE_COMPLETE':
+                    raise click.ClickException('history_incomplete')
+                matches = {}
+                for row in review['transactions']:
+                    candidates = [tid for tid in row['candidate_txn_ids'] if tid in owners and tid not in matches.values()]
+                    if row['excluded_reason'] is not None or not candidates:
+                        continue
+                    for tid in candidates:
+                        local = locals_[tid]
+                        click.echo(f"Local candidate {tid} | account={local['account_id']} | {local['posted_date']} | "
+                                   f"{local['amount_cents']} cents | {local['merchant_norm']} | {local['status']} | "
+                                   f"payee={local['payee'] or ''} | category={local['category'] or ''}")
+                    chosen = click.prompt(f"Explicit local match for {row['transaction_id']} (0 skips)", type=int, default=0)
+                    if chosen == 0:
+                        continue
+                    if chosen not in candidates:
+                        raise click.ClickException('stale_review')
+                    click.confirm(f"Approve {row['transaction_id']} as local transaction {chosen}?", abort=True)
+                    matches[row['transaction_id']] = chosen
+                if not matches:
+                    raise click.ClickException('no_matches')
+                click.confirm('Retire the old source and transfer these exact matches? New mappings stay disabled; '
+                              'unresolved overlaps need further review before activation.', abort=True)
+                with inbox_adapter.intake_lock() as intake:
+                    if not intake:
+                        raise syncing.SyncStateError('intake_busy')
+                    with db.connect(path) as conn:
+                        conn.execute('BEGIN IMMEDIATE')
+                        if store.item(conn, old) != old_snapshot or store.item(conn, new) != snapshot or store.preview(conn, new, batch) != review:
+                            raise click.ClickException('stale_review')
+                        for tid in matches.values():
+                            fresh = conn.execute('SELECT * FROM transactions WHERE txn_id=?', (tid,)).fetchone()
+                            if fresh is None or dict(fresh) != locals_[tid]:
+                                raise click.ClickException('stale_review')
+                        for provider_id, (operation, value) in syncing.final_events(batch).items():
+                            if operation == 'removed':
+                                continue
+                            syncing._validate_fact(value)
+                            prior = conn.execute('SELECT local_txn_id FROM plaid_transactions WHERE item_id=? AND transaction_id=?', (new, provider_id)).fetchone()
+                            if prior is None or prior['local_txn_id'] is None:
+                                store.save_fact(conn, item_id=new, fact=value, disposition='excluded')
+                        syncing.require_deadline(deadline)
+                        lifecycle.transfer_ownership(conn, old_item_id=old, new_item_id=new,
+                                                     matches=matches, reviewed_generation=snapshot['mapping_generation'])
+                        syncing.require_deadline(deadline)
+        click.echo('Ownership transferred. New mappings remain disabled; preview and activate after resolving overlaps.')
+    except (CredentialError, PlaidError, syncing.SyncStateError) as error:
+        raise click.ClickException(error.code) from None
+    except ValueError as error:
+        safe = str(error) if str(error) in {'stale_review', 'stale_generation', 'invalid_replacement', 'duplicate_match', 'active_source', 'account_type_mismatch'} else 'invalid_review'
+        raise click.ClickException(safe) from None

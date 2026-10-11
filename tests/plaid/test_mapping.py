@@ -111,8 +111,10 @@ def test_activation_generation_history_and_exclusive_source(plaid_db, seed_item)
         assert not store.eligible(fact(currency='EUR'), account)
         assert not store.eligible(fact(posted_date='2026-09-30'), account)
         discovery(conn, other)
+        store.map_account(conn, item_id=other, provider_account_id='a1', local_account_id=1, currency='USD', start_date='2026-10-01')
+        assert store._account(conn, other, 'a1')['enabled'] == 0
         with pytest.raises(ValueError, match='active_source'):
-            store.map_account(conn, item_id=other, provider_account_id='a1', local_account_id=1, currency='USD', start_date='2026-10-01')
+            store.enable_account(conn, item_id=other, provider_account_id='a1', reviewed_generation=1, batch=batch())
 
 
 def test_mutators_require_caller_transaction(plaid_db, seed_item):

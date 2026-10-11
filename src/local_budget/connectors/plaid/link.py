@@ -18,7 +18,7 @@ class LinkError(Exception):
     def __init__(self, code='link_failed', *, session_id=None):
         self.session_id = session_id
         self.code = code if code in {'link_failed', 'invalid_session', 'invalid_link',
-                                    'recovery_required', 'browser_unavailable'} else 'link_failed'
+                                    'recovery_required', 'browser_unavailable', 'item_busy'} else 'link_failed'
         super().__init__(self.code)
 
 
@@ -66,7 +66,7 @@ def _expiry(value):
     raise LinkError('invalid_link')
 
 
-def start(db_path: Path, client: PlaidClient, vault: KeychainCredentials, *, country: str, now: datetime,
+def _start(db_path: Path, client: PlaidClient, vault: KeychainCredentials, *, country: str, now: datetime,
           days_requested: int = 90, existing_item: int | None = None) -> str:
     if (country != 'US' or now.tzinfo is None or type(days_requested) is not int
             or not 1 <= days_requested <= 730
@@ -130,7 +130,7 @@ def _state(path, session, state, *, completed=0, item_id=None):
                             (state, completed, item_id, session, expected)).rowcount == 1
 
 
-def resume(db_path: Path, client: PlaidClient, vault: KeychainCredentials,
+def _resume(db_path: Path, client: PlaidClient, vault: KeychainCredentials,
            session_id: str, *, now: datetime) -> int | None:
     with db.connect(db_path) as conn:
         row = conn.execute('SELECT * FROM plaid_link_sessions WHERE session_id=?', (session_id,)).fetchone()
@@ -148,7 +148,7 @@ def resume(db_path: Path, client: PlaidClient, vault: KeychainCredentials,
     remaining = (_expiry(receipt['expires_at']) - now).total_seconds()
     if remaining <= 0:
         if not _state(db_path, session_id, 'expired'):
-            return resume(db_path, client, vault, session_id, now=now)
+            return _resume(db_path, client, vault, session_id, now=now)
         _cleanup(vault, receipt['credential_ref'])
         return None
     response = client.call('/link/token/get', {'link_token': vault.get(receipt['credential_ref'], interactive=True)},
@@ -163,7 +163,7 @@ def resume(db_path: Path, client: PlaidClient, vault: KeychainCredentials,
         raise LinkError('invalid_link')
     if session.get('exit') is not None:
         if not _state(db_path, session_id, 'cancelled'):
-            return resume(db_path, client, vault, session_id, now=now)
+            return _resume(db_path, client, vault, session_id, now=now)
         _cleanup(vault, receipt['credential_ref'])
         return None
     if not session.get('finished_at'):
@@ -174,7 +174,7 @@ def resume(db_path: Path, client: PlaidClient, vault: KeychainCredentials,
         raise LinkError('invalid_link')
     if receipt['mode'] == 'update':
         if not _state(db_path, session_id, 'completed', completed=1):
-            return resume(db_path, client, vault, session_id, now=now)
+            return _resume(db_path, client, vault, session_id, now=now)
         _cleanup(vault, receipt['credential_ref'])
         return receipt['item_id']
     if receipt['mode'] != 'link' or len(additions) != 1 or not isinstance(additions[0], dict):
@@ -216,3 +216,25 @@ def resume(db_path: Path, client: PlaidClient, vault: KeychainCredentials,
         raise LinkError('recovery_required')
     _cleanup(vault, receipt['credential_ref'])
     return item_id
+
+
+def start(db_path: Path, client: PlaidClient, vault: KeychainCredentials, *, country: str, now: datetime,
+          days_requested: int = 90, existing_item: int | None = None) -> str:
+    from .locks import item_locks
+    with item_locks(db_path, [] if existing_item is None else [existing_item]) as acquired:
+        if not acquired:
+            raise LinkError('item_busy')
+        return _start(db_path, client, vault, country=country, now=now,
+                      days_requested=days_requested, existing_item=existing_item)
+
+
+def resume(db_path: Path, client: PlaidClient, vault: KeychainCredentials,
+           session_id: str, *, now: datetime) -> int | None:
+    from .locks import item_locks
+    with db.connect(db_path) as conn:
+        row = conn.execute('SELECT mode,item_id FROM plaid_link_sessions WHERE session_id=?', (session_id,)).fetchone()
+    ids = [row['item_id']] if row is not None and row['mode'] == 'update' else []
+    with item_locks(db_path, ids) as acquired:
+        if not acquired:
+            raise LinkError('item_busy')
+        return _resume(db_path, client, vault, session_id, now=now)

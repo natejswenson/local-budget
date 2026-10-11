@@ -310,3 +310,26 @@ def test_empty_url_userinfo_is_rejected(flow, plaid_db):
     with pytest.raises(link.LinkError):
         begin(flow, plaid_db)
     assert opened == []
+
+
+def test_update_mode_item_lock_start_and_resume(flow, plaid_db, seed_item):
+    from local_budget.connectors.plaid.locks import item_locks
+    item = seed_item()
+    link, vault, api, requests, *_ = flow
+    with db.connect(plaid_db) as conn:
+        ref = store.item(conn, item)['credential_ref']
+    vault.values[ref] = 'FABRICATED_ACCESS'
+    with item_locks(plaid_db, [item]) as acquired:
+        assert acquired
+        with pytest.raises(link.LinkError, match='item_busy'):
+            begin(flow, plaid_db, existing_item=item)
+    session = begin(flow, plaid_db, existing_item=item)
+    count = len(requests)
+    with item_locks(plaid_db, [item]):
+        with pytest.raises(link.LinkError, match='item_busy'):
+            link.resume(plaid_db, api, vault, session, now=NOW)
+    assert len(requests) == count
+    assert link.resume(plaid_db, api, vault, session, now=NOW) == item
+    with db.connect(plaid_db) as conn:
+        assert store.item(conn, item)['state'] == 'disabled'
+        assert store.item(conn, item)['cursor'] is None

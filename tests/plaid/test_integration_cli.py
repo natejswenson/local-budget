@@ -401,3 +401,114 @@ def test_adoption_deadline_includes_confirmation(plaid_db, seed_item, monkeypatc
         assert (
             conn.execute("SELECT COUNT(*) FROM plaid_transactions").fetchone()[0] == 0
         )
+
+
+def test_rebuild_cli_full_fetch_confirmation_and_no_automatic_reset(plaid_db, seed_item, monkeypatch):
+    from .test_apply import apply
+    from .test_mapping import fact
+    item = seed_item()
+    enabled(plaid_db, item)
+    apply(plaid_db, item, ('added', fact('t1')), next_cursor='saved')
+    with db.connect(plaid_db) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        store.set_lifecycle(conn, item, 'recovery_required')
+    requests = mock_provider(monkeypatch, [page([transaction('t1')], cursor='full')])
+    result = CliRunner().invoke(cli.plaid, ['rebuild', str(item)], input='y\n')
+    assert result.exit_code == 0, result.output
+    assert 'Unknown coverage' in result.output
+    assert requests == [('/transactions/sync', None)]
+    with db.connect(plaid_db) as conn:
+        assert store.item(conn, item)['cursor'] == 'full'
+        assert conn.execute('SELECT COUNT(*) FROM transactions').fetchone()[0] == 1
+
+
+def test_rebuild_cli_decline_keeps_recovery_cursor(plaid_db, seed_item, monkeypatch):
+    item = seed_item()
+    enabled(plaid_db, item)
+    with db.connect(plaid_db) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        conn.execute("UPDATE plaid_items SET cursor='saved' WHERE item_id=?", (item,))
+        store.set_lifecycle(conn, item, 'recovery_required')
+    mock_provider(monkeypatch, [page(cursor='full')])
+    result = CliRunner().invoke(cli.plaid, ['rebuild', str(item)], input='n\n')
+    assert result.exit_code != 0
+    with db.connect(plaid_db) as conn:
+        assert store.item(conn, item)['cursor'] == 'saved'
+        assert store.item(conn, item)['state'] == 'recovery_required'
+
+
+def test_disconnect_rotate_cli_available(plaid_db, seed_item, monkeypatch):
+    item = seed_item()
+    requests = mock_provider(monkeypatch, [{'request_id': 'safe'}])
+    result = CliRunner().invoke(cli.plaid, ['disconnect', str(item)], input='y\n')
+    assert result.exit_code == 0, result.output
+    assert requests == [('/item/remove', None)]
+    assert 'disconnected' in result.output
+
+
+def test_replace_cli_explicit_match_and_disabled_result(plaid_db, seed_item, monkeypatch):
+    from .test_apply import apply
+    from .test_mapping import fact, mapped
+    old, new = seed_item('old'), seed_item('new')
+    enabled(plaid_db, old)
+    apply(plaid_db, old, ('added', fact('old-t')))
+    with db.connect(plaid_db) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        mapped(conn, new)
+        tid = conn.execute('SELECT txn_id FROM transactions').fetchone()[0]
+    requests = mock_provider(monkeypatch, [page([transaction('new-t')])])
+    # The fake host credential is also scoped to the replacement Item.
+    original = cli._configured
+    def configured(env, **kw):
+        config, vault, secret = original(env, **kw)
+        vault.put('test-ref-new', 'FABRICATED_NEW')
+        return config, vault, secret
+    monkeypatch.setattr(cli, '_configured', configured)
+    result = CliRunner().invoke(cli.plaid, ['replace', str(old), str(new)], input=f'{tid}\ny\ny\n')
+    assert result.exit_code == 0, result.output
+    assert 'Local candidate' in result.output and 'New mappings remain disabled' in result.output
+    assert requests == [('/transactions/sync', None)]
+    with db.connect(plaid_db) as conn:
+        assert store.item(conn, old)['state'] == 'replaced'
+        assert store.item(conn, new)['state'] == 'disabled'
+        assert conn.execute('SELECT SUM(enabled) FROM plaid_accounts').fetchone()[0] == 0
+        assert conn.execute('SELECT COUNT(*) FROM transactions').fetchone()[0] == 1
+        assert conn.execute('SELECT item_id FROM plaid_transactions WHERE active_owner=1').fetchone()[0] == new
+
+
+def test_replace_cli_stale_local_review_rolls_back(plaid_db, seed_item, monkeypatch):
+    from .test_apply import apply
+    from .test_mapping import fact, mapped
+    old, new = seed_item('old'), seed_item('new')
+    enabled(plaid_db, old)
+    apply(plaid_db, old, ('added', fact('old-t')))
+    with db.connect(plaid_db) as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        mapped(conn, new)
+    mock_provider(monkeypatch, [page([transaction('new-t')])])
+    original = cli._configured
+    def configured(env, **kw):
+        config, vault, secret = original(env, **kw)
+        vault.put('test-ref-new', 'FABRICATED_NEW')
+        return config, vault, secret
+    monkeypatch.setattr(cli, '_configured', configured)
+    def confirm(message, **kw):
+        if message.startswith('Retire'):
+            with db.connect(plaid_db) as conn:
+                conn.execute("UPDATE transactions SET payee='changed' WHERE txn_id=1")
+        return True
+    monkeypatch.setattr(cli.click, 'confirm', confirm)
+    result = CliRunner().invoke(cli.plaid, ['replace', str(old), str(new)], input='1\n')
+    assert result.exit_code != 0 and 'stale_review' in result.output
+    with db.connect(plaid_db) as conn:
+        assert store.item(conn, old)['state'] == 'active'
+        assert conn.execute('SELECT COUNT(*) FROM plaid_transactions WHERE item_id=?', (new,)).fetchone()[0] == 0
+
+
+def test_rotate_cli_uses_new_access_token_field(plaid_db, seed_item, monkeypatch):
+    item = seed_item()
+    requests = mock_provider(monkeypatch, [{'new_access_token': 'FABRICATED_NEW'}])
+    result = CliRunner().invoke(cli.plaid, ['rotate', str(item)], input='y\n')
+    assert result.exit_code == 0, result.output
+    assert requests == [('/item/access_token/invalidate', None)]
+    assert 'FABRICATED' not in result.output
