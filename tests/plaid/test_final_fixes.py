@@ -445,3 +445,37 @@ def test_adoption_uses_deferred_fact_shown_in_review(plaid_db, seed_item, monkey
     assert result.exit_code == 0, result.output
     with db.connect(plaid_db) as conn:
         assert conn.execute('SELECT local_txn_id,disposition,amount_cents FROM plaid_transactions').fetchone()[:] == (1, 'adopted', -1600)
+
+
+def test_acknowledgment_displays_exact_snapshot_after_concurrent_category_edit(
+    plaid_db, seed_item, monkeypatch
+):
+    item = seed_item()
+    needs_review(plaid_db, item)
+    with db.connect(plaid_db) as conn:
+        conn.execute("UPDATE transactions SET category='Shopping',category_source='manual'")
+    monkeypatch.setattr(cli, '_host', lambda: None)
+    monkeypatch.setattr(cli, '_interactive', lambda: None)
+    real_snapshot = store.correction_review_snapshot
+    captured = []
+
+    def snapshot_after_edit(conn, item_id, txn_id):
+        if not captured:
+            # Ordinary category writers can commit between a listing read and
+            # snapshot creation, despite the host command holding the Item lock.
+            with db.connect(plaid_db) as writer:
+                writer.execute("UPDATE transactions SET category='Groceries' WHERE txn_id=1")
+        snapshot = real_snapshot(conn, item_id, txn_id)
+        captured.append(snapshot)
+        return snapshot
+
+    monkeypatch.setattr(store, 'correction_review_snapshot', snapshot_after_edit)
+    result = CliRunner().invoke(cli.plaid, ['review', str(item), '--txn', '1'], input='y\n')
+    assert result.exit_code == 0, result.output
+    assert captured[0]['facts']['category'] == 'Groceries'
+    assert 'category=Groceries' in result.output
+    assert 'category=Shopping' not in result.output
+    assert 'PROVIDER-SENTINEL' not in result.output
+    with db.connect(plaid_db) as conn:
+        assert conn.execute('SELECT review_required FROM plaid_transactions').fetchone()[0] == 0
+        assert store.public_status(conn)[0]['review_count'] == 0

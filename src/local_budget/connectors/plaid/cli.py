@@ -671,8 +671,14 @@ def review_corrections(connection, txn):
                 raise click.ClickException('item_busy')
             with db.connect(path) as conn:
                 store.item(conn, connection)
-                rows = store.correction_reviews(conn, connection)
                 reviewed = store.correction_review_snapshot(conn, connection, txn) if txn is not None else None
+                if reviewed is None:
+                    rows = store.correction_reviews(conn, connection)
+                else:
+                    rows = [reviewed['facts'] | {
+                        key: reviewed['mapping'][key]
+                        for key in ('category_needs_review', 'split_needs_review')
+                    }]
             for row in rows:
                 if txn is None or row['txn_id'] == txn:
                     reasons = [name for name in ('category', 'split') if row[name + '_needs_review']]
