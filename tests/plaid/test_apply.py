@@ -697,3 +697,57 @@ def test_credentials_health_does_not_change_private_lifecycle(plaid_db, seed_ite
         sync.record_failure(conn, item, CredentialError("credential_locked"), now=NOW)
         assert store.item(conn, item)["state"] == "disabled"
         assert store.public_status(conn)[0]["state"] == "credential_locked"
+
+
+@pytest.mark.parametrize("removed_while_pending", [False, True])
+def test_adopted_preboundary_pending_to_posted_preserves_approval(
+    plaid_db, seed_item, removed_while_pending
+):
+    item = seed_item()
+    enabled(plaid_db, item)
+    historical = fact("historical", posted_date="2026-09-30")
+    with db.connect(plaid_db) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "INSERT INTO transactions(account_id,fitid,posted_date,amount_cents,merchant_norm,imported_at) VALUES(1,'history','2026-09-30',-1200,'SHOP','now')"
+        )
+        store.adopt_transaction(
+            conn,
+            item_id=item,
+            provider_transaction_id="historical",
+            local_txn_id=1,
+            fact=historical,
+        )
+    apply(
+        plaid_db,
+        item,
+        ("modified", fact("historical", posted_date="2026-09-30", pending=True)),
+    )
+    with db.connect(plaid_db) as conn:
+        assert conn.execute("SELECT txn_id,status FROM transactions").fetchone()[:] == (
+            1,
+            "pending",
+        )
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM effective_txns WHERE status='posted'"
+            ).fetchone()[0]
+            == 0
+        )
+    if removed_while_pending:
+        apply(plaid_db, item, ("removed", "historical"), cursor="next")
+    apply(plaid_db, item, ("modified", historical), cursor="next")
+    with db.connect(plaid_db) as conn:
+        assert conn.execute("SELECT txn_id,status FROM transactions").fetchone()[:] == (
+            1,
+            "posted",
+        )
+        assert (
+            conn.execute(
+                "SELECT SUM(amount_cents) FROM effective_txns WHERE status='posted'"
+            ).fetchone()[0]
+            == -1200
+        )
+        assert conn.execute(
+            "SELECT local_txn_id,active_owner,disposition FROM plaid_transactions"
+        ).fetchone()[:] == (1, 1, "adopted")

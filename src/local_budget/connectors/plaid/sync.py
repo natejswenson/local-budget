@@ -234,12 +234,17 @@ def apply_batch(conn: sqlite3.Connection, item_id: int, batch: SyncBatch, *, exp
                 conn.execute("UPDATE transactions SET status='removed' WHERE txn_id=?", (txn_id,))
                 counts['removed'] += 1
             conn.execute("INSERT INTO plaid_transactions(item_id,transaction_id,disposition) VALUES(?,?,'removed') "
-                         "ON CONFLICT(item_id,transaction_id) DO UPDATE SET disposition=CASE WHEN disposition IN ('adopted','removed_adopted') THEN 'removed_adopted' ELSE 'removed' END,review_required=0,split_needs_review=?",
+                         "ON CONFLICT(item_id,transaction_id) DO UPDATE SET disposition=CASE WHEN disposition IN ('adopted','pending_adopted','removed_adopted') THEN 'removed_adopted' ELSE 'removed' END,review_required=0,split_needs_review=?",
                          (item_id, provider_id, split_review))
         else:
-            adopted = mapping is not None and mapping['disposition'] in {'adopted', 'removed_adopted'}
+            adopted = mapping is not None and mapping['disposition'] in {'adopted', 'pending_adopted', 'removed_adopted'}
             eligible = store.eligible(value, account) or (adopted and not value.pending and account['enabled'])
-            disposition = ('adopted' if adopted else 'posted') if eligible else 'pending' if value.pending else 'excluded'
+            if eligible:
+                disposition = 'adopted' if adopted else 'posted'
+            elif value.pending:
+                disposition = 'pending_adopted' if adopted else 'pending'
+            else:
+                disposition = 'excluded'
             status = 'posted' if eligible else 'pending' if value.pending else 'removed'
             if old is not None:
                 changed = old['status'] != status or any(old[key] != getattr(value, key) for key in ('posted_date', 'amount_cents', 'merchant_norm', 'payee'))
