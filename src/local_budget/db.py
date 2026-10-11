@@ -19,6 +19,17 @@ from typing import Iterator
 
 from . import paths
 
+
+def begin_immediate(conn: sqlite3.Connection) -> None:
+    """Reserve writes before dependent reads when no transaction is active.
+
+    An existing transaction must already hold its write reservation: this helper
+    cannot upgrade a deferred transaction whose validation reads already ran.
+    """
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS accounts (
     account_id   INTEGER PRIMARY KEY,

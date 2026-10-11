@@ -242,6 +242,7 @@ def split_subscriptions(conn=None) -> int:
     agent's write authorizer — design-gate S2)."""
     from .. import merchants
     with db.writer(conn) as conn:
+        db.begin_immediate(conn)
         aliases = merchants.active_aliases(conn)
         rows = conn.execute(
             "SELECT DISTINCT merchant_norm FROM transactions "

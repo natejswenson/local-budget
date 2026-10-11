@@ -36,12 +36,24 @@ def list_open() -> list[dict]:
 def resolve(conflict_id: int, action: str) -> dict:
     changed = False
     with db.connect() as conn:
+        db.begin_immediate(conn)
         c = conn.execute(
             "SELECT * FROM import_conflicts WHERE conflict_id = ? AND resolved = 0",
             (conflict_id,),
         ).fetchone()
         if not c:
             raise ReconcileError(f"no open conflict {conflict_id}")
+
+        from .connectors.plaid import store
+        affected = []
+        if c["kind"] == "near_duplicate":
+            affected.append(c["incoming_txn_id"])
+            if action == "merge":
+                affected.append(c["existing_txn_id"])
+        elif action == "accept_incoming":
+            affected.append(c["existing_txn_id"])
+        if any(txn is not None and store.is_provider_owned(conn, txn) for txn in affected):
+            raise ReconcileError("provider_owned")
 
         if c["kind"] == "near_duplicate":
             changed = _resolve_near_dup(conn, c, action)

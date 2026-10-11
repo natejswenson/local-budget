@@ -287,3 +287,26 @@ def adopt_transaction(conn: sqlite3.Connection, *, item_id: int,
     stamp = datetime.now(timezone.utc).isoformat(timespec='seconds')
     run = conn.execute("INSERT INTO plaid_sync_runs(item_id,started_at,completed_at,outcome) VALUES(?,?,?,'adopted') RETURNING run_id", (item_id, stamp, stamp)).fetchone()[0]
     conn.execute("INSERT INTO plaid_changes(run_id,local_txn_id,event_kind,created_at) VALUES(?,?,'adopted',?)", (run, local_txn_id, stamp))
+
+
+class ProviderOwnershipError(ValueError):
+    """Safe source-protection code suitable for CLI/intake boundaries."""
+
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(code)
+
+
+def is_provider_owned(conn: sqlite3.Connection, txn_id: int) -> bool:
+    # Retired mappings still protect facts required by recovery.
+    return conn.execute('SELECT 1 FROM plaid_transactions WHERE local_txn_id=? LIMIT 1',
+                        (txn_id,)).fetchone() is not None
+
+
+def assert_file_import_allowed(conn: sqlite3.Connection, rows: list[tuple[int, str]]) -> None:
+    """Caller holds intake lock and immediate reservation for the complete file."""
+    for account_id, posted_date in rows:
+        if conn.execute('SELECT 1 FROM plaid_accounts WHERE local_account_id=? '
+                        'AND enabled=1 AND start_date<=? LIMIT 1',
+                        (account_id, posted_date)).fetchone():
+            raise ProviderOwnershipError('source_overlap')

@@ -77,6 +77,7 @@ def _with_rw_conn(fn):
     async def wrapper(args: dict) -> dict:
         try:
             with db.agent_connect(write=True) as conn:
+                db.begin_immediate(conn)
                 return await fn(args, conn)
         except Exception as e:  # noqa: BLE001 — tool boundary
             # Name the failing tool so a multi-write turn reads unambiguously.

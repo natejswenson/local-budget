@@ -17,7 +17,7 @@ import sqlite3
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 
-from . import categories
+from . import categories, db
 
 
 class SplitError(ValueError):
@@ -94,6 +94,7 @@ def apply(conn: sqlite3.Connection, txn_id: int, lines: list[dict],
     ["note"]}``. Validated in full BEFORE anything is deleted, so a rejected
     split leaves the previous state intact rather than clearing it and failing.
     """
+    db.begin_immediate(conn)
     _validate(conn, txn_id, lines)
     now = datetime.now().isoformat(timespec="seconds")
     conn.execute("DELETE FROM txn_splits WHERE txn_id = ?", (txn_id,))

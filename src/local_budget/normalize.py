@@ -195,10 +195,15 @@ def undo_last() -> dict:
     (durable undo — otherwise the next apply silently re-collapses), and drop the
     batch's snapshot. Built-in aliases are seeded separately and never removed here."""
     with db.connect() as conn:
+        db.begin_immediate(conn)
         row = conn.execute("SELECT MAX(batch_id) AS b FROM normalize_changes").fetchone()
         batch = row["b"]
         if batch is None:
             return {"undone": False, "reason": "nothing to undo"}
+        if conn.execute(
+                "SELECT 1 FROM normalize_changes WHERE batch_id=? "
+                "AND invalidated_reason IS NOT NULL LIMIT 1", (batch,)).fetchone():
+            return {"undone": False, "reason": "stale normalization batch"}
         changes = conn.execute(
             "SELECT txn_id, old_canonical, old_subcategory, new_pattern "
             "FROM normalize_changes WHERE batch_id=? AND invalidated_reason IS NULL", (batch,)).fetchall()

@@ -55,6 +55,7 @@ def run_intake() -> dict:
     window closed), then scan → integrity-gate → format-validate → import (offline
     rule categorization) → record. Serialized by the intake mutex; a second
     caller no-ops. The LLM step is separate and explicit (never here)."""
+    from .connectors.plaid.store import ProviderOwnershipError
     with inbox_adapter.intake_lock() as got:
         if not got:
             return {"ran": False, "reason": "another intake is in progress"}
@@ -94,7 +95,12 @@ def run_intake() -> dict:
                 # strand the file unseen and let a later re-import bind its
                 # seen-record to a competing 0-row batch (silent spend loss).
                 r = importer.import_file(p, run_id=run_id, content_hash=h,
-                                         source_filename=p.name)
+                                         source_filename=p.name, _intake_locked=True)
+            except ProviderOwnershipError as e:
+                inbox_adapter.record_seen(h, p.name, "quarantined", run_id, e.code)
+                quarantined += 1
+                quarantine_reasons.append(e.code)
+                continue
             except Exception:  # noqa: BLE001 — a TRANSIENT failure (WAL lock,
                 # brief I/O blip) must NOT permanently strand a valid file (silent
                 # under-count, red-team S2). Bump this hash's attempt count: while
@@ -164,11 +170,19 @@ def undo_last_import() -> dict:
         if not got:
             return {"undone": False, "reason": "another intake is in progress"}
 
-        batch = last_import()
-        if not batch:
-            return {"undone": False, "reason": "no import to undo"}
-        run_id = batch["run_id"]
         with db.connect() as conn:
+            db.begin_immediate(conn)
+            batch = conn.execute(
+                "SELECT * FROM import_runs WHERE status='success' ORDER BY run_id DESC LIMIT 1"
+            ).fetchone()
+            if not batch:
+                return {"undone": False, "reason": "no import to undo"}
+            run_id = batch["run_id"]
+            from .connectors.plaid import store
+            affected = conn.execute(
+                "SELECT txn_id FROM transactions WHERE import_run_id=?", (run_id,)).fetchall()
+            if any(store.is_provider_owned(conn, row["txn_id"]) for row in affected):
+                return {"undone": False, "reason": "provider_owned"}
             conflicts = conn.execute(
                 "DELETE FROM import_conflicts WHERE run_id = ?", (run_id,)).rowcount
             rules = conn.execute(
